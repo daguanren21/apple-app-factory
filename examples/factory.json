@@ -1,0 +1,32 @@
+{
+  "stateDir": ".factory",
+  "workspaceRoot": "workspaces",
+  "inbox": { "directory": "requirements", "pollMs": 2000 },
+  "maxConcurrentJobs": 2,
+  "allowLocalExecution": false,
+  "allowSubmit": false,
+  "allowRelease": false,
+  "packageTarget": "simulator",
+  "builder": { "kind": "codex" },
+  "researcher": { "kind": "codex" },
+  "reviewer": { "kind": "codex" },
+  "agentEnv": ["OPENAI_API_KEY", "IOS_DEVICE_ID"],
+  "timeoutMs": 900000,
+  "maxAttempts": 3,
+  "maxAgentCalls": 16,
+  "maxJobHours": 24,
+  "retryDelayMs": 30000,
+  "pollMs": 300000,
+  "verification": {
+    "prerequisites": [["xcodebuild", "-version"]],
+    "checks": [
+      ["dart", "format", "--output=none", "--set-exit-if-changed", "lib", "test", "integration_test", "test_driver"],
+      ["flutter", "analyze", "--fatal-infos"],
+      ["flutter", "test"],
+      ["flutter", "build", "ios", "--simulator", "--debug", "--no-pub"]
+    ],
+    "runtime": [
+      ["flutter", "drive", "--driver", "test_driver/integration_test.dart", "--target", "integration_test/app_test.dart", "-d", "${IOS_DEVICE_ID}", "--no-pub"]
+    ]
+  }
+}

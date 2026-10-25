@@ -1,0 +1,17 @@
+.factory/
+workspaces/
+/requirements/
+/factory.json
+/remote.json
+.env
+.env.*
+!.env.example
+.loopx/
+ACTIVE_GOAL_STATE.md
+*.p8
+*.p12
+*.mobileprovision
+*.ipa
+.DS_Store
+node_modules/
+dist/
