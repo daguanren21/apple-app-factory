@@ -1,0 +1,4 @@
+apphx@1.0.0:
+  dir: packages/apple-app-factory
+  intents:
+    - native-harness-workspace
