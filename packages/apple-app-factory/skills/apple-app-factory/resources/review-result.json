@@ -1,0 +1,7 @@
+{
+  "approved": false,
+  "findings": [
+    "This is a result-shape example, not a completed review. A fresh independent reviewer must inspect the real implementation and external evidence."
+  ],
+  "acceptanceEvidence": []
+}

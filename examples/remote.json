@@ -1,6 +1,0 @@
-{
-  "host": "mac-mini",
-  "directory": "/srv/apple-app-factory",
-  "node": "/opt/homebrew/bin/node",
-  "config": "/srv/apple-app-factory/factory.json"
-}

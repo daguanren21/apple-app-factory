@@ -1,26 +1,32 @@
 {
-  "name": "apple-app-factory",
-  "version": "0.1.0",
+  "name": "apple-app-factory-workspace",
   "private": true,
+  "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@12.15.0",
   "engines": {
-    "node": ">=22.13"
-  },
-  "bin": {
-    "app-factory": "./dist/cli.js"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "pretest": "npm run build",
-    "test": "node --test",
-    "doctor": "node dist/cli.js doctor"
-  },
-  "dependencies": {
-    "yaml": "^2.9.1",
-    "zod": "^4.6.7"
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "package:pack": "pnpm --filter apphx pack --pack-destination .",
+    "package:check": "repoctl package check --filter apphx --strict",
+    "repo:init": "repo init",
+    "repo:doctor": "repo doctor",
+    "repo:check": "repo check",
+    "repo:new": "repo new",
+    "release:plan": "repoctl release plan --markdown",
+    "release:prepare": "repoctl release ci --mode=prepare",
+    "release:preview": "repoctl release ci --mode=publish --dry-run",
+    "release:publish": "repoctl release ci --mode=publish"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
-    "typescript": "^7.0.2"
+    "@types/node": "26.6.5",
+    "repoctl": "6.1.0",
+    "tsdown": "0.23.2",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3"
   }
 }

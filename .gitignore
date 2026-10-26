@@ -15,3 +15,15 @@ ACTIVE_GOAL_STATE.md
 .DS_Store
 node_modules/
 dist/
+/*.tgz
+/packages/apple-app-factory/README.md
+/packages/apple-app-factory/factory.json
+/packages/apple-app-factory/remote.json
+/packages/apple-app-factory/requirements/
+/pnpm-publish-summary.json
+/repoctl-publish-progress.json
+/repoctl-release-progress.json
+/repoctl-ci-progress.json
+/packages/apple-app-factory/LICENSE
+/packages/apple-app-factory/skills/apple-app-factory/LICENSE
+.turbo/

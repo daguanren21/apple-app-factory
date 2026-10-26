@@ -1,0 +1,18 @@
+packages:
+  - packages/*
+
+allowBuilds:
+  esbuild@0.28.2: true
+
+# Only the explicitly selected release-tool versions bypass the default age window.
+minimumReleaseAgeStrict: true
+minimumReleaseAgeExclude:
+  - '@icebreakers/monorepo-templates@3.1.0'
+  - '@icebreakers/monorepo@6.1.0'
+  - repoctl@6.1.0
+
+pmOnFail: error
+
+versioning:
+  changelog:
+    storage: repository

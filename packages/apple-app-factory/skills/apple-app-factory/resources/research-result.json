@@ -1,0 +1,21 @@
+{
+  "viable": false,
+  "policySources": [
+    { "rule": "2.1", "url": "https://developer.apple.com/app-store/review/guidelines/#app-completeness" },
+    { "rule": "2.3.1", "url": "https://developer.apple.com/app-store/review/guidelines/#accurate-metadata" },
+    { "rule": "2.5.19", "url": "https://developer.apple.com/app-store/review/guidelines/#software-requirements" },
+    { "rule": "4.2", "url": "https://developer.apple.com/app-store/review/guidelines/#minimum-functionality" },
+    { "rule": "4.2.6", "url": "https://developer.apple.com/app-store/review/guidelines/#minimum-functionality" },
+    { "rule": "4.3", "url": "https://developer.apple.com/app-store/review/guidelines/#spam" },
+    { "rule": "5.1.1", "url": "https://developer.apple.com/app-store/review/guidelines/#data-collection-and-storage" }
+  ],
+  "distinctness": "Unassessed example: evaluate the owner's actual requirements against the supplied portfolio and current official policies before returning a real verdict.",
+  "risks": [
+    "The current policy contents have not been researched by this example.",
+    "The content owner and submitting account's eligibility under 4.2.6 are unknown; a model must not invent an attestation."
+  ],
+  "plan": [
+    "Read the current official policy sections and assess viability, ownership, distinct utility, privacy and runtime acceptance for the actual product.",
+    "If viable, return a concrete product-specific implementation and verification plan; otherwise preserve viable=false and report the specific blockers."
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "apphx",
+  "version": "1.0.0",
+  "description": "Host-native harness for verified Flutter app delivery",
+  "license": "MIT",
+  "type": "module",
+  "preferUnplugged": true,
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "app-factory": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "examples"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daguanren21/apple-app-factory.git",
+    "directory": "packages/apple-app-factory"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "prepack": "pnpm --workspace-root exec turbo run build typecheck --filter=apphx"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  }
+}

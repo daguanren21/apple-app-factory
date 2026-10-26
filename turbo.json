@@ -1,0 +1,22 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "remoteCache": {
+    "enabled": false
+  },
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/README.md", "$TURBO_ROOT$/LICENSE"],
+      "outputs": ["dist/**", "README.md", "LICENSE", "skills/apple-app-factory/LICENSE"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["build", "typecheck"],
+      "cache": false,
+      "outputs": []
+    }
+  }
+}
