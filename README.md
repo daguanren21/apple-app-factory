@@ -152,9 +152,11 @@ npm view apphx@1.0.0 version dist.integrity --json
 
 保留首发提交 SHA 与 npm 返回的 `dist.integrity`。tarball 发布不能假定会自动附带当前仓库的 `gitHead`；后续恢复必须显式使用这个已推送的源码 SHA。
 
-首发后再在 npm 的 `apphx` 包设置中配置 Trusted Publisher：仓库 `daguanren21/apple-app-factory`、工作流 `release.yml`、environment `npm`；同时配置并保护 GitHub 的 `npm` environment。CI 使用 OIDC，不保存长期 npm token。
+首发后再在 npm 的 `apphx` 包设置中配置 Trusted Publisher：仓库 `daguanren21/apple-app-factory`、工作流 `release.yml`、environment `npm`；**Allowed actions 勾选 `npm publish`**，不能只保留默认的 `npm stage publish`。同时配置并保护 GitHub 的 `npm` environment。repoctl 原生上传要求公开源码仓库，以生成 provenance；CI 使用 OIDC，不保存长期 npm token。
 
 用 `oidc-audit` 检查可信发布身份。**下一次 `prepare` 前必须完成首发元数据恢复**：在 Release 工作流选择 `publish`，将 `source-sha` 设为上述首发提交，先 dry-run，再补齐 GitHub tag、Release 和 repoctl 检查点。已有 `apphx@1.0.0` 只核对、不重复上传；否则 repoctl 会因上一版尚未完整交付而拒绝准备下一版。
+
+新建 Trusted Publisher 后，须在 **2 天内**通过它完成一次新版本发布验证，否则配置过期；`oidc-audit` 或已发布版本的元数据恢复不算。临近下一次实际发布时再创建，过期则删除重建。见 [npm Trusted Publisher 配置规则](https://docs.npmjs.com/trusted-publishers/)。
 
 ### 后续版本
 
