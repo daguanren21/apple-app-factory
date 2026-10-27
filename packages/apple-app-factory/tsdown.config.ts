@@ -12,6 +12,6 @@ export default defineConfig({
   copy: [
     { from: '../../README.md', to: '.' },
     { from: '../../LICENSE', to: '.' },
-    { from: '../../LICENSE', to: 'skills/apple-app-factory' },
+    { from: '../../LICENSE', to: 'skills/apphx' },
   ],
 });

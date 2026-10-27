@@ -88,7 +88,7 @@ test('remote command transports validated local requirements through stdin witho
   const spec = { ...product, name: "Trip '; touch should-not-run; '" };
   const specPath = join(f.root, 'local product.json');
   writeFileSync(specPath, JSON.stringify(spec));
-  const executable = join(f.root, "app-factory ' ; launcher");
+  const executable = join(f.root, "apphx ' ; launcher");
   writeFileSync(executable, `#!${process.execPath}\nconst {spawnSync}=require('node:child_process');const result=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(cli)},...process.argv.slice(2)],{stdio:'inherit'});if(result.error)throw result.error;process.exit(result.status??1);\n`, { mode: 0o700 });
   const command = remoteCommand({ host: 'mac-mini', directory: resolve('.'), executable, config: f.configPath }, ['enqueue', specPath]);
   // Exercise the remote POSIX command locally; SSH authentication/transport is not simulated as connected.
@@ -105,7 +105,7 @@ test('remote command transports validated local requirements through stdin witho
 });
 
 test('remote dispatch rejects publication actions and SSH option injection', () => {
-  const remote = { host: 'mac-mini', directory: '/srv/factory', executable: '/usr/local/bin/app-factory', config: '/srv/factory/factory.json' };
+  const remote = { host: 'mac-mini', directory: '/srv/factory', executable: '/usr/local/bin/apphx', config: '/srv/factory/factory.json' };
   for (const action of ['authorize', 'feedback', 'publish', 'run', 'service', 'worker', 'stop']) assert.throws(() => remoteCommand(remote, [action]));
   for (const host of ['-oProxyCommand=touch injected', 'worker;touch injected', 'worker\nmalicious']) assert.throws(() => remoteCommand({ ...remote, host }, ['status']));
 });

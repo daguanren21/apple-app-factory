@@ -1,6 +1,6 @@
 {
   "host": "mac-mini",
   "directory": "/srv/apple-project",
-  "executable": "/opt/homebrew/bin/app-factory",
+  "executable": "/opt/homebrew/bin/apphx",
   "config": "/srv/apple-project/factory.json"
 }

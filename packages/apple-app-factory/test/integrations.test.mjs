@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from '../dist/integrations.js';
 
-const marker = '.apple-app-factory-install.json';
+const marker = '.apphx-install.json';
 const sha = value => createHash('sha256').update(value).digest('hex');
 const projectPaths = {
   codex: '.agents/skills', claude: '.claude/skills', cursor: '.cursor/skills',
@@ -14,7 +14,7 @@ const projectPaths = {
 };
 
 function fixture(t) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-integration-')));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'apphx-integration-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
@@ -43,7 +43,7 @@ for (const [host, directory] of Object.entries(projectPaths)) {
   test(`${host}: project discovery location, inspection, idempotence and owned uninstall`, t => {
     const root = fixture(t);
     if (host === 'hermes') mkdirSync(join(root, '.git'));
-    const expected = join(root, directory, 'apple-app-factory');
+    const expected = join(root, directory, 'apphx');
     assert.equal(inspectIntegration(host, { project: root }).installed, false);
     assert.equal(existsSync(join(root, directory)), false, 'inspection must not create host configuration');
     const installed = installIntegration(host, { project: root });
@@ -52,6 +52,10 @@ for (const [host, directory] of Object.entries(projectPaths)) {
     assert.equal(installed.changed, true);
     assert.equal(installed.installed, true);
     assert.ok(lstatSync(join(expected, 'SKILL.md')).isFile());
+    const manifest = JSON.parse(readFileSync(join(expected, marker), 'utf8'));
+    assert.equal(manifest.owner, 'apphx');
+    assert.equal(manifest.skill, 'apphx');
+    assert.equal(manifest.host, host);
     assert.equal(inspectIntegration(host, { project: root }).current, true);
     const before = statSync(join(expected, 'SKILL.md'));
     assert.equal(installIntegration(host, { project: root }).changed, false);
@@ -74,7 +78,7 @@ test('default scope is the working project, never the home directory', t => {
   process.chdir(root);
   try {
     const result = installIntegration('claude');
-    assert.equal(result.path, join(root, '.claude/skills/apple-app-factory'));
+    assert.equal(result.path, join(root, '.claude/skills/apphx'));
     assert.equal(result.scope, 'project');
   } finally { process.chdir(old); }
 });
@@ -86,7 +90,7 @@ test('explicit global installs use documented home locations and leave the proje
   for (const [host, directory] of Object.entries(globalPaths)) {
     const result = installIntegration(host, { global: true });
     assert.equal(result.scope, 'global');
-    assert.equal(result.path, join(root, directory, 'apple-app-factory'));
+    assert.equal(result.path, join(root, directory, 'apphx'));
     assert.equal(inspectIntegration(host, { global: true }).installed, true);
     assert.equal(uninstallIntegration(host, { global: true }).changed, true);
   }
@@ -100,7 +104,7 @@ test('documented host home overrides select the same global locations as the hos
   environment(t, { HOME: defaultHome, USERPROFILE: defaultHome, CLAUDE_CONFIG_DIR: join(root, 'claude-home'), GEMINI_CLI_HOME: join(root, 'gemini-home'), PI_CODING_AGENT_DIR: join(root, 'pi-home'), DSH_HOME: join(root, 'dsh-home'), HERMES_HOME: join(root, 'hermes-home'), XDG_CONFIG_HOME: join(root, 'xdg') });
   for (const [host, expected] of [['claude', 'claude-home/skills'], ['gemini', 'gemini-home/.gemini/skills'], ['pi', 'pi-home/skills'], ['deepseek', 'dsh-home/skills'], ['hermes', 'hermes-home/skills'], ['opencode', 'xdg/opencode/skills']]) {
     const installed = installIntegration(host, { global: true });
-    assert.equal(installed.path, join(root, expected, 'apple-app-factory'));
+    assert.equal(installed.path, join(root, expected, 'apphx'));
     assert.equal(inspectIntegration(host, { global: true }).installed, true);
     assert.equal(uninstallIntegration(host, { global: true }).changed, true);
     assert.equal(existsSync(installed.path), false);
@@ -114,8 +118,8 @@ test('DeepSeek local discovery uses the nearest Git root, unlike cwd-local Pi', 
   mkdirSync(join(root, '.git'));
   const nested = join(root, 'app', 'src');
   mkdirSync(nested, { recursive: true });
-  assert.equal(installIntegration('deepseek', { project: nested }).path, join(root, '.dsh/skills/apple-app-factory'));
-  assert.equal(installIntegration('pi', { project: nested }).path, join(nested, '.pi/skills/apple-app-factory'));
+  assert.equal(installIntegration('deepseek', { project: nested }).path, join(root, '.dsh/skills/apphx'));
+  assert.equal(installIntegration('pi', { project: nested }).path, join(nested, '.pi/skills/apphx'));
 });
 
 
@@ -131,7 +135,7 @@ test('only explicit update upgrades an unchanged installation and removes obsole
   saveHistoricalManifest(path, manifest);
   assert.equal(inspectIntegration('claude', { project: root }).installed, true);
   assert.equal(inspectIntegration('claude', { project: root }).current, false);
-  assert.throws(() => installIntegration('claude', { project: root }), /app-factory update/);
+  assert.throws(() => installIntegration('claude', { project: root }));
   assert.equal(readFileSync(join(path, 'SKILL.md'), 'utf8'), 'historical skill content\n');
   assert.equal(readFileSync(join(path, 'retired.json'), 'utf8'), '{}\n');
   assert.equal(updateIntegration('claude', { project: root }).changed, true);
@@ -178,7 +182,7 @@ for (const mutation of ['edited', 'missing', 'extra-file', 'extra-directory', 'm
 
 test('foreign directories are never adopted even when their skill has the expected name', t => {
   const root = fixture(t);
-  const path = join(root, '.claude/skills/apple-app-factory');
+  const path = join(root, '.claude/skills/apphx');
   mkdirSync(path, { recursive: true });
   writeFileSync(join(path, 'SKILL.md'), 'foreign content');
   assert.equal(inspectIntegration('claude', { project: root }).installed, false);
@@ -188,7 +192,7 @@ test('foreign directories are never adopted even when their skill has the expect
   assert.equal(readFileSync(join(path, 'SKILL.md'), 'utf8'), 'foreign content');
 });
 
-for (const entry of ['.claude', '.claude/skills', '.claude/skills/apple-app-factory']) {
+for (const entry of ['.claude', '.claude/skills', '.claude/skills/apphx']) {
   test(`refuses symlink escape through ${entry}`, t => {
     const root = fixture(t);
     const outside = join(root, 'outside');
@@ -216,7 +220,7 @@ test('refuses symlinked project roots, dangling target links and linked installe
   symlinkSync(project, join(root, 'alias'), 'dir');
   assert.throws(() => installIntegration('gemini', { project: join(root, 'alias') }), /symlink/i);
   assert.throws(() => updateIntegration('gemini', { project: join(root, 'alias') }), /symlink/i);
-  const path = join(project, '.gemini/skills/apple-app-factory');
+  const path = join(project, '.gemini/skills/apphx');
   mkdirSync(dirname(path), { recursive: true });
   symlinkSync(join(root, 'missing'), path, 'dir');
   assert.throws(() => installIntegration('gemini', { project }), /symlink/i);
@@ -265,11 +269,11 @@ test('ownership metadata cannot address files outside its skill or hide unknown 
 test('a concurrent or interrupted install lock fails closed and is not removed', t => {
   const root = fixture(t);
   mkdirSync(join(root, '.claude'));
-  const lock = join(root, '.claude/.apple-app-factory-install.lock');
+  const lock = join(root, '.claude/.apphx-install.lock');
   writeFileSync(lock, 'other owner');
   assert.throws(() => installIntegration('claude', { project: root }), /locked/);
   assert.equal(readFileSync(lock, 'utf8'), 'other owner');
-  assert.equal(existsSync(join(root, '.claude/skills/apple-app-factory')), false);
+  assert.equal(existsSync(join(root, '.claude/skills/apphx')), false);
 });
 
 test('unknown hosts and contradictory scopes reject before creating any directory', t => {
@@ -285,8 +289,8 @@ test('unknown hosts and contradictory scopes reject before creating any director
 test('update requires an existing installation and never creates a missing project or global profile', t => {
   const root = fixture(t);
   environment(t, { HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: undefined });
-  assert.throws(() => updateIntegration('claude', { project: root }), /app-factory install/);
-  assert.throws(() => updateIntegration('claude', { global: true }), /app-factory install/);
+  assert.throws(() => updateIntegration('claude', { project: root }));
+  assert.throws(() => updateIntegration('claude', { global: true }));
   assert.deepEqual(readdirSync(root), []);
 });
 
@@ -303,11 +307,11 @@ test('Hermes uses its owning Git root without granting trust, and rejects Git-le
   const nested = join(root, 'app');
   mkdirSync(nested);
   const result = installIntegration('hermes', { project: nested });
-  assert.equal(result.path, join(root, '.hermes/skills/apple-app-factory'));
+  assert.equal(result.path, join(root, '.hermes/skills/apphx'));
   assert.equal(inspectIntegration('hermes', { project: root }).installed, true);
   assert.equal(uninstallIntegration('hermes', { project: nested }).changed, true);
   const global = installIntegration('hermes', { global: true });
-  assert.equal(global.path, join(profile, 'skills/apple-app-factory'));
+  assert.equal(global.path, join(profile, 'skills/apphx'));
   assert.equal(updateIntegration('hermes', { global: true }).changed, false);
   assert.equal(uninstallIntegration('hermes', { global: true }).changed, true);
   assert.equal(readFileSync(config, 'utf8'), 'skills:\n  trusted_project_dirs: []\n');

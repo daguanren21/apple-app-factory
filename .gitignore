@@ -25,5 +25,5 @@ dist/
 /repoctl-release-progress.json
 /repoctl-ci-progress.json
 /packages/apple-app-factory/LICENSE
-/packages/apple-app-factory/skills/apple-app-factory/LICENSE
+/packages/apple-app-factory/skills/apphx/LICENSE
 .turbo/

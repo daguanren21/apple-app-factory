@@ -27,7 +27,7 @@ function inputJSON(path: string): unknown {
 }
 
 function arity(args: string[], minimum: number, maximum: number, usage: string): void {
-  if (args.length < minimum || args.length > maximum) throw new Error(`Usage: app-factory ${usage}`);
+  if (args.length < minimum || args.length > maximum) throw new Error(`Usage: apphx ${usage}`);
 }
 
 function outcome(job: Job): void {
@@ -42,7 +42,7 @@ async function probe(argv: string[], config: Config) {
   } catch (error) { return { available: false, detail: toError(error).message }; }
 }
 
-const help = `app-factory <command> [--config factory.json] [--build-only]
+const help = `apphx <command> [--config factory.json] [--build-only]
   hosts                         List supported agent hosts and activation commands
   install <host>                Install the workflow in the current project
   update <host>                 Update an existing, unmodified host workflow
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     'reconcile-intake': ['config', 'build-only'], authorize: ['config', 'build-only', 'submit', 'release'], feedback: ['config', 'build-only'],
     remote: ['config', 'observe'],
   };
-  if (!(command in flags)) throw new Error(`Unknown command ${command}; run app-factory --help`);
+  if (!(command in flags)) throw new Error(`Unknown command ${command}; run apphx --help`);
   for (const token of tokens) {
     if (token.kind === 'option' && !flags[command].includes(token.name)) throw new Error(`${command} does not accept --${token.name}`);
   }
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     if (values['allow-local-execution']) template.allowLocalExecution = true;
     mkdirSync(dirname(resolve(configPath)), { recursive: true });
     writeFileSync(configPath, `${JSON.stringify(template, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-    print({ config: resolve(configPath), localExecution: template.allowLocalExecution, next: 'Configure Flutter/Xcode and IOS_DEVICE_ID, then run app-factory doctor --build-only' });
+    print({ config: resolve(configPath), localExecution: template.allowLocalExecution, next: 'Configure Flutter/Xcode and IOS_DEVICE_ID, then run apphx doctor --build-only' });
     return;
   }
   if (command === 'remote') {

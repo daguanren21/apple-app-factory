@@ -9,7 +9,7 @@
     "node": ">=22.18"
   },
   "bin": {
-    "app-factory": "./dist/cli.js"
+    "apphx": "./dist/cli.js"
   },
   "files": [
     "dist",

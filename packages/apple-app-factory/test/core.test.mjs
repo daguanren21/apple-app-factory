@@ -15,7 +15,7 @@ const example = JSON.parse(readFileSync(new URL('../examples/factory.json', impo
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
 
 function fixture(t, overrides = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'app-factory-'));
+  const root = mkdtempSync(join(tmpdir(), 'apphx-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, 'factory.json');
   writeFileSync(path, JSON.stringify({ ...example, ...overrides, packageTarget: overrides.packageTarget ?? (overrides.allowSubmit ? 'ipa' : example.packageTarget) }));
