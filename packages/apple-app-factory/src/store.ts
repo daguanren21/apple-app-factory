@@ -60,6 +60,9 @@ export class Store {
     if (version < 3) {
       try {
         this.transaction(() => {
+          const lockedVersion = Number(this.db.prepare('PRAGMA user_version').get()?.user_version);
+          if (lockedVersion > 3) throw new Error(`Queue schema ${lockedVersion} is newer than this factory supports; use the version that created it. No task data was changed.`);
+          if (lockedVersion === 3) return;
           this.db.exec(`CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, job TEXT NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS worker (id INTEGER PRIMARY KEY CHECK(id=1), pid INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox (source TEXT PRIMARY KEY, digest TEXT, data TEXT NOT NULL);`);
@@ -78,7 +81,7 @@ export class Store {
             if (typeof row.data !== 'string') throw new Error('Stored task data must be JSON text');
             const saved = JSON.parse(row.data);
             if (saved.turn) throw new Error(`Abandon the active host turn for task ${row.id} with the previous factory version before migrating; no host turn was changed`);
-            this.db.prepare('INSERT OR IGNORE INTO snapshot_migrations VALUES(?,?,?)').run(row.id, version, row.data);
+            this.db.prepare('INSERT OR IGNORE INTO snapshot_migrations VALUES(?,?,?)').run(row.id, lockedVersion, row.data);
             if (saved.requestSpec === undefined) {
               const changed = this.db.prepare("SELECT 1 FROM events WHERE job=? AND json_type(data,'$.spec') IS NOT NULL LIMIT 1").get(row.id);
               saved.requestSpec = changed ? null : saved.spec;

@@ -82,7 +82,7 @@ export async function prepareFlutter(job: Pick<Job, 'config' | 'workspace' | 'sp
     writeFileSync(marker, JSON.stringify(metadata), { mode: 0o600 });
     const temporary = mkdtempSync(join(cache, 'flutter-clone-'));
     try {
-      const cloned = await run(process.platform === 'darwin' ? ['/bin/cp', '-cRp', `${source}/.`, temporary] : ['cp', '--reflink=auto', '-Rp', `${source}/.`, temporary], { signal });
+      const cloned = await run(process.platform === 'darwin' ? ['/bin/cp', '-cRp', `${source}/.`, temporary] : ['cp', '--reflink=always', '-Rp', `${source}/.`, temporary], { signal });
       if (cloned.code !== 0) throw unavailable(`Cannot create the workspace-local copy-on-write SDK: ${cloned.stderr || cloned.stdout}`, 'sdk-clone', source);
       signal?.throwIfAborted();
       renameSync(temporary, sdk);

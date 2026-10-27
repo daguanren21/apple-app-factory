@@ -272,9 +272,10 @@ function sourceFiles(root: string, framework: Framework, activeDirectory: string
         if (entry.isFile() && entry.name === 'install-state.gz') resolutions.push(path);
         continue;
       }
-      if (entry.isSymbolicLink()) throw new Error(`Source symlinks are not trusted dependency inputs: ${path}`);
-      if (entry.isDirectory()) visit(absolute);
-      else if (entry.isFile()) files.push(path);
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) throw new Error(`Source symlinks are not trusted dependency inputs: ${path}`);
+      if (stat.isDirectory()) visit(absolute);
+      else if (stat.isFile()) files.push(path);
       else throw new Error(`Dependency input must be a regular source file: ${path}`);
     }
   }

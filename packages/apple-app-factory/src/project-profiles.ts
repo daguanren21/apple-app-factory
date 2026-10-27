@@ -27,8 +27,9 @@ function directories(root: string, framework: Framework, current = '', moduleOut
   for (const entry of readdirSync(join(root, current), { withFileTypes: true })) {
     const path = current ? `${current}/${entry.name}` : entry.name;
     if (isGeneratedPath(path, framework) || moduleOutputs.some(output => path === output || path.startsWith(`${output}/`))) continue;
-    if (entry.isSymbolicLink()) throw new Error(`Project source symlinks are not trusted: ${path}`);
-    if (entry.isDirectory()) result.push(...directories(root, framework, path, moduleOutputs));
+    const stat = lstatSync(join(root, path));
+    if (stat.isSymbolicLink()) throw new Error(`Project source symlinks are not trusted: ${path}`);
+    if (stat.isDirectory()) result.push(...directories(root, framework, path, moduleOutputs));
   }
   return result;
 }

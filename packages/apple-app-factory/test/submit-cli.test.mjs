@@ -7,6 +7,16 @@ import { run } from '../dist/process.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
+const publishable = {
+  ...product,
+  apple: {
+    ...product.apple, appId: '123', description: 'Offline packing and luggage weight planning.', keywords: 'packing,luggage',
+    supportUrl: 'https://example.org/support', privacyPolicyUrl: 'https://example.org/privacy',
+    reviewNotes: 'Controlled local metadata fixture.', copyright: 'Example Publisher',
+    contact: { firstName: 'Review', lastName: 'Contact', email: 'review@example.org', phone: '+12025550123' },
+    manualSetupConfirmed: true,
+  },
+};
 const cli = resolve('dist/cli.js');
 
 function fixture(t, overrides = {}) {
@@ -117,6 +127,64 @@ for (const kind of ['invalid-json', 'unknown-field', 'invalid-publication']) {
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, '');
     assert.equal(existsSync(f.inbox), false);
+    assert.equal(existsSync(f.stateDir), false);
+    assertNoExecution(f);
+  });
+}
+
+for (const [name, apple, expected] of [
+  ['missing Apple metadata', undefined, /spec\.apple\.appId/],
+  ['missing app ID', { ...publishable.apple, appId: undefined }, /spec\.apple\.appId/],
+  ['missing description', { ...publishable.apple, description: undefined }, /spec\.apple\.description/],
+  ['missing review contact', { ...publishable.apple, contact: { ...publishable.apple.contact, email: undefined } }, /spec\.apple\.contact\.email/],
+  ['missing legal attestation', { ...publishable.apple, manualSetupConfirmed: undefined }, /publisher’s attestation/],
+  ['unconfirmed legal attestation', { ...publishable.apple, manualSetupConfirmed: false }, /publisher’s attestation/],
+]) {
+  test(`publisher submit CLI rejects ${name} without inbox or state writes`, async t => {
+    const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
+    mkdirSync(f.stateDir);
+    writeFileSync(join(f.stateDir, 'sentinel'), 'unchanged queue state');
+    const before = statSync(f.stateDir, { bigint: true });
+    const result = await submit(f, { ...publishable, apple });
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, expected);
+    assert.equal(existsSync(f.inbox), false);
+    const after = statSync(f.stateDir, { bigint: true });
+    for (const field of ['ino', 'size', 'mtimeNs', 'ctimeNs']) assert.equal(after[field], before[field], field);
+    assert.deepEqual(readdirSync(f.stateDir), ['sentinel']);
+    assert.equal(readFileSync(join(f.stateDir, 'sentinel'), 'utf8'), 'unchanged queue state');
+    assertNoExecution(f);
+  });
+}
+
+test('publisher submit CLI admits complete controlled metadata without opening queue state', async t => {
+  const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
+  const result = await submit(f, publishable);
+  assert.equal(result.code, 0, result.stderr);
+  const published = JSON.parse(result.stdout);
+  assert.deepEqual(JSON.parse(readFileSync(published.path, 'utf8')), publishable);
+  assert.deepEqual(readdirSync(f.inbox), [published.path.slice(f.inbox.length + 1)]);
+  assert.equal(existsSync(f.stateDir), false);
+  assertNoExecution(f);
+});
+
+for (const [framework, platform, channel, packageTarget] of [
+  ['swift', 'ios', 'local', 'simulator'],
+  ['android-java', 'android', 'google-play', 'aab'],
+]) {
+  test(`${framework} ${channel} submit CLI needs no Apple metadata`, async t => {
+    const f = fixture(t, {
+      allowSubmit: false, packageTarget,
+      packaging: { commands: [['owner-build']], artifactPath: 'build/artifact' },
+    });
+    const result = await submit(f, { ...product, framework, platform, channel, apple: undefined });
+    assert.equal(result.code, 0, result.stderr);
+    const published = JSON.parse(result.stdout);
+    const request = JSON.parse(readFileSync(published.path, 'utf8'));
+    assert.equal(request.framework, framework);
+    assert.equal(request.channel, channel);
+    assert.equal(Object.hasOwn(request, 'apple'), false);
     assert.equal(existsSync(f.stateDir), false);
     assertNoExecution(f);
   });

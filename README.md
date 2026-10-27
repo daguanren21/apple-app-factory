@@ -51,8 +51,8 @@ apphx status
 
 ## 注意事项
 
-- **执行权限**：默认不开启本地执行、云构建、上传或发布。确认命令可信后，才在初始化时加 `--allow-local-execution`，或审阅已有配置并开启 `allowLocalExecution`。工作区不是安全沙箱；检查与真实运行验收都不能省略。
-- **工具链**：iOS 本地构建需要 macOS、完整 Xcode 和设备/模拟器；Android 需要匹配项目的 JDK、Android SDK 和设备/模拟器。模块名、scheme、产物路径与签名须按实际工程校准。`doctor` 通过不代表应用已运行。
+- **执行权限**：默认不开启本地执行、云构建、上传或发布。确认命令可信后，才加 `--allow-local-execution` 或开启 `allowLocalExecution`。`--build-only` 遇到配置或任务已有发布权限会拒绝执行，不会替你撤销权限。工作区不是安全沙箱；检查与真实运行验收都不能省略。
+- **工具链**：iOS 本地构建需要 macOS、完整 Xcode 和设备/模拟器；Android 需要匹配的 JDK、Android SDK 和设备/模拟器。配置外部 Flutter SDK 隔离克隆时，文件系统须支持写时复制。模块名、scheme、产物路径与签名按实际工程校准；`doctor` 通过不代表应用已运行。
 - **Expo / uni-app**：Expo 使用 EAS local 时仍需认证和签名配置，且不保证完全离线；不要求 prebuild/eject。经典 HBuilderX uni-app 不要求添加 package.json 或 npm 工程，保留原有构建与设备验收命令；WGT/H5 产物不能冒充 APK/IPA。
 - **源码与产物**：控制配置、状态目录和导入源必须分离。应用目录不能放在被排除的 build/cache 路径下；产物必须新生成，拒绝符号链接别名和旧产物。Gradle `files` / `dirs` 集合只支持可证明归属的字面量路径，不接受未计入快照的外部可变依赖。
 - **渠道**：默认 `channel: "local"`，不套用 Apple 上架规则。`google-play` 仅交接本地 AAB，没有自动上传器；App Store 上传须单独授权、准备真实元数据并核对回执。`built` 不等于上架或过审。

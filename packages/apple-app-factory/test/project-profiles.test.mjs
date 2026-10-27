@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { assertProject, buildInstructions, doctorCommands } from '../dist/project-profiles.js';
@@ -398,3 +400,35 @@ test('Gradle collection scanning skips quoted text, identifier prefixes and cons
   file(root, 'libs/files(1).jar', 'modified second owned library');
   assert.notEqual(dependencyDigest(root, 'android-java'), before);
 });
+
+for (const mode of ['dependencies', 'profile']) {
+  test(`${mode} revalidates a replaced directory before traversing outside owned source`, t => {
+    const root = fixture(t), outside = fixture(t);
+    mkdirSync(join(root, 'owned'));
+    file(root, 'owned/Inside.xcodeproj/project.pbxproj', '{ isa = PBXProject; }');
+    file(outside, 'Package.swift', '// swift-tools-version: 6.0\nlet package = Package(name: "Outside")');
+    file(outside, 'Outside.xcodeproj/project.pbxproj', '{ isa = PBXProject; }');
+    const external = fs.realpathSync(outside);
+    const original = fs.readdirSync;
+    let swapped = false, externalTraversal = false;
+    fs.readdirSync = function (directory, options) {
+      if (fs.realpathSync(directory).startsWith(external)) externalTraversal = true;
+      const entries = original.call(this, directory, options);
+      if (directory === root && options?.withFileTypes && !swapped) {
+        swapped = true;
+        fs.renameSync(join(root, 'owned'), join(root, 'retired'));
+        symlinkSync(outside, join(root, 'owned'), 'dir');
+      }
+      return entries;
+    };
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => mode === 'dependencies' ? dependencyDigest(root, 'swift') : assertProject(root, spec('swift')));
+      assert.equal(swapped, true);
+      assert.equal(externalTraversal, false);
+    } finally {
+      fs.readdirSync = original;
+      syncBuiltinESMExports();
+    }
+  });
+}

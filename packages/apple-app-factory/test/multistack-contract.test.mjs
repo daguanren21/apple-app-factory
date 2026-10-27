@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { once } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import { ConfigSchema, SpecSchema, validateJobConfig } from '../dist/schemas.js';
 import { loadConfig, validateProjectSource } from '../dist/config.js';
 import { dependencyDigest } from '../dist/dependencies.js';
@@ -55,6 +57,60 @@ function legacyQueue(t, version = 2, patch = {}) {
   const stores = [];
   t.after(() => { for (const store of stores) store.close(); db.close(); rmSync(root, { recursive: true, force: true }); });
   return { root, stateDir, id, saved, text, db, open() { const store = new Store(stateDir); stores.push(store); return store; } };
+}
+
+async function pauseMigrationBeforeLock(t, f, version) {
+  const gate = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const source = `
+    import { parentPort, workerData } from 'node:worker_threads';
+    import { DatabaseSync } from 'node:sqlite';
+    const { Store } = await import(workerData.module);
+    const original = DatabaseSync.prototype.exec;
+    let paused = false;
+    DatabaseSync.prototype.exec = function(sql) {
+      if (sql === 'BEGIN IMMEDIATE' && !paused) {
+        paused = true;
+        parentPort.postMessage({ version: Number(this.prepare('PRAGMA user_version').get().user_version) });
+        Atomics.wait(new Int32Array(workerData.gate), 0, 0);
+      }
+      return original.call(this, sql);
+    };
+    let result;
+    try {
+      const store = new Store(workerData.directory);
+      try { result = { job: store.get(workerData.id) }; }
+      finally { store.close(); }
+    } catch (error) {
+      result = { error: error.message };
+    } finally {
+      DatabaseSync.prototype.exec = original;
+    }
+    parentPort.postMessage(result);
+  `;
+  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), { workerData: { gate: gate.buffer, directory: f.stateDir, id: f.id, module: new URL('../dist/store.js', import.meta.url).href } });
+  t.after(async () => { await worker.terminate(); });
+  assert.deepEqual((await once(worker, 'message', { signal: AbortSignal.timeout(10000) }))[0], { version });
+  return async () => {
+    const completed = once(worker, 'message', { signal: AbortSignal.timeout(10000) });
+    const exited = once(worker, 'exit', { signal: AbortSignal.timeout(10000) });
+    Atomics.store(gate, 0, 1);
+    Atomics.notify(gate, 0);
+    const [result] = await completed;
+    assert.equal((await exited)[0], 0);
+    return result;
+  };
+}
+
+function migratedQueueSnapshot(db) {
+  return {
+    version: db.prepare('PRAGMA user_version').get().user_version,
+    schema: db.prepare('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name').all(),
+    jobs: db.prepare('SELECT * FROM jobs ORDER BY rowid').all(),
+    events: db.prepare('SELECT * FROM events ORDER BY seq').all(),
+    worker: db.prepare('SELECT * FROM worker ORDER BY id').all(),
+    inbox: db.prepare('SELECT * FROM inbox ORDER BY source').all(),
+    migrations: db.prepare('SELECT * FROM snapshot_migrations ORDER BY job,version').all(),
+  };
 }
 
 test('all supported stacks declare a platform and retain neutral release identities', () => {
@@ -257,6 +313,58 @@ for (const version of [1, 2]) test(`v${version} migration is transactional, snap
     assert.deepEqual(job.config.executionEnv, ['OWNER_CHECK_SETTING']);
     assert.equal(job.config.maxHostTurns, 12);
   }
+});
+
+for (const active of ['none', 'owner', 'turn']) test(`competing constructors preserve fresh v3 proof and all queue data (${active})`, async t => {
+  const f = legacyQueue(t);
+  const resume = await pauseMigrationBeforeLock(t, f, 2);
+  const store = f.open();
+  const expected = store.update(f.id, {
+    stage: 'review', status: 'waiting', error: null,
+    verifiedDigest: 'b'.repeat(64), verifiedDependencyDigest: 'c'.repeat(64), screenshotDigest: 'd'.repeat(64),
+    verifiedAt: new Date().toISOString(), review: f.saved.review,
+    artifact: { ...f.saved.artifact, digest: 'e'.repeat(64) },
+    receipt: { buildId: 'fresh-build' }, hostTurns: f.saved.hostTurns + 1,
+    logs: [...f.saved.logs, 'Fresh verification completed after migration'],
+    ...(active === 'turn' ? { turn: { id: randomUUID(), stage: 'review', createdAt: Date.now(), contextDigest: digest } } : {}),
+  });
+  if (active === 'owner') f.db.prepare('INSERT INTO worker VALUES(1,?)').run(process.pid);
+  const source = join(f.root, 'requirements.json');
+  const inbox = { source, digest, status: 'accepted', jobId: f.id, error: null, observedAt: Date.now() };
+  f.db.prepare('INSERT INTO inbox VALUES(?,?,?)').run(source, digest, JSON.stringify(inbox));
+  const before = migratedQueueSnapshot(f.db);
+  assert.deepEqual(await resume(), { job: expected });
+  assert.deepEqual(migratedQueueSnapshot(f.db), before);
+  assert.deepEqual(before.migrations.map(row => ({ ...row })), [{ job: f.id, version: 2, data: f.text }]);
+});
+
+test('a constructor rejects a newer schema reached while waiting without mutating the queue', async t => {
+  const f = legacyQueue(t);
+  const resume = await pauseMigrationBeforeLock(t, f, 2);
+  const store = f.open();
+  store.update(f.id, { stage: 'review', status: 'queued', verifiedDigest: 'b'.repeat(64), verifiedDependencyDigest: 'c'.repeat(64) });
+  f.db.exec('CREATE TABLE newer_schema_data (data TEXT NOT NULL); PRAGMA user_version=4;');
+  f.db.prepare('INSERT INTO newer_schema_data VALUES(?)').run('Preserve data owned by the newer factory');
+  const before = migratedQueueSnapshot(f.db);
+  const result = await resume();
+  assert.match(result.error, /Queue schema 4 is newer than this factory supports/);
+  assert.deepEqual(migratedQueueSnapshot(f.db), before);
+  assert.equal(f.db.prepare('SELECT data FROM newer_schema_data').get().data, 'Preserve data owned by the newer factory');
+});
+
+test('a constructor snapshots the actual intermediate legacy version and bytes found under lock', async t => {
+  const f = legacyQueue(t, 1);
+  const resume = await pauseMigrationBeforeLock(t, f, 1);
+  const text = JSON.stringify({ ...f.saved, logs: [...f.saved.logs, 'Updated by the v2 migrator'] });
+  f.db.exec('BEGIN IMMEDIATE');
+  f.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(text, f.id);
+  f.db.exec('PRAGMA user_version=2; COMMIT;');
+  const result = await resume();
+  assert.equal(result.error, undefined);
+  assert.equal(result.job.stage, 'verify');
+  assert.equal(result.job.hostTurns, f.saved.agentCalls);
+  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.deepEqual(f.db.prepare('SELECT * FROM snapshot_migrations').all().map(row => ({ ...row })), [{ job: f.id, version: 2, data: text }]);
 });
 
 test('migrated publication receipts block only their task while independent local verification runs', async t => {
