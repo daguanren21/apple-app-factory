@@ -1,6 +1,6 @@
 {
   "name": "apphx",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Host-native harness for verified Flutter app delivery",
   "license": "MIT",
   "type": "module",
