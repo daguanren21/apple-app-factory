@@ -47,9 +47,23 @@ export function loadConfig(path = 'factory.json'): Config & { configPath: string
     if (!child || !(child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child))) throw new Error('inbox.directory must be outside workspaceRoot so agent output cannot become new requirements');
   }
   if (!config.allowLocalExecution) config.executionWarning = 'Local execution is disabled. Use a dedicated OS account or VM, then set allowLocalExecution=true; a workspace is not a security sandbox.';
-  const stateChild = relative(canonicalPath(config.workspaceRoot), canonicalPath(config.stateDir));
-  if (!stateChild || !(stateChild === '..' || stateChild.startsWith(`..${sep}`) || isAbsolute(stateChild))) throw new Error('stateDir must be outside workspaceRoot so host tools do not own task state');
+  const state = canonicalPath(config.stateDir), workspace = canonicalPath(config.workspaceRoot);
+  if ([relative(workspace, state), relative(state, workspace)].some(child => !child || !(child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)))) throw new Error('stateDir and workspaceRoot must not overlap in either direction so host tools do not own task state');
   return { ...config, configPath };
+}
+
+export function validateProjectSource(spec: Spec, config: Config): string | undefined {
+  if (!spec.project?.sourceDir) return undefined;
+  const root = config.configPath ? dirname(resolve(config.configPath)) : process.cwd();
+  const source = resolve(root, spec.project.sourceDir);
+  const info = lstatSync(source);
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('project.sourceDir must identify a real directory, not a symlink');
+  const sourceDirectory = canonicalPath(source);
+  for (const path of [config.stateDir, config.workspaceRoot]) {
+    const reserved = canonicalPath(resolve(root, path));
+    if ([relative(reserved, sourceDirectory), relative(sourceDirectory, reserved)].some(child => !child || !(child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)))) throw new Error('project.sourceDir must not overlap stateDir or workspaceRoot in either direction');
+  }
+  return sourceDirectory;
 }
 
 export function inside(root: string, path: string): string {

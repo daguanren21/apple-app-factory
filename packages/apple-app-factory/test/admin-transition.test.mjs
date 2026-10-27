@@ -231,7 +231,7 @@ test('FIFO review feedback is rejected without blocking the queue or changing th
   assert.ifError(result.error);
   assert.notEqual(result.status, 0);
   assert.deepEqual(f.store.get(job.id), before);
-  const other = f.store.enqueue({ ...publishable, apple: { ...publishable.apple, version: '1.0.1' } }, f.config);
+  const other = f.store.enqueue({ ...publishable, version: '1.0.1' }, f.config);
   f.store.update(other.id, { error: 'Independent task persisted after invalid feedback' });
   assert.equal(f.store.get(other.id).error, 'Independent task persisted after invalid feedback');
 });

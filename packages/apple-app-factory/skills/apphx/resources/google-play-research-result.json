@@ -1,0 +1,10 @@
+{
+  "viable": false,
+  "policySources": [
+    { "rule": "repetitive-content", "url": "https://support.google.com/googleplay/android-developer/answer/9899034" },
+    { "rule": "user-data", "url": "https://support.google.com/googleplay/android-developer/answer/10144311" }
+  ],
+  "distinctness": "Unassessed Google Play example: compare actual utility with the supplied channel-scoped portfolio and read the current official policies.",
+  "risks": ["This example has not researched current policy contents, assessed the product, built an AAB or verified account eligibility.", "The harness hands off a local AAB and does not automate Google Play submission."],
+  "plan": ["Research current official repetitive-content and user-data rules, actual privacy behavior and meaningful distinctness.", "Assess the real Android runtime acceptance and signed AAB packaging profile; return a product-specific plan or preserve viable=false with blockers."]
+}

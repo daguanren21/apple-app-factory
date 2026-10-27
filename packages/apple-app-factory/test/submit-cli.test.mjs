@@ -112,7 +112,7 @@ test('build-only submit refuses authorized configuration before any writes', asy
 for (const kind of ['invalid-json', 'unknown-field', 'invalid-publication']) {
   test(`submit CLI rejects ${kind} before writing inbox or queue`, async t => {
     const f = fixture(t, kind === 'invalid-publication' ? { allowSubmit: true, packageTarget: 'ipa' } : {});
-    const input = kind === 'invalid-json' ? '{' : JSON.stringify(kind === 'unknown-field' ? { ...product, unknownField: true } : { ...product, apple: undefined });
+    const input = kind === 'invalid-json' ? '{' : JSON.stringify(kind === 'unknown-field' ? { ...product, unknownField: true } : { ...product, channel: 'local', apple: undefined });
     const result = await run([process.execPath, cli, 'submit', '-', '--config', f.configPath], { input });
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, '');

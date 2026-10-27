@@ -1,0 +1,20 @@
+{
+  "stateDir": ".factory",
+  "workspaceRoot": "workspaces",
+  "allowLocalExecution": false,
+  "allowSubmit": false,
+  "allowRelease": false,
+  "allowCloudBuild": false,
+  "packageTarget": "aab",
+  "executionEnv": ["ANDROID_HOME", "ANDROID_DEVICE_ID"],
+  "verification": {
+    "prerequisites": [["node", "--version"], ["java", "-version"], ["adb", "version"]],
+    "checks": [["npm", "run", "lint"], ["npm", "test", "--", "--runInBand"]],
+    "runtime": [["npm", "run", "test:e2e", "--", "--platform", "android", "--device", "${ANDROID_DEVICE_ID}"]]
+  },
+  "packaging": {
+    "provider": "local",
+    "commands": [["./native/android/gradlew", "-p", "native/android", ":app:bundleRelease"]],
+    "artifactPath": "native/android/app/build/outputs/bundle/release/app-release.aab"
+  }
+}

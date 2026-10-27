@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
-import { sourceDigest } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
+import { dependencyDigest } from '../dist/dependencies.js';
 import { scanInbox, submitRequirement } from '../dist/inbox.js';
 import { parseRequirement } from '../dist/requirements.js';
 
@@ -40,7 +41,7 @@ function changes(store) {
 function finishBase(store, job) {
   mkdirSync(job.workspace, { recursive: true });
   writeFileSync(join(job.workspace, 'model.dart'), 'verified predecessor fixture');
-  return store.update(job.id, { status: 'built', stage: 'package', verifiedDigest: sourceDigest(job.workspace) });
+  return store.update(job.id, { status: 'built', stage: 'package', verifiedDigest: sourceDigest(job.workspace), verifiedDependencyDigest: dependencyDigest(job.workspace, job.spec.framework) });
 }
 
 test('requirements reject permission injection and malformed predecessor IDs', () => {
@@ -102,7 +103,7 @@ test('a new version links its verified predecessor and semantic errors are retri
   f.put('base.json', product);
   const first = await scanInbox(f.open(), f.config);
   const base = f.open().get(first.entries[0].jobId);
-  const next = { ...product, apple: { ...product.apple, version: '2.0.0' }, baseJobId: base.id };
+  const next = { ...product, version: '2.0.0', baseJobId: base.id };
   f.put('next.json', next);
   const pending = await scanInbox(f.open(), f.config);
   assert.equal(pending.entries.find(entry => entry.source.endsWith('next.json')).status, 'error');
@@ -113,7 +114,7 @@ test('a new version links its verified predecessor and semantic errors are retri
   const successor = f.open().get(entry.jobId);
   assert.equal(successor.baseJobId, base.id);
   assert.equal(successor.baseDigest, f.open().get(base.id).verifiedDigest);
-  assert.equal(successor.spec.apple.version, '2.0.0');
+  assert.equal(successor.spec.version, '2.0.0');
   assert.notEqual(successor.workspace, base.workspace);
   assert.equal(f.open().list().length, 2);
   f.close();
@@ -163,7 +164,7 @@ test('observe detects canonical conflicts and invalid predecessors without creat
   const accepted = await scanInbox(f.open(), f.config);
   const id = accepted.entries[0].jobId;
   f.put('a-new.json', { ...product, name: 'Conflicting edit' });
-  f.put('b-invalid-base.json', { ...product, apple: { ...product.apple, version: '2.0.0' }, baseJobId: 'unknown-task' });
+  f.put('b-invalid-base.json', { ...product, version: '2.0.0', baseJobId: 'unknown-task' });
   f.put('c-corrupt.json', '{');
   f.put('d-duplicate.json', product);
   const before = changes(f.open());
@@ -177,14 +178,13 @@ test('observe detects canonical conflicts and invalid predecessors without creat
   assert.deepEqual(f.open().list(), jobs);
 });
 
-test('observe reports purpose-and-audience duplicates rather than promising acceptance', async t => {
+test('observe admits independent products with the same purpose and audience without durable writes', async t => {
   const f = fixture(t);
   f.open().enqueue(product, f.config);
-  f.put('renamed-product.json', { ...product, id: 'another-product', name: 'Another label' });
+  f.put('independent-product.json', { ...product, id: 'another-product', name: 'Another label' });
   const before = changes(f.open());
   const preview = await scanInbox(f.open(), f.config, { observe: true });
-  assert.equal(preview.entries[0].status, 'error');
-  assert.match(preview.entries[0].error, /purpose|audience|duplicate/i);
+  assert.equal(preview.entries[0].status, 'accepted');
   assert.equal(changes(f.open()), before);
   assert.deepEqual(f.open().inboxEntries(), []);
 });
@@ -197,7 +197,7 @@ test('observe detects conflicts between new files in the same scan without durab
   f.put('d-renamed-product.json', { ...product, id: 'another-product', name: 'Same purpose under another label' });
   const before = changes(f.open());
   const preview = await scanInbox(f.open(), f.config, { observe: true });
-  assert.deepEqual(preview.entries.map(entry => entry.status), ['accepted', 'accepted', 'error', 'error']);
+  assert.deepEqual(preview.entries.map(entry => entry.status), ['accepted', 'accepted', 'error', 'accepted']);
   assert.equal(changes(f.open()), before);
   assert.deepEqual(f.open().list(), []);
   assert.deepEqual(f.open().inboxEntries(), []);
@@ -235,17 +235,15 @@ test('submit is idempotent, bounds size and refuses nonregular or conflicting de
   assert.equal(existsSync(f.config.stateDir), false);
 });
 
-test('intake and submit validate publisher metadata only when submission is enabled', async t => {
+test('intake and submit reject automatic submission outside the App Store channel', async t => {
   const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
-  const { apple, ...localProduct } = product;
-  assert.throws(() => submitRequirement(f.config, localProduct), /spec\.apple\./);
+  const localProduct = { ...product, channel: 'local', apple: undefined };
+  assert.throws(() => submitRequirement(f.config, localProduct), /channel|app-store/i);
   f.put('local.json', localProduct);
   const result = await scanInbox(f.open(), f.config);
   assert.equal(result.entries[0].status, 'error');
-  assert.match(result.entries[0].error, /spec\.apple\./);
   assert.equal(f.open().list().length, 0);
-  const local = { ...f.config, allowSubmit: false, packageTarget: 'simulator' };
-  const accepted = await scanInbox(f.open(), local);
+  const accepted = await scanInbox(f.open(), { ...f.config, allowSubmit: false });
   assert.equal(accepted.entries[0].status, 'accepted');
 });
 

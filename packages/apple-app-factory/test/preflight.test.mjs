@@ -12,7 +12,7 @@ import { executeStep } from '../dist/runner.js';
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-preflight-'));
   const config = {
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'),
+    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator',
     allowLocalExecution: true, allowSubmit: false, allowRelease: false,
     pollMs: 25, retryDelayMs: 25, timeoutMs: 5000,
     maxAttempts: 3, maxHostTurns: 3, maxJobHours: 1, executionEnv: [],
@@ -21,7 +21,7 @@ function fixture(t, overrides = {}) {
   };
   const store = new Store(config.stateDir);
   t.after(() => { store.release(); store.close(); rmSync(root, { recursive: true, force: true }); });
-  const job = store.enqueue({ id: 'preflight-test', name: 'Prerequisite fixture', framework: 'flutter', differentiators: ['Configured environment checks'], acceptance: ['Resume only after readiness'], purpose: 'Test configured prerequisites', audience: 'Factory maintainers' }, config);
+  const job = store.enqueue({ id: 'preflight-test', name: 'Prerequisite fixture', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Configured environment checks'], acceptance: ['Resume only after readiness'], purpose: 'Test configured prerequisites', audience: 'Factory maintainers' }, config);
   return { root, config, store, job };
 }
 

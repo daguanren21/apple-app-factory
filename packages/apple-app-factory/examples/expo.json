@@ -1,0 +1,16 @@
+{
+  "id": "expo-field-notes",
+  "name": "Offline field notes",
+  "framework": "expo",
+  "platform": "android",
+  "channel": "local",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture field notes offline and restore an owner-exported backup",
+  "audience": "Field researchers",
+  "differentiators": ["Timestamped notes with a reversible local backup workflow"],
+  "acceptance": ["Create and edit a note offline, restart the app and recover the saved text", "Export notes, delete local data and restore the same notes from the export", "Run real device acceptance for both workflows using the project's test:e2e script and save actual screenshots"],
+  "constraints": ["Preserve this Expo project's managed or existing native layout, lockfile and scripts; do not run prebuild or eject an imported project", "Use the owner's existing real EAS local production profile in eas.json to produce build/app.aab; owner supplies EAS CLI authentication, SDK and signing prerequisites", "For APK choose an explicit eas.json apk profile with android.buildType apk and build/app.apk; for iOS use the appropriate local production IPA or simulator profile and exact output path", "Preserve the project's lint, test and test:e2e scripts; acceptance must launch the real native app, not only test web output", "No accounts, tracking, hidden features or network dependency in the app"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

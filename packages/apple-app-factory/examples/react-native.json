@@ -1,0 +1,16 @@
+{
+  "id": "rn-field-notes",
+  "name": "Offline field notes",
+  "framework": "react-native",
+  "platform": "android",
+  "channel": "local",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture field notes offline and restore an owner-exported backup",
+  "audience": "Field researchers",
+  "differentiators": ["Timestamped notes with a reversible local backup workflow"],
+  "acceptance": ["Create and edit a note offline, restart the app and recover the saved text", "Export notes, delete local data and restore the same notes from the export", "Run real device acceptance for both workflows using the project's test:e2e script and save actual screenshots"],
+  "constraints": ["Preserve React Native's android native host, lockfile and existing scripts; adapt lint, test and test:e2e to their real equivalents", "The test:e2e script must exercise the app on ANDROID_DEVICE_ID, not return a canned success", "No accounts, tracking, hidden features or network dependency"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

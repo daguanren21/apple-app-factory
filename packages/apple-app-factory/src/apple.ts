@@ -51,10 +51,10 @@ type Persist = (patch?: Partial<AppleReceipt>) => Promise<void>;
 type Write = (key: string, path: string, method: WriteMethod, body: unknown) => Promise<Resource | undefined>;
 type Reconcile = (key: string, resource: Resource) => Promise<Resource>;
 type LocalInventory = Map<string, Map<string, { bytes: Buffer; checksum: string }>>;
-const publishingFields = ['appId', 'bundleId', 'version', 'buildNumber', 'locale', 'description', 'keywords', 'supportUrl', 'privacyPolicyUrl', 'reviewNotes', 'copyright'] as const;
+const publishingFields = ['appId', 'bundleId', 'buildNumber', 'locale', 'description', 'keywords', 'supportUrl', 'privacyPolicyUrl', 'reviewNotes', 'copyright'] as const;
 const contactFields = ['firstName', 'lastName', 'email', 'phone'] as const;
-export type PublishingSpec = AppleSpec & Required<Pick<AppleSpec, typeof publishingFields[number]>> & { contact: Required<NonNullable<AppleSpec['contact']>>; manualSetupConfirmed: true };
-interface AppleOptions { spec: Pick<Spec, 'apple'>; state?: AppleReceipt; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
+export type PublishingSpec = AppleSpec & Required<Pick<AppleSpec, typeof publishingFields[number]>> & { version: string; screenshotsDir?: string; contact: Required<NonNullable<AppleSpec['contact']>>; manualSetupConfirmed: true };
+interface AppleOptions { spec: Pick<Spec, 'apple' | 'version' | 'screenshotsDir' | 'platform' | 'channel'>; state?: AppleReceipt; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
 interface ShipOptions extends AppleOptions { ipaPath: string; save: (receipt: AppleReceipt) => void | Promise<unknown>; run?: Run; allowRelease?: boolean }
 interface ScreenshotOptions {
   api: AppleClient; apple: PublishingSpec; localization: Resource;
@@ -188,8 +188,10 @@ export async function appleDoctor({ env = process.env }: { env?: NodeJS.ProcessE
   return checks;
 }
 
-export function validateAppleSpec(spec: Pick<Spec, 'apple'>): PublishingSpec {
-  const apple = spec?.apple;
+export function validateAppleSpec(spec: AppleOptions['spec']): PublishingSpec {
+  if (spec.platform !== 'ios' || spec.channel !== 'app-store') throw failure('Apple publication requires platform=ios and channel=app-store. Local delivery and other channels cannot authorize App Store writes.');
+  if (typeof spec.version !== 'string' || !spec.version.trim()) throw failure('spec.version is required before shipping.');
+  const apple = { ...spec.apple, version: spec.version, screenshotsDir: spec.screenshotsDir };
   for (const field of publishingFields) {
     const value = apple?.[field];
     if (typeof value !== 'string' || !value.trim()) throw failure(`spec.apple.${field} is required before shipping. Provide real publisher metadata, not generated placeholders.`);
@@ -502,14 +504,15 @@ async function verifyScreenshots({ api, apple, localization, localInventory, set
     if (inventory && names.size !== inventory.size) throw failure(`Remote screenshots for ${displayType} are missing files from screenshotsDir. Resume after the uploaded assets become visible.`, 'APPLE_PROCESSING');
   }
   if (localInventory && displayTypes.size !== localInventory.size) throw failure('Remote screenshot display sets are missing entries from screenshotsDir. Resume after the uploaded sets become visible.', 'APPLE_PROCESSING');
-  if (!complete) throw failure(`No processed screenshots exist for ${apple.locale}. Set spec.apple.screenshotsDir to real screenshots grouped by Apple display type, or upload screenshots in App Store Connect.`);
+  if (!complete) throw failure(`No processed screenshots exist for ${apple.locale}. Set spec.screenshotsDir to real screenshots grouped by Apple display type, or upload screenshots in App Store Connect.`);
 }
 
 
 export async function pollApple({ spec, state = {}, env = process.env, signal }: AppleOptions): Promise<ApplePollResult> {
   requireDeliveryProvenance(state);
-  const apple = spec?.apple;
-  if (!apple?.appId || !apple.version) throw failure('Polling requires spec.apple.appId and version.');
+  if (spec.platform !== 'ios' || spec.channel !== 'app-store') throw failure('Apple polling requires the App Store iOS channel.');
+  const apple = { ...spec.apple, version: spec.version };
+  if (!apple.appId || !apple.version) throw failure('Polling requires spec.apple.appId and spec.version.');
   const api = await client(env, signal);
   const version = await findVersion(api, apple.appId, apple.version);
   if (!version) return { status: 'waiting', detail: `Version ${apple.version} is not visible in App Store Connect.` };

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { loadConfig } from '../dist/config.js';
 import { Store } from '../dist/store.js';
-import { sourceDigest, executeStep } from '../dist/runner.js';
+import { executeStep } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
 import { dependencyDigest } from '../dist/dependencies.js';
 import { run } from '../dist/process.js';
 import { remoteCommand } from '../dist/remote.js';
@@ -37,7 +38,7 @@ for (const mode of ['artifact', 'missing', 'mutated-source']) {
     const store = new Store(f.config.stateDir);
     t.after(() => store.close());
     const spec = structuredClone(product);
-    delete spec.apple.screenshotsDir;
+    delete spec.screenshotsDir;
     const job = store.enqueue(spec, f.config);
     mkdirSync(join(job.workspace, 'build', 'ios', 'iphonesimulator', 'Stale.app'), { recursive: true });
     writeFileSync(join(job.workspace, 'build', 'ios', 'iphonesimulator', 'Stale.app', 'Runner'), 'old output');
@@ -123,7 +124,7 @@ for (const failure of ['missing-output', 'compiler-failure', 'interrupted']) {
     const store = new Store(f.config.stateDir);
     t.after(() => store.close());
     const spec = structuredClone(product);
-    delete spec.apple.screenshotsDir;
+    delete spec.screenshotsDir;
     const job = store.enqueue(spec, f.config);
     mkdirSync(job.workspace, { recursive: true });
     writeFileSync(join(job.workspace, 'model.dart'), 'unchanged verified source');

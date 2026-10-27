@@ -25,7 +25,7 @@ async function until(action, timeoutMs = 7000) {
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-recovery-'));
-  const config = { stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), pollMs: 25, verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } };
+  const config = { stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator', pollMs: 25, verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } };
   const stores = [], workers = [], groups = new Map(), pending = [];
   t.after(async () => {
     for (const worker of workers) {
@@ -58,7 +58,7 @@ function fixture(t) {
 }
 
 function enqueue(store, config) {
-  return store.enqueue({ id: 'recovery-test', name: 'Recovery fixture', framework: 'flutter', differentiators: ['Owned process recovery'], acceptance: ['Never replay live work'], purpose: 'Test command recovery', audience: 'Factory maintainers' }, config);
+  return store.enqueue({ id: 'recovery-test', name: 'Recovery fixture', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Owned process recovery'], acceptance: ['Never replay live work'], purpose: 'Test command recovery', audience: 'Factory maintainers' }, config);
 }
 
 function descendantCommand(ready, exitParent) {

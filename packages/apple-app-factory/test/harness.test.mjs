@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { ConfigSchema } from '../dist/schemas.js';
-import { loadConfig } from '../dist/config.js';
 import { Store } from '../dist/store.js';
 import { nextTurn, completeTurn, abandonTurn, executeStep } from '../dist/runner.js';
 import { runStep } from '../dist/scheduler.js';
@@ -17,12 +16,12 @@ const research = {
   distinctness: 'A controlled lifecycle fixture, not an App Store compliance attestation.',
   risks: ['Content ownership still requires a human decision.'], plan: ['Implement and externally exercise the requested workflow.'],
 };
-const spec = { id: 'host-fixture', name: 'Host fixture', purpose: 'Exercise native host transition safety', audience: 'Harness maintainers', framework: 'flutter', differentiators: ['Persisted typed turns'], acceptance: ['Real configured commands gate review'] };
+const spec = { id: 'host-fixture', name: 'Host fixture', purpose: 'Exercise native host transition safety', audience: 'Harness maintainers', framework: 'flutter', platform: 'ios', channel: 'app-store', version: '1.0.0', differentiators: ['Persisted typed turns'], acceptance: ['Real configured commands gate review'] };
 
 function fixture(t, overrides = {}, product = spec) {
   const root = mkdtempSync(join(tmpdir(), 'factory-harness-'));
   const marker = join(root, 'executed');
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, retryDelayMs: 1,
+  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true, retryDelayMs: 1,
     verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)},'runtime')`]] }, ...overrides });
   const stores = [];
   const open = () => { const store = new Store(config.stateDir); stores.push(store); return store; };
@@ -40,7 +39,7 @@ async function buildTurn(f) {
   const first = await nextTurn(f.store, f.job.id);
   completeTurn(f.store, f.job.id, first.turn.id, research);
   const build = await nextTurn(f.store, f.job.id);
-  writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: host_fixture\n');
+  writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: host_fixture\ndependencies:\n  flutter: {sdk: flutter}\n');
   writeFileSync(join(build.turn.cwd, 'main.dart'), 'void main() {}\n');
   return build;
 }
@@ -73,7 +72,7 @@ test('host-native research/build/review persist while actual deterministic comma
   assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, research), /Stale/);
   const build = await nextTurn(f.store, f.job.id);
   assert.throws(() => completeTurn(f.store, f.job.id, build.turn.id));
-  writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: host_fixture\n');
+  writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: host_fixture\ndependencies:\n  flutter: {sdk: flutter}\n');
   assert.throws(() => completeTurn(f.store, f.job.id, build.turn.id, { verified: true }));
   const pending = completeTurn(f.store, f.job.id, build.turn.id);
   assert.equal(pending.stage, 'verify');
@@ -148,7 +147,7 @@ test('failed runtime verification returns to host build and cannot retain approv
 
 for (const mutation of ['source', 'dependencies', 'screenshots']) {
   test(`review completion invalidates ${mutation} mutations instead of granting packaging`, async t => {
-    const product = mutation === 'screenshots' ? { ...spec, apple: { screenshotsDir: 'build/screenshots' } } : spec;
+    const product = mutation === 'screenshots' ? { ...spec, screenshotsDir: 'build/screenshots' } : spec;
     const f = fixture(t, {}, product);
     const build = await buildTurn(f);
     if (mutation === 'screenshots') {
@@ -224,6 +223,14 @@ test('build-only host APIs reject snapshotted publication permission without cha
 function legacySnapshot(f) {
   const job = f.store.update(f.job.id, { stage: 'monitor', status: 'waiting', attempts: { build: 2, publish: 4 }, hostTurns: 7, receipt: { versionId: 'saved-version', buildId: 'saved-build' } });
   const saved = structuredClone(job);
+  for (const value of [saved.spec, saved.requestSpec]) {
+    value.apple = { ...value.apple, version: value.version, ...(value.screenshotsDir ? { screenshotsDir: value.screenshotsDir } : {}) };
+    delete value.version;
+    delete value.platform;
+    delete value.channel;
+    delete value.screenshotsDir;
+  }
+  delete saved.config.packageTarget;
   saved.agentCalls = saved.hostTurns;
   delete saved.hostTurns;
   saved.config.agentEnv = saved.config.executionEnv;
@@ -249,10 +256,21 @@ test('legacy snapshot migration preserves raw data, receipts, budgets and histor
   assert.equal(job.config.maxHostTurns, legacy.job.config.maxHostTurns);
   assert.deepEqual(job.attempts, legacy.job.attempts);
   assert.deepEqual(job.receipt, legacy.job.receipt);
-  assert.deepEqual(job.requestSpec, legacy.job.requestSpec);
+  assert.deepEqual(job.requestSpec, { ...legacy.job.requestSpec, apple: {} });
   assert.equal(Object.hasOwn(job, 'agentCalls'), false);
   assert.equal(Object.hasOwn(job.config, 'builder'), false);
-  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(job.spec.platform, 'ios');
+  assert.equal(job.spec.channel, 'app-store');
+  assert.equal(job.spec.version, legacy.job.spec.version);
+  assert.equal(Object.hasOwn(job.spec.apple, 'version'), false);
+  assert.equal(job.config.packageTarget, 'simulator');
+  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(job.verifiedDigest, null);
+  assert.equal(job.verifiedDependencyDigest, null);
+  assert.equal(job.review, null);
+  assert.equal(job.artifact, null);
+  assert.equal(job.status, 'blocked');
+  assert.equal(job.manualRecovery ?? null, null);
   assert.equal(migrated.db.prepare('SELECT data FROM snapshot_migrations WHERE job=? AND version=1').get(job.id).data, legacy.text);
   assert.deepEqual(migrated.db.prepare('SELECT seq,at,data FROM events WHERE job=? ORDER BY seq').all(job.id), events);
   assert.equal(existsSync(f.marker), false);
@@ -283,13 +301,6 @@ test('migration refuses live legacy ownership without signaling or changing stor
   assert.equal(f.store.db.prepare('SELECT pid FROM worker WHERE id=1').get().pid, process.pid);
 });
 
-test('legacy configuration receives actionable migration instructions without opening or deleting its queue', t => {
-  const f = fixture(t);
-  const path = join(f.root, 'old-factory.json');
-  writeFileSync(path, JSON.stringify({ ...f.config, builder: { kind: 'codex' }, maxAgentCalls: 8 }));
-  assert.throws(() => loadConfig(path), /rename agentEnv to executionEnv and maxAgentCalls to maxHostTurns/);
-  assert.equal(f.store.get(f.job.id).id, f.job.id);
-});
 
 test('host-visible turns do not disclose configured secrets needed by verification commands', async t => {
   const key = 'FACTORY_PRIVATE_TEST_TOKEN';

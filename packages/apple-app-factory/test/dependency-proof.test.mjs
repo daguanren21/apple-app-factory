@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { dependencyDigest } from '../dist/dependencies.js';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
-import { executeStep, nextTurn, sourceDigest } from '../dist/runner.js';
+import { executeStep, nextTurn } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
 
 function file(path, content) {
   mkdirSync(dirname(path), { recursive: true });
@@ -17,11 +18,11 @@ function file(path, content) {
 function fixture(t, verification) {
   const root = mkdtempSync(join(tmpdir(), 'factory-dependency-proof-'));
   const noop = [process.execPath, '-e', 'process.exit(0)'];
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true,
+  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
     verification: verification ?? { checks: [noop], runtime: [noop] } });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
-  const spec = { id: 'dependency-proof', name: 'Dependency proof', purpose: 'Keep effective dependency resolution verified', audience: 'Owners', framework: 'flutter', differentiators: ['Resolution proof'], acceptance: ['Reject changed dependency resolution'], apple: { version: '1.0.0' } };
+  const spec = { id: 'dependency-proof', name: 'Dependency proof', purpose: 'Keep effective dependency resolution verified', audience: 'Owners', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Resolution proof'], acceptance: ['Reject changed dependency resolution'] };
   const job = store.enqueue(spec, config);
   file(join(job.workspace, 'pubspec.yaml'), 'name: app\ndependencies:\n  hosted_package: any\n  flutter: {sdk: flutter}\n  git_package: {git: https://example.invalid/package}\n');
   file(join(job.workspace, 'pubspec.lock'), 'packages:\n  hosted_package: {source: hosted, version: "1.0.0"}\n  flutter: {source: sdk, version: "1.0.0"}\n  git_package: {source: git, version: "1.0.0"}\n');
@@ -145,7 +146,7 @@ test('successor source copying does not require or inherit generated dependency 
   const source = sourceDigest(f.job.workspace);
   const dependencies = dependencyDigest(f.job.workspace);
   f.store.update(f.job.id, { status: 'built', stage: 'package', verifiedDigest: source, verifiedDependencyDigest: dependencies });
-  const successor = f.store.enqueue({ ...f.spec, apple: { version: '1.1.0' } }, f.config, f.job.id);
+  const successor = f.store.enqueue({ ...f.spec, version: '1.1.0' }, f.config, f.job.id);
   const result = await executeStep(f.store, f.store.update(successor.id, { stage: 'verify', status: 'running' }));
   assert.equal(result.basePrepared, true);
   assert.equal(result.blockedReason.kind, 'prerequisite');

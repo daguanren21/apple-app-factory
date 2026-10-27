@@ -2,8 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
-import { validateAppleSpec } from './apple.js';
-import { toError, type Config, type InboxEntry } from './schemas.js';
+import { toError, validateJobConfig, type Config, type InboxEntry } from './schemas.js';
 import { MAX_INPUT_BYTES, parseRequirement, readInputFile, type Requirement } from './requirements.js';
 import type { Store } from './store.js';
 
@@ -27,15 +26,15 @@ function requestValue({ spec, baseJobId }: Requirement): unknown {
 export function submitRequirement(config: Config, value: unknown): { path: string } {
   if (!config.inbox) throw new Error('No inbox is configured; set inbox.directory before submitting a requirement');
   const request = parseRequirement(value);
-  if (config.allowSubmit) validateAppleSpec(request.spec);
+  validateJobConfig(request.spec, config);
   const serialized = canonical(requestValue(request));
   const content = `${serialized}\n`;
   if (Buffer.byteLength(content) > MAX_INPUT_BYTES) throw new Error(`Requirement exceeds ${MAX_INPUT_BYTES} bytes; reduce its size`);
   const directory = resolve(config.inbox.directory);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const version = request.spec.apple?.version ?? '1.0.0';
+  const { platform, channel, version } = request.spec;
   const versionKey = createHash('sha256').update(version).digest('hex');
-  const path = join(directory, `${request.spec.id}-${versionKey}.json`);
+  const path = join(directory, `${request.spec.id}-${platform}-${channel}-${versionKey}.json`);
   const temporary = join(directory, `.requirement-${randomUUID()}.tmp`);
   const fd = openSync(temporary, 'wx', 0o600);
   try {
@@ -83,7 +82,7 @@ export async function scanInbox(store: Store, config: Config, options: { observe
       const bytes = readInputFile(source);
       digest = createHash('sha256').update(bytes).digest('hex');
       const request = parseRequirement(JSON.parse(bytes.toString('utf8')) as unknown);
-      if (config.allowSubmit) validateAppleSpec(request.spec);
+      validateJobConfig(request.spec, config);
       const old = previous.get(source);
       if (!observed && old?.status === 'accepted' && old.digest === digest && old.jobId && store.get(old.jobId).requestSpec !== null) {
         store.checkIngest(request.spec, request.baseJobId);

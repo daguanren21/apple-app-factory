@@ -1,0 +1,16 @@
+{
+  "id": "swift-field-notes",
+  "name": "Offline field notes",
+  "framework": "swift",
+  "platform": "ios",
+  "channel": "local",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture field notes offline and restore an owner-exported backup",
+  "audience": "Field researchers",
+  "differentiators": ["Timestamped notes with a reversible local backup workflow"],
+  "acceptance": ["Create and edit a note offline, restart the app and recover the saved text", "Export notes, delete local data and restore the same notes from the export", "Exercise both workflows in XCTest UI acceptance on the selected simulator and save actual screenshots"],
+  "constraints": ["Use App.xcodeproj with shared scheme App, app product App.app and real XCTest UI tests; adapt names to the owner's project", "No accounts, tracking, hidden features or network dependency"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

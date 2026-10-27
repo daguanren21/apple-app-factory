@@ -8,7 +8,8 @@ import { generateKeyPairSync } from 'node:crypto';
 import { Store } from '../dist/store.js';
 import { run, executionEnvironment } from '../dist/process.js';
 import { expandArgv, loadConfig, inside } from '../dist/config.js';
-import { sourceDigest, executeStep, nextTurn } from '../dist/runner.js';
+import { executeStep, nextTurn } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
 
 const cli = resolve('dist/cli.js');
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
@@ -49,15 +50,18 @@ test('queue survives process restart and blocks execution without its upfront pe
   assert.equal(existsSync(join(f.config.stateDir, 'queue.sqlite')), true);
 });
 
-test('duplicate products and versions cannot silently create another app under a new label', t => {
+test('queue identity is product, platform, channel and version rather than purpose or label', t => {
   const f = fixture(t);
   const store = database(t, f.config);
   const first = store.enqueue(product, f.config);
   assert.throws(() => store.enqueue(product, f.config));
-  assert.throws(() => store.enqueue({ ...product, id: 'renamed-product', name: 'Another label' }, f.config));
-  const update = store.enqueue({ ...product, apple: { ...product.apple, version: '1.1.0' } }, f.config);
-  assert.notEqual(first.workspace, update.workspace);
-  assert.deepEqual(store.list().map(job => job.spec.apple.version), ['1.0.0', '1.1.0']);
+  const independent = store.enqueue({ ...product, id: 'independent-product', name: 'Independent label' }, f.config);
+  assert.equal(independent.spec.purpose, first.spec.purpose);
+  const local = store.enqueue({ ...product, channel: 'local' }, f.config);
+  const android = store.enqueue({ ...product, platform: 'android', channel: 'local' }, { ...f.config, packageTarget: 'apk' });
+  const update = store.enqueue({ ...product, version: '1.1.0' }, f.config);
+  assert.equal(new Set([first, independent, local, android, update].map(job => job.workspace)).size, 5);
+  assert.equal(update.spec.version, '1.1.0');
 });
 
 test('one execution owns a queue and a restart preserves attempt and host-turn budgets', t => {
@@ -185,9 +189,10 @@ test('ordinary retry cannot escalate permissions or rewrite an existing manual-r
   assert.equal(retried.code, 0, retried.stderr);
   assert.equal(store.get(job.id).config.allowSubmit, false);
   assert.equal(store.get(job.id).config.allowRelease, false);
-  store.update(job.id, { stage: 'monitor', status: 'blocked', config: { ...f.config, packageTarget: 'ipa', allowSubmit: true, allowRelease: false }, receipt: { versionId: 'version', buildId: 'build' } });
+  const pending = store.update(job.id, { stage: 'monitor', status: 'blocked', config: { ...f.config, packageTarget: 'ipa', allowSubmit: true, allowRelease: false }, receipt: { versionId: 'version', buildId: 'build' } });
   const observed = await run([process.execPath, cli, 'retry', job.id, '--config', f.path]);
-  assert.equal(observed.code, 0, observed.stderr);
+  assert.notEqual(observed.code, 0);
+  assert.deepEqual(store.get(job.id), pending);
   assert.equal(store.get(job.id).config.allowRelease, false);
   assert.deepEqual(store.get(job.id).receipt, { versionId: 'version', buildId: 'build' });
 });
@@ -209,7 +214,7 @@ test('interruption during verification is resumable without erasing completed fa
   const f = fixture(t, { allowLocalExecution: true, maxAttempts: 2, verification: { checks: [[process.execPath, '-e', "require('node:fs').writeFileSync('started','yes');setInterval(()=>{},1000)"]], runtime: [[process.execPath, '-e', 'process.exit(0)']] } });
   const store = database(t, f.config);
   const spec = structuredClone(product);
-  delete spec.apple.screenshotsDir;
+  delete spec.screenshotsDir;
   const job = store.enqueue(spec, f.config);
   const controller = new AbortController();
   const active = executeStep(store, store.update(job.id, { stage: 'verify', attempts: { verify: 1 } }), { signal: controller.signal });

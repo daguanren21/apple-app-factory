@@ -1,0 +1,16 @@
+{
+  "id": "local-flutter-notes",
+  "name": "Offline field notes",
+  "framework": "flutter",
+  "platform": "ios",
+  "channel": "local",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture field notes offline and restore an owner-exported backup",
+  "audience": "Field researchers",
+  "differentiators": ["Timestamped notes with a reversible local backup workflow"],
+  "acceptance": ["Create and edit a note offline, restart the app and recover the saved text", "Export notes, delete local data and restore the same notes from the export", "Complete both workflows with large text and screen-reader labels; save actual device screenshots"],
+  "constraints": ["Use Flutter with real integration_test/app_test.dart and test_driver/integration_test.dart runtime coverage", "No accounts, tracking, hidden features or network dependency"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

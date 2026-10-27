@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isAbsolute, win32 } from 'node:path';
 import { AppleReceiptSchema } from './apple-types.js';
 
 const text = z.string().min(1).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
@@ -6,26 +7,51 @@ const count = z.number().int().nonnegative().safe();
 const positive = z.number().positive().finite();
 const command = z.array(text).min(1);
 
+function relativeProjectPath(value: string, allowRoot = false): boolean {
+  if (allowRoot && value === '.') return true;
+  return !isAbsolute(value) && !win32.isAbsolute(value) && !/[\\:*?\[\]]/.test(value)
+    && value.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+}
 
+export const FrameworkSchema = z.enum(['flutter', 'android-java', 'swift', 'react-native', 'expo', 'uni-app']);
+export type Framework = z.infer<typeof FrameworkSchema>;
+export const PlatformSchema = z.enum(['ios', 'android']);
+export type Platform = z.infer<typeof PlatformSchema>;
+export const ChannelSchema = z.enum(['local', 'app-store', 'google-play']);
+export type Channel = z.infer<typeof ChannelSchema>;
+export const PackageTargetSchema = z.enum(['simulator', 'ipa', 'apk', 'aab']);
+export type PackageTarget = z.infer<typeof PackageTargetSchema>;
 export const AppleSpecSchema = z.strictObject({
-  appId: text.optional(), bundleId: text.optional(), version: text.optional(), buildNumber: text.optional(), locale: text.optional(),
+  appId: text.optional(), bundleId: text.optional(), buildNumber: text.optional(), locale: text.optional(),
   description: text.optional(), keywords: text.optional(), supportUrl: text.optional(), privacyPolicyUrl: text.optional(), reviewNotes: text.optional(),
-  copyright: text.optional(), whatsNew: text.optional(), storefrontCountry: text.optional(), screenshotsDir: text.optional(), manualSetupConfirmed: z.boolean().optional(),
+  copyright: text.optional(), whatsNew: text.optional(), storefrontCountry: text.optional(), manualSetupConfirmed: z.boolean().optional(),
   contact: z.strictObject({ firstName: text.optional(), lastName: text.optional(), email: text.optional(), phone: text.optional() }).optional(),
 });
 export type AppleSpec = z.infer<typeof AppleSpecSchema>;
-export const SpecSchema = z.strictObject({
+const SpecObject = z.strictObject({
   id: text.regex(/^[a-z][a-z0-9-]{1,62}$/), name: text, purpose: text, audience: text,
-  framework: z.literal('flutter'), differentiators: z.array(text).min(1), acceptance: z.array(text).min(1),
+  framework: FrameworkSchema, platform: PlatformSchema, channel: ChannelSchema.default('local'), version: text.default('1.0.0'),
+  project: z.strictObject({ sourceDir: text.optional(), directory: text.refine(value => relativeProjectPath(value, true), 'project.directory must be a relative in-root directory without traversal').default('.') }).optional(),
+  screenshotsDir: text.optional(), differentiators: z.array(text).min(1), acceptance: z.array(text).min(1),
   constraints: z.array(text).optional(), apple: AppleSpecSchema.optional(),
   hiddenFeatures: z.literal(false).optional(), reviewBypass: z.literal(false).optional(),
 });
+function refineSpec(value: z.infer<typeof SpecObject>, context: z.RefinementCtx): void {
+  if (value.framework === 'android-java' && value.platform !== 'android') context.addIssue({ code: 'custom', path: ['platform'], message: 'android-java requires platform=android' });
+  if (value.framework === 'swift' && value.platform !== 'ios') context.addIssue({ code: 'custom', path: ['platform'], message: 'swift requires platform=ios' });
+  if (value.channel === 'app-store' && value.platform !== 'ios') context.addIssue({ code: 'custom', path: ['channel'], message: 'app-store requires platform=ios' });
+  if (value.channel === 'google-play' && value.platform !== 'android') context.addIssue({ code: 'custom', path: ['channel'], message: 'google-play requires platform=android' });
+}
+export const SpecSchema = SpecObject.superRefine(refineSpec);
 export type Spec = z.infer<typeof SpecSchema>;
-export const RequirementSchema = SpecSchema.extend({ baseJobId: z.uuid().optional() });
+export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optional() }).superRefine((value, context) => {
+  refineSpec(value, context);
+  if (value.baseJobId && value.project?.sourceDir) context.addIssue({ code: 'custom', path: ['project', 'sourceDir'], message: 'project.sourceDir and baseJobId are mutually exclusive' });
+});
 
 export const ConfigSchema = z.strictObject({
   configPath: text.optional(), stateDir: text, workspaceRoot: text,
-  allowLocalExecution: z.boolean().default(false), allowSubmit: z.boolean().default(false), allowRelease: z.boolean().default(false),
+  allowLocalExecution: z.boolean().default(false), allowSubmit: z.boolean().default(false), allowRelease: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
   executionEnv: z.array(text.regex(/^[A-Z][A-Z0-9_]*$/).refine(value => !/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value), 'Publisher credentials must not be passed to host or verification tools')).default([]),
   timeoutMs: positive.default(900000), maxAttempts: positive.int().default(3), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
   retryDelayMs: positive.default(30000), pollMs: positive.default(300000),
@@ -33,12 +59,23 @@ export const ConfigSchema = z.strictObject({
   verification: z.strictObject({ prerequisites: z.array(command).default([]), checks: z.array(command).min(1), runtime: z.array(command).min(1) }),
   toolchain: z.strictObject({ flutterSdk: text }).optional(),
   apple: z.strictObject({ exportOptionsPlist: text.optional() }).optional(),
-  packageTarget: z.enum(['simulator', 'ipa']).optional(), executionWarning: text.optional(),
-}).transform(value => ({ ...value, packageTarget: value.packageTarget ?? (value.allowSubmit ? 'ipa' as const : 'simulator' as const) })).superRefine((value, context) => {
-  if (value.allowSubmit && value.packageTarget !== 'ipa') context.addIssue({ code: 'custom', path: ['packageTarget'], message: 'Submission requires packageTarget=ipa; simulator builds cannot be uploaded' });
+  packageTarget: PackageTargetSchema, executionWarning: text.optional(),
+  packaging: z.strictObject({ commands: z.array(command).min(1), artifactPath: text.refine(value => relativeProjectPath(value), 'artifactPath must be an exact project-relative file or directory without traversal or wildcards'), provider: z.enum(['local', 'cloud']).default('local') }).optional(),
+}).superRefine((value, context) => {
+  if (value.allowSubmit && value.packageTarget !== 'ipa') context.addIssue({ code: 'custom', path: ['packageTarget'], message: 'Submission requires packageTarget=ipa' });
+  if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) context.addIssue({ code: 'custom', path: ['allowCloudBuild'], message: 'Cloud packaging requires explicit allowCloudBuild=true' });
   if (value.allowRelease && !value.allowSubmit) context.addIssue({ code: 'custom', path: ['allowRelease'], message: 'allowRelease requires allowSubmit' });
 });
 export type Config = z.infer<typeof ConfigSchema>;
+export function validateJobConfig(spec: Spec, config: Config): void {
+  const iosTarget = config.packageTarget === 'simulator' || config.packageTarget === 'ipa';
+  if ((spec.platform === 'ios') !== iosTarget) throw new Error(`packageTarget=${config.packageTarget} does not match platform=${spec.platform}`);
+  if (spec.channel === 'google-play' && config.packageTarget !== 'aab') throw new Error('Google Play requires packageTarget=aab');
+  if (config.allowSubmit && spec.channel !== 'app-store') throw new Error('Automatic submission is supported only for channel=app-store');
+  if (config.toolchain && spec.framework !== 'flutter') throw new Error('toolchain.flutterSdk is only supported for framework=flutter');
+  if (spec.framework !== 'flutter' && !config.packaging) throw new Error(`${spec.framework} requires owner-configured packaging.commands and packaging.artifactPath`);
+  if (config.packaging?.provider === 'cloud' && !config.allowCloudBuild) throw new Error('Cloud packaging requires explicit allowCloudBuild=true');
+}
 export const StageSchema = z.enum(['research', 'build', 'verify', 'review', 'package', 'publish', 'monitor']);
 export type Stage = z.infer<typeof StageSchema>;
 export const StatusSchema = z.enum(['queued', 'running', 'waiting', 'blocked', 'failed', 'ready', 'built', 'approved', 'released']);
@@ -57,7 +94,7 @@ export const ResearchSchema = z.strictObject({
 export type Research = z.infer<typeof ResearchSchema>;
 export const ReviewSchema = z.strictObject({ approved: z.boolean(), findings: z.array(text), acceptanceEvidence: z.array(z.strictObject({ requirement: text, evidence: text })) });
 export type Review = z.infer<typeof ReviewSchema>;
-export const ArtifactSchema = z.strictObject({ kind: z.enum(['ios-simulator', 'ipa']), path: text, digest: text.regex(/^[a-f0-9]{64}$/), createdAt: z.iso.datetime() });
+export const ArtifactSchema = z.strictObject({ kind: z.enum(['ios-simulator', 'ipa', 'apk', 'aab']), path: text, digest: text.regex(/^[a-f0-9]{64}$/), createdAt: z.iso.datetime() });
 export type Artifact = z.infer<typeof ArtifactSchema>;
 export const ApplePollResultSchema = z.strictObject({ status: z.enum(['waiting', 'approved', 'rejected']), detail: text, distributionReady: z.boolean().optional(), available: z.boolean().optional() });
 export const InboxEntrySchema = z.strictObject({
@@ -77,6 +114,7 @@ export const JobSchema = z.object({
   attempts: z.partialRecord(StageSchema, count), hostTurns: count, turn: HostTurnSchema.nullable().optional(), groups: z.array(z.number().int()),
   commands: z.record(z.string(), CommandMetadataSchema).default({}), receipt: AppleReceiptSchema, logs: z.array(text), workspace: text,
   baseJobId: z.uuid().optional(), baseDigest: text.regex(/^[a-f0-9]{64}$/).optional(), basePrepared: z.boolean().optional(),
+  sourceDirectory: text.refine(isAbsolute, 'sourceDirectory must be absolute').optional(), importDigest: text.regex(/^[a-f0-9]{64}$/).optional(), importPrepared: z.boolean().optional(), cloudBuildPending: z.boolean().optional(),
   recoveryStage: StageSchema.optional(),
   blockedReason: z.strictObject({ kind: z.literal('prerequisite'), stage: StageSchema, prerequisite: PrerequisiteSchema }).nullable().optional(),
   manualRecovery: z.string().nullable().optional(), error: z.string().nullable().optional(), feedback: z.string().optional(),

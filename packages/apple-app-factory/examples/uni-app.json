@@ -1,0 +1,16 @@
+{
+  "id": "uni-field-notes",
+  "name": "Offline field notes",
+  "framework": "uni-app",
+  "platform": "android",
+  "channel": "local",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture field notes offline and restore an owner-exported backup",
+  "audience": "Field researchers",
+  "differentiators": ["Timestamped notes with a reversible local backup workflow"],
+  "acceptance": ["Create and edit a note offline, restart the app and recover the saved text", "Export notes, delete local data and restore the same notes from the export", "Run real device acceptance for both workflows using the project's test:e2e script and save actual screenshots"],
+  "constraints": ["Use a CLI uni-app project with an owner-maintained native/android offline SDK host and app Gradle module", "During the host build turn, run the existing real build:app script and integrate its generated App resources into the native host before verification; packaging only compiles that verified host", "Adapt lint, test and test:e2e to the project's existing scripts; do not replace native acceptance with H5-only tests", "Owner supplies the DCloud offline SDK, app identifiers and release signing; do not convert or rewrite an existing project", "No accounts, tracking, hidden features or network dependency"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}
