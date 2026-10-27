@@ -2,3 +2,7 @@ apphx@1.0.0:
   dir: packages/apple-app-factory
   intents:
     - native-harness-workspace
+apphx@1.1.0:
+  dir: packages/apple-app-factory
+  intents:
+    - wise-walls-bathe

@@ -1,5 +1,11 @@
 # apphx
 
+## 1.1.0
+
+### Minor Changes
+
+- Unify the npm package, CLI and Skill as apphx. The app-factory command and apple-app-factory Skill are replaced; uninstall old unmodified Skills before upgrading, then install apphx in the same scope. Configuration schemas, application data and task state are preserved. For SSH, update remote.json's executable to the absolute apphx path on the Mac host. Update existing scheduler command and Skill references to apphx.
+
 ## 1.0.0
 
 ### Major Changes
