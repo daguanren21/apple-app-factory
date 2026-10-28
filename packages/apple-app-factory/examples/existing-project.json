@@ -1,0 +1,17 @@
+{
+  "id": "existing-field-notes",
+  "name": "Existing field notes app revision",
+  "framework": "react-native",
+  "platform": "android",
+  "channel": "local",
+  "version": "1.1.0",
+  "project": { "sourceDir": "/absolute/path/to/existing-repository", "directory": "apps/mobile" },
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Extend the existing offline notes app with reversible backup restore",
+  "audience": "The existing application's field researchers",
+  "differentiators": ["Preserve the existing native integrations and add validated backup restore"],
+  "acceptance": ["Existing create, edit and restart persistence tests still pass on the configured Android device", "Export notes, delete local data and restore the same notes from the export", "Reject a malformed backup without changing existing data; capture actual device screenshots"],
+  "constraints": ["Snapshot the source repository and work only inside the returned task workspace, never the original sourceDir", "Keep apps/mobile and its android native host, scripts and lockfile; adapt the paired commands to the existing package manager", "No ejection, framework migration, hidden features or review bypass"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

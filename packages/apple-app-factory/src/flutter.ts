@@ -35,7 +35,7 @@ export function flutterEnvironment(config: Config, workspace: string, base: Node
 export async function prepareFlutter(job: Pick<Job, 'config' | 'workspace' | 'spec' | 'stage' | 'toolchain'>, { run, env, signal }: PrepareFlutterOptions): Promise<Toolchain | null> {
   if (!job.config.toolchain?.flutterSdk) return null;
   signal?.throwIfAborted();
-  if (process.platform !== 'darwin') throw unavailable('Isolated iOS Flutter SDK preparation requires macOS clone-capable storage.', 'platform', job.workspace);
+  if (!['darwin', 'linux'].includes(process.platform)) throw unavailable('Isolated Flutter SDK preparation requires macOS or Linux storage.', 'platform', job.workspace);
   let source: string;
   try { source = realpathSync(job.config.toolchain.flutterSdk); }
   catch (error) { throw unavailable(`Flutter SDK is unavailable at the configured toolchain.flutterSdk: ${toError(error).message}`, 'missing-sdk', job.config.toolchain.flutterSdk); }
@@ -73,7 +73,7 @@ export async function prepareFlutter(job: Pick<Job, 'config' | 'workspace' | 'sp
     let version: FlutterIdentity;
     try { version = FlutterIdentitySchema.parse(JSON.parse(initialized.stdout)); }
     catch { throw unavailable('Flutter --version --machine returned no valid version metadata.', 'sdk-version', source); }
-    const prepared = await run([join(source, 'bin', 'flutter'), '--suppress-analytics', 'precache', '--ios'], { env: { ...flutterEnvironment(job.config, job.workspace, env, true), FLUTTER_ROOT: source }, signal });
+    const prepared = await run([join(source, 'bin', 'flutter'), '--suppress-analytics', 'precache', `--${job.spec.platform}`], { env: { ...flutterEnvironment(job.config, job.workspace, env, true), FLUTTER_ROOT: source }, signal });
     if (prepared.code !== 0) throw unavailable(`Cannot prepare Flutter artifacts before agent execution: ${prepared.stderr || prepared.stdout}`, 'sdk-artifacts', source);
     const identity = { source, frameworkRevision: version.frameworkRevision, engineRevision: version.engineRevision };
     checkVersion(pin ?? identity);
@@ -82,19 +82,13 @@ export async function prepareFlutter(job: Pick<Job, 'config' | 'workspace' | 'sp
     writeFileSync(marker, JSON.stringify(metadata), { mode: 0o600 });
     const temporary = mkdtempSync(join(cache, 'flutter-clone-'));
     try {
-      const cloned = await run(['/bin/cp', '-cRp', `${source}/.`, temporary], { signal });
+      const cloned = await run(process.platform === 'darwin' ? ['/bin/cp', '-cRp', `${source}/.`, temporary] : ['cp', '--reflink=always', '-Rp', `${source}/.`, temporary], { signal });
       if (cloned.code !== 0) throw unavailable(`Cannot create the workspace-local copy-on-write SDK: ${cloned.stderr || cloned.stdout}`, 'sdk-clone', source);
       signal?.throwIfAborted();
       renameSync(temporary, sdk);
     } finally { rmSync(temporary, { recursive: true, force: true }); }
   }
   if (metadata?.ready) return metadata;
-  if (job.stage === 'build' && !existsSync(join(job.workspace, 'pubspec.yaml'))) {
-    const bundle = job.spec.apple?.bundleId;
-    const organization = typeof bundle === 'string' && bundle.includes('.') ? bundle.slice(0, bundle.lastIndexOf('.')) : 'com.example';
-    const created = await run([join(sdk, 'bin', 'flutter'), '--suppress-analytics', 'create', '--no-pub', '--platforms=ios', '--project-name', job.spec.id.replaceAll('-', '_'), '--org', organization, '.'], { env, signal });
-    if (created.code !== 0) throw unavailable(`Cannot bootstrap the Flutter project: ${created.stderr || created.stdout}`, 'sdk-bootstrap', sdk);
-  }
   metadata = ToolchainSchema.parse({ ...metadata, ready: true });
   writeFileSync(marker, JSON.stringify(metadata), { mode: 0o600 });
   return metadata;

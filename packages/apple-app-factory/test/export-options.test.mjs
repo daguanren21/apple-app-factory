@@ -7,7 +7,8 @@ import { prepareExportOptions } from '../dist/export-options.js';
 import { run } from '../dist/process.js';
 import { loadConfig } from '../dist/config.js';
 import { Store } from '../dist/store.js';
-import { executeStep, sourceDigest } from '../dist/runner.js';
+import { executeStep } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
 import { dependencyDigest } from '../dist/dependencies.js';
 
 for (const destination of [undefined, 'export']) {
@@ -50,7 +51,7 @@ test('IPA destination=upload is blocked before the compiler and leaves no export
   const store = new Store(config.stateDir);
   t.after(() => store.close());
   const spec = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
-  delete spec.apple.screenshotsDir;
+  delete spec.screenshotsDir;
   const job = store.enqueue(spec, config);
   mkdirSync(job.workspace, { recursive: true });
   writeFileSync(join(job.workspace, 'source.dart'), 'verified fixture');

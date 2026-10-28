@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, cpSync, existsSync, mkdtempSync, renameSync, constants } from 'node:fs';
-import { join, relative, delimiter } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
+import { join, relative, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { run, executionEnvironment, processGroupAlive } from './process.js';
 import { shipApple, pollApple } from './apple.js';
@@ -7,84 +7,26 @@ import { inside, expandArgv } from './config.js';
 import { checkPrerequisites } from './preflight.js';
 import { flutterEnvironment, prepareFlutter } from './flutter.js';
 import { prepareExportOptions } from './export-options.js';
-import { GENERATED_PATHS, dependencyDigest, isGeneratedPath, validateLocalDependencies } from './dependencies.js';
-import { ResearchSchema, ReviewSchema, toError } from './schemas.js';
+import { dependencyDigest, generatedModulePaths, isGeneratedPath } from './dependencies.js';
+import { ReviewSchema, toError, validateJobConfig } from './schemas.js';
 import type { Job, HostStage, Stage } from './schemas.js';
 import type { Run, RunOptions } from './process.js';
 import type { Store } from './store.js';
+import { sourceDigest, prepareWorkspace, projectDirectory, artifactOutputPath } from './workspace.js';
+import { parseResearch, researchPrompt } from './policy.js';
+import { assertProject, buildInstructions } from './project-profiles.js';
 
-const REQUIRED_POLICY_RULES = ['2.1', '2.3.1', '2.5.19', '4.2', '4.2.6', '4.3', '5.1.1'];
-
-export function sourceDigest(root: string, omitGenerated = true): string {
-  if (lstatSync(root).isSymbolicLink()) throw new Error('A source or screenshot root cannot be a symlink');
-  if (omitGenerated) {
-    for (const path of GENERATED_PATHS) inside(root, path);
-    validateLocalDependencies(root);
-  }
-  const hash = createHash('sha256');
-  function visit(directory: string): void {
-    for (const entry of readdirSync(directory).sort()) {
-      const path = join(directory, entry);
-      if (omitGenerated && isGeneratedPath(relative(root, path))) continue;
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink()) throw new Error(`Source symlink is not permitted: ${relative(root, path)}`);
-      if (stat.isDirectory()) visit(path);
-      else if (stat.isFile()) hash.update(relative(root, path)).update('\0').update(`${stat.size}:${stat.mode & 0o777}\0`).update(readFileSync(path));
-    }
-  }
-  visit(root);
-  return hash.digest('hex');
-}
 
 function requireDependencyProof(job: Job): void {
   if (!job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution proof is missing; retry this stopped task to re-run verification'), { code: 'SETUP_REQUIRED' });
-  if (dependencyDigest(job.workspace) !== job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution changed since verification; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
+  if (dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory) !== job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution changed since verification; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
 }
 
-export function parseVerdict(text: string): unknown {
-  const content = text.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
-  try { return JSON.parse(content); }
-  catch { throw new Error('Host did not return a JSON verdict; no approval was inferred from text or an exit code'); }
-}
 
-export function parseResearch(text: string) {
-  const research = ResearchSchema.parse(parseVerdict(text));
-  const cited = new Set();
-  for (const source of Array.isArray(research?.policySources) ? research.policySources : []) {
-    if (typeof source?.url !== 'string') continue;
-    try {
-      const url = new URL(source.url);
-      if (url.protocol === 'https:' && url.hostname === 'developer.apple.com') cited.add(source.rule);
-    } catch {}
-  }
-  if (typeof research?.viable !== 'boolean' || !REQUIRED_POLICY_RULES.every(rule => cited.has(rule)) || typeof research.distinctness !== 'string' || !research.distinctness.trim() || !Array.isArray(research.plan) || !research.plan.length || research.plan.some(step => typeof step !== 'string' || !step.trim())) {
-    throw new Error('Research verdict requires boolean viability, all required official policy references, distinctness reasoning and a concrete implementation plan');
-  }
-  return research;
-}
-function prepareWorkspace(store: Store, job: Job): void {
-  if (!job.baseJobId || job.basePrepared) return;
-  const base = store.get(job.baseJobId);
-  if (!job.baseDigest || sourceDigest(base.workspace) !== job.baseDigest) throw Object.assign(new Error('Predecessor source changed since intake; refusing to copy unverified code'), { code: 'SETUP_REQUIRED' });
-  if (existsSync(job.workspace)) {
-    if (sourceDigest(job.workspace) !== job.baseDigest) throw Object.assign(new Error('Uninitialized successor workspace differs from its verified predecessor; inspect it before retrying'), { code: 'SETUP_REQUIRED' });
-  } else {
-    mkdirSync(job.config.workspaceRoot, { recursive: true, mode: 0o700 });
-    const staging = mkdtempSync(join(job.config.workspaceRoot, `.${job.id}.base-`));
-    const prepared = join(staging, 'source');
-    try {
-      cpSync(base.workspace, prepared, { recursive: true, force: false, errorOnExist: true, mode: constants.COPYFILE_FICLONE,
-        filter: path => !isGeneratedPath(relative(base.workspace, path)) });
-      if (sourceDigest(prepared) !== job.baseDigest || sourceDigest(base.workspace) !== job.baseDigest) throw new Error('Predecessor changed while copying; no successor was initialized');
-      renameSync(prepared, job.workspace);
-    } finally { rmSync(staging, { recursive: true, force: true }); }
-  }
-  store.update(job.id, { basePrepared: true });
-}
 
 
 function taskPrompt(job: Job): string {
-  return `You are the native host of an embedded Flutter app Harness. Use your own context, tools and native delegation in ${job.workspace}; never launch another coding-agent CLI. Implement only this product. Never hide functionality from App Review or use obfuscation to imitate distinct utility. Do not upload, submit, push, read publisher credentials or change factory state. These instructions constrain this workflow, not arbitrary host tools: the workspace is not a security sandbox. Complete real implementations, not placeholders.\nImmutable product requirements:\n${JSON.stringify(job.spec, null, 2)}\nPrevious verification/review failure (repair the mechanism, never weaken acceptance):\n${job.feedback ?? job.error ?? 'none'}\nPersisted execution logs:\n${JSON.stringify(job.logs.slice(-3))}\nContinue existing work. Only actual deterministic checks performed by the Harness establish verification; host claims do not.\n`;
+  return `You are the native host of an embedded multi-stack app Harness. Use your own context, tools and native delegation in ${projectDirectory(job)}; never launch another coding-agent CLI. Preserve the requested framework and existing architecture. Implement only this product. Never hide functionality from users or reviewers. Do not upload, submit, push, read publisher credentials or change factory state. Remote build commands belong only to the explicitly authorized Harness packaging profile, not host turns. The workspace is not a security sandbox. Complete real implementations, not placeholders.\nImmutable product requirements:\n${JSON.stringify(job.spec, null, 2)}\nPrevious verification/review failure (repair the mechanism, never weaken acceptance):\n${job.feedback ?? job.error ?? 'none'}\nPersisted execution logs:\n${JSON.stringify(job.logs.slice(-3))}\nContinue existing work. Only actual deterministic checks performed by the Harness establish verification; host claims do not.\n`;
 }
 
 export interface TurnOptions { buildOnly?: boolean }
@@ -113,9 +55,9 @@ function deadlineExpired(job: Job): boolean {
 
 function requireReviewProof(job: Job): void {
   try {
-    if (!job.verifiedDigest || sourceDigest(job.workspace) !== job.verifiedDigest) throw new Error('Source changed since verification; stale evidence cannot approve a release');
+    if (!job.verifiedDigest || sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest) throw new Error('Source changed since verification; stale evidence cannot approve a release');
     requireDependencyProof(job);
-    if (job.spec.apple?.screenshotsDir && sourceDigest(inside(job.workspace, job.spec.apple.screenshotsDir), false) !== job.screenshotDigest) throw new Error('Screenshots changed since runtime verification; stale evidence cannot approve a release');
+    if (job.spec.screenshotsDir && sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) !== job.screenshotDigest) throw new Error('Screenshots changed since runtime verification; stale evidence cannot approve a release');
   } catch (cause) {
     const error = toError(cause);
     if (error.code !== 'SETUP_REQUIRED') error.code = 'EVIDENCE_CHANGED';
@@ -127,20 +69,20 @@ function hostAction(store: Store, job: Job): HostAction {
   const turn = job.turn!;
   let instruction: string;
   if (turn.stage === 'research') {
-    const portfolio = store.list().filter(value => value.id !== job.id).map(value => ({ id: value.spec.id, purpose: value.spec.purpose, audience: value.spec.audience, differentiators: value.spec.differentiators }));
-    instruction = `Research only with your own host tools. Retrieve the current official Apple review guidelines at https://developer.apple.com/app-store/review/guidelines/ and assess rules ${REQUIRED_POLICY_RULES.join(', ')}, offline persistence/backup and distinct utility against portfolio ${JSON.stringify(portfolio)}. Assess content ownership and submitting account compliance with rule 4.2.6; report unknowns rather than inventing attestations. Return a typed JSON result {"viable":boolean,"policySources":[{"rule":"4.2","url":"https://developer.apple.com/..."}],"distinctness":"specific reasoning","risks":["..."],"plan":["concrete step"]}. Cite all required rules. These host-supplied citations are not independently verified policy evidence. Do not promise App Store approval.`;
+    const portfolio = store.list().filter(value => value.id !== job.id && value.spec.channel === job.spec.channel).map(value => ({ id: value.spec.id, purpose: value.spec.purpose, audience: value.spec.audience, differentiators: value.spec.differentiators }));
+    instruction = researchPrompt(job, portfolio);
   } else if (turn.stage === 'build') {
-    instruction = `Research plan: ${JSON.stringify(job.research)}\nCreate a complete iOS Flutter project in this cwd if absent. Implement the entire product, persistence and validated backup/restore, accessibility and realistic empty/error states. Include real integration_test and test_driver acceptance workflows and real simulator screenshots under the requested screenshots directory; never fake screenshots or bypass tests. Use the returned environment with your own tools. The configured SDK, if any, is external to source; keep development caches task-local. Frozen checks: ${JSON.stringify(job.config.verification)}. Complete this turn without a result payload when source is ready; the Harness will then run verification, not infer success.`;
+    instruction = `Research plan: ${JSON.stringify(job.research)}\n${buildInstructions(job.spec)} Implement the entire requested product, accessibility and realistic empty/error states. Add genuine device/simulator acceptance workflows and real screenshots when requested; never fake screenshots or bypass tests. Do not add unrequested offline/backup/account features. Use the returned environment with your tools. Frozen verification and packaging: ${JSON.stringify({ verification: job.config.verification, packaging: job.config.packaging, packageTarget: job.config.packageTarget })}. Complete this turn without a result payload when source is ready; the Harness will then execute verification, not infer success.`;
   } else {
-    instruction = `Use a native independent reviewer with a fresh context when your host supports one. Review actual source and acceptance tests read-only; do not edit files. If independent review is unavailable, disclose that limitation rather than claim a separate reviewer. Verified source: ${job.verifiedDigest}; dependency resolution: ${job.verifiedDependencyDigest}; actual checks: ${JSON.stringify(job.config.verification)}. Reject incomplete workflows, data loss, untested backup/corrupt import, fake screenshots, accessibility failures, placeholders, misleading legal claims, weak tests, hidden features and repetitive products. Return typed JSON {"approved":boolean,"findings":["blocking issue"],"acceptanceEvidence":[{"requirement":"exact acceptance string","evidence":"file/symbol + observed command or scenario"}]}. Cover every acceptance requirement. Host reviewer identity is advisory; the Harness gates only typed results and unchanged deterministic evidence.`;
+    instruction = `Use an independent reviewer with fresh context when supported; otherwise disclose the limitation. Review actual source and acceptance read-only. Verified source: ${job.verifiedDigest}; dependency resolution: ${job.verifiedDependencyDigest}; actual checks: ${JSON.stringify(job.config.verification)}. Reject incomplete requirements, data loss, fake screenshots, accessibility failures, placeholders, weak tests, hidden features and violations of the selected ${job.spec.channel} channel, not unrelated store rules. Return typed JSON {"approved":boolean,"findings":["blocking issue"],"acceptanceEvidence":[{"requirement":"exact acceptance string","evidence":"file/symbol + observed command or device scenario"}]}. Cover every acceptance requirement. Reviewer identity is advisory; the Harness gates typed results and unchanged execution evidence.`;
   }
   // Host-visible JSON carries only task overrides, never inherited credential values.
-  const environment = flutterEnvironment(job.config, job.workspace, { CI: '1' });
-  if (job.config.toolchain) {
+  const environment = job.spec.framework === 'flutter' ? flutterEnvironment(job.config, job.workspace, { CI: '1' }) : { CI: '1' } as NodeJS.ProcessEnv;
+  if (job.spec.framework === 'flutter' && job.config.toolchain) {
     environment.FLUTTER_ROOT = job.config.toolchain.flutterSdk;
     environment.PATH = `${join(job.config.toolchain.flutterSdk, 'bin')}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ''}`;
   }
-  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt: taskPrompt(job) + instruction, cwd: job.workspace, environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)) } };
+  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt: taskPrompt(job) + instruction, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)) } };
 }
 
 function repair(job: Job, message: string): Partial<Job> {
@@ -185,7 +127,7 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
     try {
       if (job.stage === 'review') requireReviewProof(job);
       prepareWorkspace(store, job);
-      mkdirSync(job.workspace, { recursive: true, mode: 0o700 });
+      mkdirSync(projectDirectory(job), { recursive: true, mode: 0o700 });
     } catch (cause) {
       const error = toError(cause);
       job = store.update(id, error.code === 'SETUP_REQUIRED' || job.stage !== 'review'
@@ -215,12 +157,11 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
     if (deadlineExpired(job)) return { turn: null, status: 'failed', error: 'Task wall-clock limit reached; the expired host result was not accepted' };
     let patch: Partial<Job>;
     if (job.stage === 'research') {
-      const research = parseResearch(JSON.stringify(ResearchSchema.parse(result)));
+      const research = parseResearch(JSON.stringify(result), job.spec.channel);
       patch = research.viable ? { stage: 'build', research } : { status: 'failed', research, error: 'Research rejected this product; no replacement product or review evasion will be attempted' };
     } else if (job.stage === 'build') {
       if (result !== undefined) throw new Error('Build completion accepts no result payload; actual deterministic verification is required');
-      const project = inside(job.workspace, 'pubspec.yaml');
-      if (!lstatSync(project).isFile()) throw new Error('Build completion requires a regular pubspec.yaml in the task workspace');
+      assertProject(projectDirectory(job), job.spec);
       patch = { stage: 'verify', verifiedDigest: null, verifiedDependencyDigest: null, screenshotDigest: null, verifiedAt: undefined, review: null, artifact: null, ipaPath: null, archiveDigest: null };
     } else {
       const review = ReviewSchema.parse(result);
@@ -260,8 +201,8 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
   const attemptNumber = (job.attempts[job.stage] ?? 0) + 1;
   let attempts = { ...job.attempts };
   let attemptCharged = false;
-  const developerEnv = flutterEnvironment(config, job.workspace, executionEnvironment(config));
-  const verifierEnv = flutterEnvironment(config, job.workspace, executionEnvironment(config), true);
+  const developerEnv = job.spec.framework === 'flutter' ? flutterEnvironment(config, job.workspace, executionEnvironment(config)) : executionEnvironment(config);
+  const verifierEnv = job.spec.framework === 'flutter' ? flutterEnvironment(config, job.workspace, executionEnvironment(config), true) : developerEnv;
   const environment = ['verify', 'package'].includes(job.stage) ? verifierEnv : developerEnv;
   const logPath = join(config.stateDir, 'logs', job.id, `${job.stage}-${attemptNumber}-${Date.now()}.log`);
   store.update(job.id, { logs: [...job.logs, logPath] });
@@ -271,7 +212,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       const effectiveEnv = options.env ?? environment;
       const command = effectiveEnv.FLUTTER_ROOT && ['flutter', 'dart'].includes(argv[0]) ? [join(effectiveEnv.FLUTTER_ROOT, 'bin', argv[0]), ...argv.slice(1)] : argv;
       const result = await run(command, {
-        cwd: job.workspace, env: effectiveEnv, timeoutMs: config.timeoutMs, signal, logPath, ...options,
+        cwd: projectDirectory(job), env: effectiveEnv, timeoutMs: config.timeoutMs, signal, logPath, ...options,
         onSpawn: (value, metadata) => {
           pid = value;
           const current = store.get(job.id);
@@ -292,13 +233,14 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     }
   };
   try {
+    validateJobConfig(job.spec, config);
     prepareWorkspace(store, job);
-    mkdirSync(job.workspace, { recursive: true, mode: 0o700 });
+    mkdirSync(projectDirectory(job), { recursive: true, mode: 0o700 });
     if (job.stage === 'verify' || job.stage === 'package') {
-      await checkPrerequisites(config.verification.prerequisites ?? [], { cwd: job.workspace, env: environment, run: exec, signal });
+      await checkPrerequisites(config.verification.prerequisites ?? [], { cwd: projectDirectory(job), env: environment, run: exec, signal });
     }
     if ((job.attempts[job.stage] ?? 0) >= config.maxAttempts && !['publish', 'monitor'].includes(job.stage)) return store.update(job.id, { status: 'failed', error: `Attempt limit reached at ${job.stage}` });
-    if (config.toolchain && ['verify', 'package'].includes(job.stage)) {
+    if (job.spec.framework === 'flutter' && config.toolchain && ['verify', 'package'].includes(job.stage)) {
       const toolchain = await prepareFlutter(job, { run: exec, env: developerEnv, signal });
       if (toolchain) store.update(job.id, { toolchain });
     }
@@ -306,65 +248,87 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     store.update(job.id, { attempts });
     attemptCharged = true;
     if (job.stage === 'verify') {
-      if (config.toolchain) {
+      if (job.spec.framework === 'flutter' && config.toolchain) {
         const dependencies = await exec(['flutter', 'pub', 'get']);
         if (dependencies.code !== 0) throw new Error(`Verification dependency resolution failed: ${dependencies.stderr.slice(-4000)}`);
       }
-      const before = sourceDigest(job.workspace);
-      const dependenciesBefore = dependencyDigest(job.workspace);
+      const before = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory);
+      const dependenciesBefore = dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory);
       for (const argv of [...config.verification.checks, ...config.verification.runtime]) {
         const result = await exec(expandArgv(argv, executionEnvironment(config)));
         if (result.code !== 0) throw new Error(`Verification failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
       }
-      if (sourceDigest(job.workspace) !== before) throw new Error('Verification changed source files; the new revision must be verified again');
-      if (dependencyDigest(job.workspace) !== dependenciesBefore) throw new Error('Verification changed dependency resolution; the new resolution must be verified again');
-      const screenshotDigest = job.spec.apple?.screenshotsDir ? sourceDigest(inside(job.workspace, job.spec.apple.screenshotsDir), false) : null;
+      if (sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== before) throw new Error('Verification changed source files; the new revision must be verified again');
+      if (dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory) !== dependenciesBefore) throw new Error('Verification changed dependency resolution; the new resolution must be verified again');
+      const screenshotDigest = job.spec.screenshotsDir ? sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) : null;
       return next(store, job, 'review', { verifiedDigest: before, verifiedDependencyDigest: dependenciesBefore, screenshotDigest, verifiedAt: new Date().toISOString() });
     }
     if (job.stage === 'package') {
       requireReviewProof(job);
       if (!job.review?.approved || job.review.findings.length) throw new Error('Packaging requires an approved host review');
-      if (process.platform !== 'darwin') throw Object.assign(new Error('iOS packaging requires the Mac worker; use the SSH controller from Linux'), { code: 'SETUP_REQUIRED' });
       const target = config.packageTarget;
-      if (config.allowSubmit && target !== 'ipa') throw Object.assign(new Error('Only a verified IPA can enter publication'), { code: 'SETUP_REQUIRED' });
-      const output = inside(job.workspace, target === 'ipa' ? 'build/ios/ipa' : 'build/ios/iphonesimulator');
-      if (target === 'ipa' && !config.apple?.exportOptionsPlist) throw Object.assign(new Error('Configure apple.exportOptionsPlist and valid local signing before IPA packaging'), { code: 'SETUP_REQUIRED' });
-      const apple = job.spec.apple;
-      if (target === 'ipa' && (!apple?.version || !apple.buildNumber)) throw Object.assign(new Error('apple.version and apple.buildNumber are required for signing'), { code: 'SETUP_REQUIRED' });
-      let exportOptions: { directory: string; path: string } | undefined;
-      let built;
-      try {
-        if (target === 'ipa') exportOptions = await prepareExportOptions(config.apple!.exportOptionsPlist!, config.stateDir, exec);
-        store.update(job.id, { artifact: null, ipaPath: null, archiveDigest: null });
+      const project = projectDirectory(job);
+      const profile = config.packaging;
+      if (job.cloudBuildPending) throw Object.assign(new Error('A previous cloud build may have remote effects. Reconcile it with the provider before creating a new task; this build will not be replayed.'), { code: 'SETUP_REQUIRED' });
+      if (job.spec.platform === 'ios' && profile?.provider !== 'cloud' && process.platform !== 'darwin') throw Object.assign(new Error('Local iOS packaging requires a macOS worker'), { code: 'SETUP_REQUIRED' });
+      let path: string;
+      store.update(job.id, { artifact: null, ipaPath: null, archiveDigest: null });
+      if (profile) {
+        const output = artifactOutputPath(project, profile.artifactPath);
+        const outputRelative = relative(job.workspace, output).split(sep).join('/');
+        let generated = isGeneratedPath(profile.artifactPath, job.spec.framework);
+        if (!generated) for (const module of generatedModulePaths(job.workspace, job.spec.framework, job.spec.project?.directory)) if (outputRelative.startsWith(`${module}/`)) { generated = true; break; }
+        if (!generated || !/(?:^|\/)(?:build|dist|unpackage)(?:\/|$)/.test(profile.artifactPath) || /(?:^|\/)(?:node_modules|\.git|\.gradle|\.factory-cache|Pods)(?:\/|$)/.test(profile.artifactPath)) throw Object.assign(new Error('packaging.artifactPath must name an exact generated build/dist/unpackage artifact, never source or dependency caches'), { code: 'SETUP_REQUIRED' });
+        if (!output.endsWith(target === 'simulator' ? '.app' : `.${target}`)) throw Object.assign(new Error(`packaging.artifactPath must end in ${target === 'simulator' ? '.app' : `.${target}`}`), { code: 'SETUP_REQUIRED' });
         rmSync(output, { recursive: true, force: true });
-        const command = target === 'ipa'
-          ? ['flutter', 'build', 'ipa', '--release', '--build-name', apple!.version!, '--build-number', apple!.buildNumber!, '--export-options-plist', exportOptions!.path]
-          : ['flutter', 'build', 'ios', '--simulator', '--debug', '--no-pub'];
-        built = await exec(command);
-      } finally { if (exportOptions) rmSync(exportOptions.directory, { recursive: true, force: true }); }
-      if (built.code !== 0) throw new Error(`iOS ${target} build failed: ${built.stderr.slice(-5000)}`);
-      if (sourceDigest(job.workspace) !== job.verifiedDigest) throw Object.assign(new Error('Packaging changed source; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
+        if (profile.provider === 'cloud') store.update(job.id, { cloudBuildPending: true });
+        for (const argv of profile.commands) {
+          const result = await exec(expandArgv(argv, executionEnvironment(config)));
+          if (result.code !== 0) throw new Error(`Packaging failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
+        }
+        path = artifactOutputPath(project, profile.artifactPath);
+      } else {
+        const output = artifactOutputPath(project, target === 'ipa' ? 'build/ios/ipa' : target === 'simulator' ? 'build/ios/iphonesimulator' : target === 'apk' ? 'build/app/outputs/flutter-apk' : 'build/app/outputs/bundle/release');
+        if (target === 'ipa' && !config.apple?.exportOptionsPlist) throw Object.assign(new Error('Configure apple.exportOptionsPlist and valid local signing before IPA packaging'), { code: 'SETUP_REQUIRED' });
+        if (target === 'ipa' && !job.spec.apple?.buildNumber) throw Object.assign(new Error('apple.buildNumber is required for IPA signing'), { code: 'SETUP_REQUIRED' });
+        let exportOptions: { directory: string; path: string } | undefined;
+        try {
+          if (target === 'ipa') exportOptions = await prepareExportOptions(config.apple!.exportOptionsPlist!, config.stateDir, exec);
+          rmSync(output, { recursive: true, force: true });
+          const argv = target === 'ipa'
+            ? ['flutter', 'build', 'ipa', '--release', '--build-name', job.spec.version, '--build-number', job.spec.apple!.buildNumber!, '--export-options-plist', exportOptions!.path]
+            : target === 'simulator' ? ['flutter', 'build', 'ios', '--simulator', '--debug', '--no-pub']
+              : ['flutter', 'build', target === 'apk' ? 'apk' : 'appbundle', '--release', '--no-pub', '--build-name', job.spec.version];
+          const built = await exec(argv);
+          if (built.code !== 0) throw new Error(`${job.spec.framework} ${target} build failed: ${built.stderr.slice(-5000)}`);
+        } finally { if (exportOptions) rmSync(exportOptions.directory, { recursive: true, force: true }); }
+        const products = readdirSync(output).filter(name => name.endsWith(target === 'simulator' ? '.app' : `.${target}`));
+        if (products.length !== 1) throw new Error(`Expected exactly one ${target} artifact in ${relative(job.workspace, output)}`);
+        path = artifactOutputPath(project, join(relative(project, output), products[0]));
+      }
+      if (sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest) throw Object.assign(new Error('Packaging changed source; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
       requireDependencyProof(job);
-      const products = readdirSync(output).filter(name => name.endsWith(target === 'ipa' ? '.ipa' : '.app'));
-      if (products.length !== 1) throw new Error(`Expected exactly one ${target === 'ipa' ? 'IPA' : 'simulator app'} in ${relative(job.workspace, output)}`);
-      const path = inside(job.workspace, join(relative(job.workspace, output), products[0]));
-      const digest = target === 'ipa' ? createHash('sha256').update(readFileSync(path)).digest('hex') : sourceDigest(path, false);
-      const artifact = { kind: target === 'ipa' ? 'ipa' as const : 'ios-simulator' as const, path, digest, createdAt: new Date().toISOString() };
-      if (!config.allowSubmit) return store.update(job.id, { status: 'built', artifact, error: null });
-      return next(store, job, 'publish', { artifact, ipaPath: path, archiveDigest: digest });
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || (target === 'simulator' ? !stat.isDirectory() || readdirSync(path).length === 0 : !stat.isFile() || stat.size === 0)) throw new Error('Packaging did not produce a nonempty regular artifact of the requested kind');
+      const digest = target === 'simulator' ? sourceDigest(path, false) : createHash('sha256').update(readFileSync(path)).digest('hex');
+      const artifact = { kind: target === 'simulator' ? 'ios-simulator' as const : target, path, digest, createdAt: new Date().toISOString() };
+      if (!config.allowSubmit) return store.update(job.id, { status: 'built', artifact, cloudBuildPending: false, error: null });
+      return next(store, job, 'publish', { artifact, ipaPath: path, archiveDigest: digest, cloudBuildPending: false });
     }
     if (job.stage === 'publish') {
       if (!config.allowSubmit) throw Object.assign(new Error('This task has no upload/submission permission'), { code: 'SETUP_REQUIRED' });
       if (!job.ipaPath || !job.archiveDigest) throw new Error('Publication requires a completed verified IPA artifact');
-      if (sourceDigest(job.workspace) !== job.verifiedDigest || createHash('sha256').update(readFileSync(job.ipaPath)).digest('hex') !== job.archiveDigest) throw new Error('Source or archive changed after verification; refusing publication');
+      if (job.spec.channel !== 'app-store' || job.spec.platform !== 'ios') throw Object.assign(new Error('Automatic publishing is available only for the App Store channel'), { code: 'SETUP_REQUIRED' });
+      if (sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest || createHash('sha256').update(readFileSync(job.ipaPath)).digest('hex') !== job.archiveDigest) throw new Error('Source or archive changed after verification; refusing publication');
       requireDependencyProof(job);
       const spec = structuredClone(job.spec);
-      if (spec.apple?.screenshotsDir) spec.apple.screenshotsDir = inside(job.workspace, spec.apple.screenshotsDir);
-      if (spec.apple?.screenshotsDir && sourceDigest(spec.apple.screenshotsDir, false) !== job.screenshotDigest) throw new Error('Screenshots changed after runtime verification; refusing to upload different assets');
+      if (spec.screenshotsDir) spec.screenshotsDir = inside(projectDirectory(job), spec.screenshotsDir);
+      if (spec.screenshotsDir && sourceDigest(spec.screenshotsDir, false) !== job.screenshotDigest) throw new Error('Screenshots changed after runtime verification; refusing to upload different assets');
       const receipt = await shipApple({ spec, ipaPath: job.ipaPath, state: store.get(job.id).receipt, save: receipt => { store.update(job.id, { receipt }); }, run: exec, signal, allowRelease: config.allowRelease });
       return next(store, job, 'monitor', { receipt, status: 'waiting', nextAt: Date.now() + config.pollMs });
     }
     if (job.stage === 'monitor') {
+      if (job.spec.channel !== 'app-store') throw Object.assign(new Error('Monitoring requires the App Store channel'), { code: 'SETUP_REQUIRED' });
       const result = await pollApple({ spec: job.spec, state: job.receipt, signal });
       if (result.status === 'approved' && (result.available || !config.allowRelease)) return store.update(job.id, { status: result.available ? 'released' : 'approved', appleReview: result, error: null });
       if (result.status === 'rejected') {
@@ -375,6 +339,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     throw new Error(`Unknown task stage ${job.stage}`);
   } catch (cause) {
     const error = toError(cause);
+    if (store.get(job.id).cloudBuildPending) return store.update(job.id, { status: 'blocked', blockedReason: null, error: `Cloud build outcome requires provider reconciliation; automatic replay is forbidden. ${error.message}` });
     if (error.code === 'PROCESS_CLEANUP_BLOCKED') return store.update(job.id, { status: 'blocked', blockedReason: null, manualRecovery: error.message, error: error.message });
     if (signal?.aborted) return store.update(job.id, { status: 'waiting', attempts: { ...attempts, [job.stage]: job.attempts[job.stage] ?? 0 }, nextAt: Date.now(), error: error.message });
     if (error.code === 'PREREQUISITE_FAILED' && error.prerequisite) return store.update(job.id, { status: 'blocked', blockedReason: { kind: 'prerequisite', stage: job.stage, prerequisite: error.prerequisite }, attempts: { ...job.attempts }, nextAt: Date.now() + config.pollMs, error: error.message });

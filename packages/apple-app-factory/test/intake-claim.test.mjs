@@ -102,17 +102,25 @@ test('feedback changes operational build identity without changing original inta
   assert.throws(() => restarted.update(id, { requestSpec: { ...product, name: 'Attempted snapshot rewrite' } }));
 });
 
+function legacySnapshot(job) {
+  const saved = structuredClone(job);
+  saved.spec.apple = { ...saved.spec.apple, version: saved.spec.version, screenshotsDir: saved.spec.screenshotsDir };
+  for (const key of ['platform', 'channel', 'version', 'screenshotsDir']) delete saved.spec[key];
+  delete saved.config.packageTarget;
+  delete saved.requestSpec;
+  return saved;
+}
+
 test('legacy persisted tasks gain intake snapshots once without changing jobs or budgets', async t => {
   const f = fixture(t), store = f.open();
   const job = store.enqueue(product, f.config);
-  const legacy = { ...job, attempts: { build: 2 }, hostTurns: 3 };
-  delete legacy.requestSpec;
+  const legacy = legacySnapshot({ ...job, attempts: { build: 2 }, hostTurns: 3 });
   store.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(JSON.stringify(legacy), job.id);
   store.db.exec('PRAGMA user_version=0');
   const restarted = f.open();
   const migrated = restarted.get(job.id);
   assert.deepEqual(migrated.requestSpec, product);
-  assert.deepEqual(migrated.spec, legacy.spec);
+  assert.deepEqual(migrated.spec, product);
   assert.deepEqual(migrated.attempts, { build: 2 });
   assert.equal(migrated.hostTurns, 3);
   assert.equal(restarted.checkIngest(product).id, job.id);
@@ -130,8 +138,7 @@ async function repairedLegacy(t) {
   const id = intake.entries[0].jobId;
   const spec = structuredClone(product);
   spec.apple.buildNumber = String(BigInt(spec.apple.buildNumber) + 1n);
-  const legacy = store.update(id, { spec, status: 'blocked', stage: 'build', attempts: { build: 2 }, hostTurns: 3 });
-  delete legacy.requestSpec;
+  const legacy = legacySnapshot(store.update(id, { spec, status: 'blocked', stage: 'build', attempts: { build: 2 }, hostTurns: 3 }));
   delete legacy.requestSpecError;
   store.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(JSON.stringify(legacy), id);
   store.db.exec('PRAGMA user_version=0');
@@ -146,7 +153,7 @@ test('edited legacy jobs require explicit original-input reconciliation even whe
   assert.match(migrated.get(f.id).requestSpecError, /reconcile-intake/);
   assert.equal((await scanInbox(migrated, f.config, { observe: true })).entries[0].status, 'error');
   assert.throws(() => migrated.reconcileIntake(f.id, { ...product, id: 'wrong-product' }));
-  assert.throws(() => migrated.reconcileIntake(f.id, { ...product, apple: { ...product.apple, version: '9.9.9' } }));
+  assert.throws(() => migrated.reconcileIntake(f.id, { ...product, version: '9.9.9' }));
   assert.throws(() => migrated.reconcileIntake(f.id, product, '00000000-0000-4000-8000-000000000000'));
   assert.equal(migrated.get(f.id).requestSpec, null);
   const reconciled = await run([process.execPath, cli, 'reconcile-intake', f.id, f.source, '--build-only', '--config', f.path]);

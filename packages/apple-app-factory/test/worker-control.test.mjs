@@ -12,7 +12,7 @@ import { run, processGroupAlive } from '../dist/process.js';
 const cli = resolve('dist/cli.js');
 const success = [process.execPath, '-e', 'process.exit(0)'];
 const product = {
-  id: 'step-control', name: 'Step control', framework: 'flutter',
+  id: 'step-control', name: 'Step control', framework: 'flutter', platform: 'ios', channel: 'app-store', version: '1.0.0',
   purpose: 'Exercise explicit host and deterministic stage boundaries', audience: 'Factory maintainers',
   differentiators: ['One requested stage per invocation'], acceptance: ['Preserve queue and process ownership'],
 };
@@ -29,7 +29,7 @@ function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-step-control-'));
   const path = join(root, 'factory.json');
   writeFileSync(path, JSON.stringify({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'),
+    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
     allowLocalExecution: true,
     verification: { prerequisites: [], checks: [success], runtime: [success] },
     ...overrides,

@@ -7,7 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { inside } from '../dist/config.js';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
-import { executeStep, sourceDigest } from '../dist/runner.js';
+import { executeStep } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
+import { dependencyDigest } from '../dist/dependencies.js';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-dependency-boundary-'));
@@ -38,12 +40,12 @@ for (const dangling of [false, true]) {
     assert.equal(existsSync(output), false);
     const compilerMarker = join(f.root, 'compiler-started');
     const command = [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(compilerMarker)}, 'started')`];
-    const config = ConfigSchema.parse({ stateDir: join(f.root, 'state'), workspaceRoot: f.root, allowLocalExecution: true,
+    const config = ConfigSchema.parse({ stateDir: join(f.root, 'state'), workspaceRoot: join(f.root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
       verification: { checks: [command], runtime: [command] } });
     const store = new Store(config.stateDir);
     t.after(() => store.close());
-    const job = store.enqueue({ id: 'boundary-product', name: 'Boundary product', purpose: 'Preserve owned sources', audience: 'Owners', framework: 'flutter', differentiators: ['Owned dependencies'], acceptance: ['Reject escaping output'] }, config);
-    mkdirSync(job.workspace);
+    const job = store.enqueue({ id: 'boundary-product', name: 'Boundary product', purpose: 'Preserve owned sources', audience: 'Owners', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Owned dependencies'], acceptance: ['Reject escaping output'] }, config);
+    mkdirSync(job.workspace, { recursive: true });
     symlinkSync(outside, join(job.workspace, 'build'), 'dir');
     const result = await executeStep(store, store.update(job.id, { stage: 'verify', status: 'running' }));
     assert.match(result.error, /symlink/);
@@ -141,26 +143,26 @@ test('owned direct and transitive package mutations change the digest; transitiv
 
 test('successors retain owned package sources and validate before predecessor copying', async t => {
   const { root } = fixture(t);
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true,
+  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
     verification: { prerequisites: [[process.execPath, '-e', 'process.exit(1)']], checks: [['unused']], runtime: [['unused']] } });
   const store = new Store(config.stateDir);
   t.after(() => store.close());
-  const spec = { id: 'owned-packages', name: 'Owned packages', purpose: 'Keep local packages', audience: 'Owners', framework: 'flutter', differentiators: ['Verified local packages'], acceptance: ['Retain package source'], apple: { version: '1.0.0' } };
+  const spec = { id: 'owned-packages', name: 'Owned packages', purpose: 'Keep local packages', audience: 'Owners', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Verified local packages'], acceptance: ['Retain package source'] };
   const base = store.enqueue(spec, config);
   packageSource(base.workspace, 'app', 'dependencies:\n  middle: {path: packages/middle}\n');
   packageSource(join(base.workspace, 'packages', 'middle'), 'middle', 'dependencies:\n  leaf: {path: ../leaf}\n');
   packageSource(join(base.workspace, 'packages', 'leaf'), 'leaf');
   file(join(base.workspace, 'build', 'unused'), 'generated');
   const digest = sourceDigest(base.workspace);
-  store.update(base.id, { status: 'built', stage: 'package', verifiedDigest: digest });
-  const successor = store.enqueue({ ...spec, apple: { version: '1.1.0' } }, config, base.id);
+  store.update(base.id, { status: 'built', stage: 'package', verifiedDigest: digest, verifiedDependencyDigest: dependencyDigest(base.workspace, spec.framework) });
+  const successor = store.enqueue({ ...spec, version: '1.1.0' }, config, base.id);
   const result = await executeStep(store, store.update(successor.id, { stage: 'verify', status: 'running' }));
   assert.equal(result.basePrepared, true);
   assert.equal(result.blockedReason.kind, 'prerequisite');
   assert.equal(sourceDigest(result.workspace), digest);
   assert.equal(readFileSync(join(result.workspace, 'packages', 'leaf', 'lib', 'value.dart'), 'utf8'), 'int value = 1;\n');
   assert.equal(existsSync(join(result.workspace, 'build')), false);
-  const rejected = store.enqueue({ ...spec, apple: { version: '1.2.0' } }, config, base.id);
+  const rejected = store.enqueue({ ...spec, version: '1.2.0' }, config, base.id);
   packageSource(join(root, 'outside'), 'leaf');
   file(join(base.workspace, 'packages', 'middle', 'pubspec.yaml'), `name: middle\ndependencies:\n  leaf: {path: ${JSON.stringify(relative(join(base.workspace, 'packages', 'middle'), join(root, 'outside')))}}\n`);
   const blocked = await executeStep(store, store.update(rejected.id, { stage: 'verify', status: 'running' }));

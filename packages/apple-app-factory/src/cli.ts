@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { loadConfig, loadJSON } from './config.js';
+import { loadConfig, loadJSON, expandArgv, validateProjectSource } from './config.js';
 import { Store } from './store.js';
 import { run, executionEnvironment } from './process.js';
 import { appleDoctor, validateAppleSpec } from './apple.js';
@@ -13,12 +13,13 @@ import { hosts, installIntegration, updateIntegration, inspectIntegration, unins
 import { submitRequirement, scanInbox } from './inbox.js';
 import { MAX_INPUT_BYTES, parseRequirement, readInputFile } from './requirements.js';
 import { dispatchRemote } from './remote.js';
-import { toError } from './schemas.js';
-import type { Config, Job } from './schemas.js';
+import { FrameworkSchema, PackageTargetSchema, toError, validateJobConfig } from './schemas.js';
+import type { Config, Framework, Job, Platform } from './schemas.js';
+import { assertProject, doctorCommands } from './project-profiles.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2));
-const view = (job: Job) => ({ id: job.id, product: job.spec.id, version: job.spec.apple?.version ?? '1.0.0', stage: job.stage, status: job.status, hostTurns: job.hostTurns, attempts: job.attempts, workspace: job.workspace, artifact: job.artifact ?? null, error: job.error ?? null });
+const view = (job: Job) => ({ id: job.id, product: job.spec.id, framework: job.spec.framework, platform: job.spec.platform, channel: job.spec.channel, version: job.spec.version, stage: job.stage, status: job.status, hostTurns: job.hostTurns, attempts: job.attempts, workspace: job.workspace, artifact: job.artifact ?? null, error: job.error ?? null });
 
 function inputJSON(path: string): unknown {
   const bytes = path === '-' ? readFileSync(0) : readInputFile(path);
@@ -37,9 +38,65 @@ function outcome(job: Job): void {
 
 async function probe(argv: string[], config: Config) {
   try {
-    const result = await run(argv, { env: executionEnvironment(config), timeoutMs: 30000 });
+    const env = executionEnvironment(config);
+    const result = await run(expandArgv(argv, env), { env, timeoutMs: 30000 });
     return { available: result.code === 0, detail: (result.code === 0 ? result.stdout : result.stderr || result.stdout).trim() };
   } catch (error) { return { available: false, detail: toError(error).message }; }
+}
+
+const frameworks = FrameworkSchema.options;
+const packageTargets = PackageTargetSchema.options;
+
+function initialConfig(framework: Framework, platform: Platform, target: Config['packageTarget']): Record<string, unknown> {
+  if ((framework === 'android-java' && platform !== 'android') || (framework === 'swift' && platform !== 'ios')) throw new Error(`${framework} does not support ${platform}`);
+  if ((platform === 'ios') !== ['simulator', 'ipa'].includes(target)) throw new Error(`${target} does not match platform ${platform}`);
+  const template = JSON.parse(readFileSync(join(packageRoot, 'examples', `${framework}.factory.json`), 'utf8')) as Record<string, unknown>;
+  template.packageTarget = target;
+  if (framework === 'flutter') {
+    template.executionEnv = platform === 'ios' ? ['IOS_DEVICE_ID'] : ['ANDROID_DEVICE_ID'];
+    template.verification = {
+      prerequisites: platform === 'ios' ? [['xcodebuild', '-version']] : [['java', '-version'], ['adb', 'version']],
+      checks: [['flutter', 'analyze', '--fatal-infos'], ['flutter', 'test']],
+      runtime: [['flutter', 'drive', '--driver', 'test_driver/integration_test.dart', '--target', 'integration_test/app_test.dart', '-d', platform === 'ios' ? '${IOS_DEVICE_ID}' : '${ANDROID_DEVICE_ID}', '--no-pub']],
+    };
+  } else if (framework === 'expo') {
+    const device = platform === 'ios' ? 'IOS_DEVICE_ID' : 'ANDROID_DEVICE_ID';
+    const profile = target === 'simulator' ? 'simulator' : target === 'apk' ? 'apk' : 'production';
+    const output = target === 'simulator' ? 'build/simulator.tar.gz' : `build/app.${target}`;
+    template.executionEnv = [device, ...(platform === 'android' ? ['ANDROID_HOME'] : [])];
+    template.verification = {
+      prerequisites: [['node', '--version'], ['eas', '--version']],
+      checks: [['npm', 'run', 'lint'], ['npm', 'test', '--', '--runInBand']],
+      runtime: [['npm', 'run', 'test:e2e', '--', '--platform', platform, '--device', '${' + device + '}']],
+    };
+    template.packaging = {
+      provider: 'local',
+      commands: [['eas', 'build', '--platform', platform, '--profile', profile, '--local', '--non-interactive', '--output', output], ...(target === 'simulator' ? [['tar', '-xzf', output, '-C', 'build']] : [])],
+      artifactPath: target === 'simulator' ? 'build/App.app' : output,
+    };
+  } else if (platform === 'ios') {
+    const native = framework === 'swift' ? '.' : framework === 'uni-app' ? 'native/ios' : 'ios';
+    const project = framework === 'swift' ? ['-project', 'App.xcodeproj'] : ['-workspace', `${native}/App.xcworkspace`];
+    const base = ['xcodebuild', ...project, '-scheme', 'App'];
+    template.executionEnv = ['IOS_DEVICE_ID'];
+    template.verification = {
+      prerequisites: [['xcodebuild', '-version'], ...(framework === 'swift' ? [] : [['node', '--version'], ['npm', '--version']])],
+      checks: framework === 'swift' ? [[...base, 'build-for-testing', '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'lint'], ['npm', 'test', '--', '--runInBand']],
+      runtime: framework === 'swift' ? [[...base, 'test', '-destination', 'id=${IOS_DEVICE_ID}', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'test:e2e', '--', '--platform', 'ios', '--device', '${IOS_DEVICE_ID}']],
+    };
+    template.packaging = target === 'simulator' ? {
+      commands: [[...base, 'build', '-configuration', 'Debug', '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', 'build/DerivedData']],
+      artifactPath: 'build/DerivedData/Build/Products/Debug-iphonesimulator/App.app', provider: 'local',
+    } : {
+      commands: [[...base, 'archive', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', 'build/App.xcarchive'], ['xcodebuild', '-exportArchive', '-archivePath', 'build/App.xcarchive', '-exportPath', 'build/export', '-exportOptionsPlist', 'ExportOptions.plist']],
+      artifactPath: 'build/export/App.ipa', provider: 'local',
+    };
+  } else if (target === 'apk') {
+    const packaging = template.packaging as { commands: string[][]; artifactPath: string };
+    packaging.commands = packaging.commands.map(argv => argv.map(arg => arg === ':app:bundleRelease' ? ':app:assembleRelease' : arg));
+    packaging.artifactPath = packaging.artifactPath.replace('bundle/release/app-release.aab', 'apk/release/app-release.apk');
+  }
+  return template;
 }
 
 const help = `apphx <command> [--config factory.json] [--build-only]
@@ -50,8 +107,11 @@ const help = `apphx <command> [--config factory.json] [--build-only]
     --project <directory>       Select the project (default: current directory)
     --global                    Use the host's user-level skill directory instead
   doctor --host <host>           Check installed workflow files; does not run the agent
-  init [--allow-local-execution] Create factory.json without overwriting it
-  doctor                        Check local build tools and execution permissions
+  init [--allow-local-execution] Create owner-editable factory.json; default Flutter/iOS
+    --framework <stack>         flutter|android-java|swift|react-native|expo|uni-app
+    --platform <platform>       ios|android (default ios; android-java defaults android)
+    --package-target <target>   simulator|ipa|apk|aab (iOS simulator; Expo iOS ipa; Android apk)
+  doctor [spec.json]            Check configured prerequisites and optional stack tools
   enqueue <spec.json|->          Persist requirements and return a task ID
   next <id>                     Resume a host turn or show the next deterministic action
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
@@ -64,7 +124,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   scan [--observe]              Validate or ingest inbox files; never start an agent
   inbox                         Read durable intake results
   reconcile-intake <id> <json|-> Restore a legacy request identity from original input
-  authorize <id> --submit [--release]  Explicitly grant publication permission
+  authorize <id> --submit [--release]  Grant App Store publication only (iOS/IPA)
   feedback <id> <file>           Resume using actual App Review rejection feedback
   remote <command>              Call an installed Mac CLI over SSH (build-only)
   --version                     Print the installed package version
@@ -84,6 +144,9 @@ async function main(): Promise<void> {
       global: { type: 'boolean' },
       host: { type: 'string' },
       'allow-local-execution': { type: 'boolean' },
+      framework: { type: 'string' },
+      platform: { type: 'string' },
+      'package-target': { type: 'string' },
       observe: { type: 'boolean' },
       submit: { type: 'boolean' },
       release: { type: 'boolean' },
@@ -100,7 +163,7 @@ async function main(): Promise<void> {
   if (!command || command === 'help' || values.help) { console.log(help); return; }
   const flags: Record<string, string[]> = {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
-    init: ['config', 'allow-local-execution'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
+    init: ['config', 'allow-local-execution', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
     enqueue: ['config', 'build-only'], next: ['config', 'build-only'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], retry: ['config', 'build-only'],
     submit: ['config', 'build-only'], scan: ['config', 'build-only', 'observe'], inbox: ['config', 'build-only'],
@@ -131,12 +194,18 @@ async function main(): Promise<void> {
   }
   if (command === 'doctor' && (values.project || values.global)) throw new Error('--project and --global require doctor --host <host>');
   if (command === 'init') {
-    arity(args, 0, 0, 'init [--config <file>] [--allow-local-execution]');
-    const template = JSON.parse(readFileSync(join(packageRoot, 'examples', 'factory.json'), 'utf8')) as Record<string, unknown>;
+    arity(args, 0, 0, 'init [--framework <stack>] [--platform ios|android] [--package-target simulator|ipa|apk|aab] [--config <file>] [--allow-local-execution]');
+    const framework = values.framework ?? 'flutter';
+    if (!frameworks.includes(framework as Framework)) throw new Error(`Unknown framework ${framework}; choose ${frameworks.join(', ')}`);
+    const platform = values.platform ?? (framework === 'android-java' ? 'android' : 'ios');
+    if (platform !== 'ios' && platform !== 'android') throw new Error('platform must be ios or android');
+    const target = values['package-target'] ?? (platform === 'ios' ? framework === 'expo' ? 'ipa' : 'simulator' : 'apk');
+    if (!packageTargets.includes(target as Config['packageTarget'])) throw new Error(`Unknown package target ${target}; choose ${packageTargets.join(', ')}`);
+    const template = initialConfig(framework as Framework, platform, target as Config['packageTarget']);
     if (values['allow-local-execution']) template.allowLocalExecution = true;
     mkdirSync(dirname(resolve(configPath)), { recursive: true });
     writeFileSync(configPath, `${JSON.stringify(template, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-    print({ config: resolve(configPath), localExecution: template.allowLocalExecution, next: 'Configure Flutter/Xcode and IOS_DEVICE_ID, then run apphx doctor --build-only' });
+    print({ config: resolve(configPath), framework, platform, packageTarget: target, localExecution: template.allowLocalExecution, next: framework === 'expo' ? 'Configure your existing eas.json production (store IPA/AAB), apk (Android buildType apk), or simulator (ios.simulator true) profile, real device acceptance, and exact app product/output path; no prebuild/eject is requested. Run apphx doctor <spec.json> --build-only.' : 'Adapt module/scheme, real device acceptance, signing and artifact path to your project; then run apphx doctor <spec.json> --build-only. init creates configuration, not app source.' });
     return;
   }
   if (command === 'remote') {
@@ -152,27 +221,45 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'doctor') {
-    arity(args, 0, 0, 'doctor [--build-only]');
-    const flutter = config.toolchain ? join(config.toolchain.flutterSdk, 'bin', 'flutter') : 'flutter';
-    const [flutterCheck, xcode] = await Promise.all([probe([flutter, '--version'], config), probe(['xcodebuild', '-version'], config)]);
+    arity(args, 0, 1, 'doctor [spec.json] [--build-only]');
+    const spec = args[0] ? parseRequirement(inputJSON(args[0])).spec : undefined;
+    if (spec) {
+      validateJobConfig(spec, config);
+      const source = validateProjectSource(spec, config);
+      if (source) assertProject(resolve(source, spec.project?.directory ?? '.'), spec);
+    }
+    const commands = spec && config.packaging?.provider !== 'cloud' ? doctorCommands(spec.framework, spec.platform) : [];
+    const tools = await Promise.all(commands.map(async ({ name, argv }) => ({ name, ...await probe(argv[0] === 'flutter' && config.toolchain ? [join(config.toolchain.flutterSdk, 'bin', 'flutter'), ...argv.slice(1)] : argv, config) })));
+    const prerequisites = await Promise.all(config.verification.prerequisites.map(async (argv, index) => ({ name: `configured-prerequisite-${index + 1}`, ...(config.allowLocalExecution ? await probe(argv, config) : { available: false, detail: 'Owner must enable allowLocalExecution before configured prerequisite commands run' }) })));
     const environment = executionEnvironment(config);
-    const neededEnv = [...new Set([...config.verification.prerequisites, ...config.verification.checks, ...config.verification.runtime].flat().flatMap(arg => [...arg.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map(match => match[1])))];
+    const configuredCommands = [...config.verification.prerequisites, ...config.verification.checks, ...config.verification.runtime, ...(config.packaging?.commands ?? [])];
+    const neededEnv = [...new Set(configuredCommands.flat().flatMap(arg => [...arg.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map(match => match[1])))];
     const checks = [
       { name: 'local-execution-permission', available: config.allowLocalExecution, detail: config.executionWarning ?? 'Trusted local commands permitted; host tools remain under the host permission policy' },
-      { name: 'flutter', ...flutterCheck }, { name: 'xcode', ...xcode },
+      ...tools, ...prerequisites,
       ...neededEnv.map(name => ({ name, available: Boolean(environment[name]), detail: environment[name] ? 'Available in the configured execution environment; value not printed' : `Set ${name} and include its name in executionEnv` })),
     ];
+    if (config.allowSubmit && spec?.channel !== 'app-store') throw new Error('Submission requires an App Store requirement; pass its spec.json to doctor');
     if (config.allowSubmit) checks.push(...await appleDoctor());
-    print({ checks, submissionEnabled: config.allowSubmit, model: 'Provided by your agent host; no separate model authentication is configured here' });
+    print({ framework: spec?.framework ?? null, platform: spec?.platform ?? null, checks, submissionEnabled: config.allowSubmit, note: spec ? 'Tool availability is not runtime acceptance; configured checks run in the task workspace during verify' : 'No stack assumed; pass spec.json for profile-specific probes and compatibility checks', model: 'Provided by your agent host; no separate model authentication is configured here' });
     if (checks.some(check => !check.available)) process.exitCode = 2;
     return;
   }
+  const queuedRequirement = command === 'enqueue' ? (() => {
+    arity(args, 1, 1, 'enqueue <spec.json|->');
+    const requirement = parseRequirement(inputJSON(args[0]));
+    validateJobConfig(requirement.spec, config);
+    validateProjectSource(requirement.spec, config);
+    if (config.allowSubmit) {
+      if (requirement.spec.channel !== 'app-store' || requirement.spec.platform !== 'ios') throw new Error('Automated publication supports only iOS App Store jobs');
+      validateAppleSpec(requirement.spec);
+    }
+    return requirement;
+  })() : undefined;
   const store = new Store(config.stateDir);
   try {
     if (command === 'enqueue') {
-      arity(args, 1, 1, 'enqueue <spec.json|->');
-      const { spec, baseJobId } = parseRequirement(inputJSON(args[0]));
-      if (config.allowSubmit) validateAppleSpec(spec);
+      const { spec, baseJobId } = queuedRequirement!;
       print(view(store.enqueue(spec, config, baseJobId)));
     } else if (command === 'scan') {
       arity(args, 0, 0, 'scan [--observe]');
@@ -217,10 +304,12 @@ async function main(): Promise<void> {
         if (buildOnly && (job.config.allowSubmit || job.config.allowRelease)) throw new Error('--build-only refuses a task with snapshotted publication permission');
         if (!['blocked', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
         if (job.turn) throw new Error('Abandon the active host turn before changing task configuration');
-        const proofChanged = JSON.stringify(config.verification) !== JSON.stringify(job.config.verification) || JSON.stringify(config.executionEnv) !== JSON.stringify(job.config.executionEnv) || JSON.stringify(config.toolchain) !== JSON.stringify(job.config.toolchain) || (job.verifiedDigest != null && !job.verifiedDependencyDigest);
-        if (proofChanged && Object.keys(job.receipt).length) throw new Error('Verification proof is no longer valid after publication began; reconcile the existing upload before creating a new version');
-        const patch: Partial<Job> = proofChanged && job.verifiedDigest ? { stage: 'verify', verifiedDigest: null, verifiedDependencyDigest: null, review: null, artifact: null } : {};
+        if (job.cloudBuildPending) throw new Error('Cloud packaging outcome is uncertain; reconcile the existing provider run rather than replaying it with retry');
         const resumedConfig = { ...config, packageTarget: job.config.allowSubmit ? 'ipa' as const : config.packageTarget, allowSubmit: job.config.allowSubmit, allowRelease: job.config.allowRelease };
+        const proofChanged = JSON.stringify(resumedConfig.verification) !== JSON.stringify(job.config.verification) || JSON.stringify(resumedConfig.executionEnv) !== JSON.stringify(job.config.executionEnv) || JSON.stringify(resumedConfig.toolchain) !== JSON.stringify(job.config.toolchain) || JSON.stringify(resumedConfig.packaging) !== JSON.stringify(job.config.packaging) || JSON.stringify(resumedConfig.apple) !== JSON.stringify(job.config.apple) || resumedConfig.packageTarget !== job.config.packageTarget || resumedConfig.allowCloudBuild !== job.config.allowCloudBuild || (job.verifiedDigest != null && !job.verifiedDependencyDigest);
+        if (Object.keys(job.receipt).length && (proofChanged || !job.verifiedDigest || !job.verifiedDependencyDigest)) throw new Error('Verification proof is no longer valid after publication began; reconcile the existing upload before creating a new version');
+        const patch: Partial<Job> = proofChanged ? { stage: ['verify', 'review', 'package', 'publish', 'monitor'].includes(job.stage) ? 'verify' : job.stage, verifiedDigest: null, verifiedDependencyDigest: null, review: null, artifact: null, ipaPath: null, archiveDigest: null } : {};
+        validateJobConfig(job.spec, resumedConfig);
         return { ...patch, config: resumedConfig, status: 'queued', manualRecovery: null, nextAt: Date.now(), error: null };
       })));
     } else if (command === 'authorize') {
@@ -228,10 +317,13 @@ async function main(): Promise<void> {
       if (!values.submit) throw new Error('authorize requires --submit');
       print(view(store.transition(args[0], job => {
         if (job.turn || !['ready', 'blocked', 'built'].includes(job.status) || Object.keys(job.receipt).length || job.stage === 'monitor') throw new Error('Publication permission can change only on stopped work before any remote intent');
+        if (job.spec.channel !== 'app-store' || job.spec.platform !== 'ios') throw new Error('Automated publication supports only iOS App Store jobs; local and Google Play tasks require local handoff');
+        if (job.config.packaging && !job.config.packaging.artifactPath.endsWith('.ipa')) throw new Error('App Store authorization requires an IPA packaging profile; adapt packaging.commands/artifactPath and retry to renew proof before authorizing');
         const publishing = validateAppleSpec(job.spec);
         if (values.release && !/^[A-Za-z]{2}$/.test(publishing.storefrontCountry ?? '')) throw new Error('--release requires apple.storefrontCountry in the immutable product specification');
         const granted = { ...job.config, packageTarget: 'ipa' as const, allowSubmit: true, allowRelease: Boolean(values.release) };
-        return { config: granted, status: ['ready', 'built'].includes(job.status) ? 'queued' : 'blocked', nextAt: Date.now() };
+        validateJobConfig(job.spec, granted);
+        return { config: granted, stage: job.status === 'built' ? 'package' : job.stage, artifact: null, ipaPath: null, archiveDigest: null, status: ['ready', 'built'].includes(job.status) ? 'queued' : 'blocked', nextAt: Date.now() };
       })));
     } else if (command === 'feedback') {
       arity(args, 2, 2, 'feedback <id> <file>');
@@ -243,6 +335,7 @@ async function main(): Promise<void> {
         if (!spec.apple?.buildNumber || !/^\d+$/.test(spec.apple.buildNumber)) throw new Error('A numeric apple.buildNumber is required to prepare a replacement build');
         spec.apple.buildNumber = String(BigInt(spec.apple.buildNumber) + 1n);
         const resumedConfig = { ...config, packageTarget: job.config.allowSubmit ? 'ipa' as const : config.packageTarget, allowSubmit: job.config.allowSubmit, allowRelease: job.config.allowRelease };
+        validateJobConfig(spec, resumedConfig);
         return { spec, config: resumedConfig, feedback, status: 'queued', stage: 'build', createdAt: Date.now(), attempts: {}, hostTurns: 0, nextAt: Date.now(), receipt: {}, ipaPath: null, archiveDigest: null, verifiedDigest: null, verifiedDependencyDigest: null, review: null, error: null };
       })));
     }

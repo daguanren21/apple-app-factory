@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { loadConfig } from '../dist/config.js';
 import { Store } from '../dist/store.js';
-import { sourceDigest, executeStep } from '../dist/runner.js';
+import { executeStep } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
 import { dependencyDigest } from '../dist/dependencies.js';
 import { run } from '../dist/process.js';
 import { remoteCommand } from '../dist/remote.js';
@@ -37,7 +38,7 @@ for (const mode of ['artifact', 'missing', 'mutated-source']) {
     const store = new Store(f.config.stateDir);
     t.after(() => store.close());
     const spec = structuredClone(product);
-    delete spec.apple.screenshotsDir;
+    delete spec.screenshotsDir;
     const job = store.enqueue(spec, f.config);
     mkdirSync(join(job.workspace, 'build', 'ios', 'iphonesimulator', 'Stale.app'), { recursive: true });
     writeFileSync(join(job.workspace, 'build', 'ios', 'iphonesimulator', 'Stale.app', 'Runner'), 'old output');
@@ -123,7 +124,7 @@ for (const failure of ['missing-output', 'compiler-failure', 'interrupted']) {
     const store = new Store(f.config.stateDir);
     t.after(() => store.close());
     const spec = structuredClone(product);
-    delete spec.apple.screenshotsDir;
+    delete spec.screenshotsDir;
     const job = store.enqueue(spec, f.config);
     mkdirSync(job.workspace, { recursive: true });
     writeFileSync(join(job.workspace, 'model.dart'), 'unchanged verified source');
@@ -175,5 +176,49 @@ for (const action of ['retry', 'feedback']) {
     assert.equal(resumed.config.allowRelease, false);
     assert.equal(loadConfig(f.configPath).packageTarget, 'simulator');
     assert.equal(loadConfig(f.configPath).allowSubmit, false);
+  });
+}
+
+for (const scenario of ['no-receipt', 'receipt', 'changed-verification', 'changed-packaging', 'missing-source-proof', 'missing-dependency-proof']) {
+  test(`authorized IPA CLI retry preserves proof or rejects without mutation: ${scenario}`, async t => {
+    const f = fixture(t);
+    const store = new Store(f.config.stateDir);
+    t.after(() => store.close());
+    const job = store.enqueue(product, { ...f.config, packageTarget: 'ipa', allowSubmit: true, allowRelease: false });
+    mkdirSync(job.workspace, { recursive: true });
+    writeFileSync(join(job.workspace, 'model.dart'), 'Controlled verified source');
+    const ipaPath = join(f.root, 'controlled.ipa');
+    writeFileSync(ipaPath, 'Controlled archive fixture; not an Apple build');
+    const before = store.update(job.id, {
+      status: 'blocked', stage: scenario === 'no-receipt' ? 'package' : 'publish',
+      verifiedDigest: scenario === 'missing-source-proof' ? null : sourceDigest(job.workspace),
+      verifiedDependencyDigest: scenario === 'missing-dependency-proof' ? null : dependencyDigest(job.workspace),
+      review: { approved: true, findings: [], acceptanceEvidence: product.acceptance.map(requirement => ({ requirement, evidence: 'Controlled retry fixture' })) },
+      artifact: { kind: 'ipa', path: ipaPath, digest: 'a'.repeat(64), createdAt: new Date().toISOString() },
+      ipaPath, archiveDigest: 'a'.repeat(64),
+      receipt: scenario === 'no-receipt' ? {} : { versionId: 'saved-version', buildId: 'saved-build' },
+      attempts: { build: 2, verify: 1, publish: 2 }, hostTurns: 3,
+    });
+    const globalConfig = JSON.parse(readFileSync(f.configPath, 'utf8'));
+    if (scenario === 'changed-verification') globalConfig.verification.checks.push([process.execPath, '-e', 'process.exit(1)']);
+    if (scenario === 'changed-packaging') globalConfig.packaging = { commands: [[process.execPath, '-e', 'process.exit(0)']], artifactPath: 'changed.ipa' };
+    if (scenario.startsWith('changed-')) writeFileSync(f.configPath, JSON.stringify(globalConfig));
+    const result = await run([process.execPath, cli, 'retry', job.id, '--config', f.configPath]);
+    const resumed = store.get(job.id);
+    if (scenario === 'no-receipt' || scenario === 'receipt') {
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(resumed.status, 'queued');
+      for (const field of ['stage', 'verifiedDigest', 'verifiedDependencyDigest', 'review', 'artifact', 'ipaPath', 'archiveDigest', 'receipt', 'attempts', 'hostTurns', 'createdAt']) assert.deepEqual(resumed[field], before[field], field);
+      assert.equal(resumed.config.packageTarget, 'ipa');
+      assert.equal(resumed.config.allowSubmit, true);
+      assert.equal(resumed.config.allowRelease, false);
+      assert.equal(readFileSync(f.configPath, 'utf8'), JSON.stringify(globalConfig));
+      assert.equal(loadConfig(f.configPath).packageTarget, 'simulator');
+      assert.equal(loadConfig(f.configPath).allowSubmit, false);
+    } else {
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /Verification proof is no longer valid/);
+      assert.deepEqual(resumed, before);
+    }
   });
 }

@@ -2,6 +2,10 @@
   "id": "pack-balance",
   "name": "行李配重与打包助手",
   "framework": "flutter",
+  "platform": "ios",
+  "channel": "local",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
   "purpose": "离线规划多个行李包的重量，完成出发打包与返程核对，减少遗漏和超重",
   "audience": "需要管理随身包与托运行李的个人旅客",
   "differentiators": [
@@ -28,12 +32,5 @@
     "导入损坏、未知版本或字段非法的备份时给出可操作错误，原数据不被部分覆盖",
     "在无网络、空清单、大字体与 VoiceOver 标签场景下完成创建、分配、勾选和恢复流程",
     "截图来自真实运行页面，隐私说明和应用行为一致，不宣称保证航空公司接受或苹果过审"
-  ],
-  "apple": {
-    "bundleId": "com.example.packbalance",
-    "version": "1.0.0",
-    "buildNumber": "1",
-    "locale": "zh-Hans",
-    "screenshotsDir": "build/screenshots"
-  }
+  ]
 }

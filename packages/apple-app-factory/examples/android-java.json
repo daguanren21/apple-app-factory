@@ -1,0 +1,16 @@
+{
+  "id": "java-field-notes",
+  "name": "Offline field notes",
+  "framework": "android-java",
+  "platform": "android",
+  "channel": "google-play",
+  "version": "1.0.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture field notes offline and restore an owner-exported backup",
+  "audience": "Field researchers",
+  "differentiators": ["Timestamped notes with a reversible local backup workflow"],
+  "acceptance": ["Create and edit a note offline, restart the app and recover the saved text", "Export notes, delete local data and restore the same notes from the export", "Exercise both workflows in connected Android instrumentation tests and save actual device screenshots"],
+  "constraints": ["Use a Java Android Gradle project with module app and real connectedDebugAndroidTest acceptance", "Owner supplies the Android SDK, an authorized test device and release signing", "No accounts, tracking, hidden features or network dependency; Google Play handoff is a local AAB, not automated submission"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

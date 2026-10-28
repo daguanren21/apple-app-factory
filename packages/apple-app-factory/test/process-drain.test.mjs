@@ -42,7 +42,7 @@ function readJson(path) {
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-process-drain-'));
   const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'),
+    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
     allowLocalExecution: true, pollMs: 600000,
     verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
     ...overrides,
@@ -72,7 +72,7 @@ function fixture(t, overrides = {}) {
     open() { const store = new Store(config.stateDir); stores.push(store); return store; },
     enqueue(store, name) {
       return store.enqueue({
-        id: `drain-${name}`, name: `Drain ${name}`, framework: 'flutter',
+        id: `drain-${name}`, name: `Drain ${name}`, framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0',
         purpose: `Exercise ${name} cleanup`, audience: 'Factory maintainers',
         differentiators: ['Bounded owned-process cleanup'], acceptance: ['Never replay unresolved work'],
       }, config);

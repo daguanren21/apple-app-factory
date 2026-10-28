@@ -26,7 +26,7 @@ async function until(action, timeoutMs = 5000) {
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-scheduler-'));
   const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'),
+    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
     allowLocalExecution: true, pollMs: 25,
     verification: { prerequisites: [], checks: [success], runtime: [success] },
     ...overrides,
@@ -44,7 +44,7 @@ function fixture(t, overrides = {}) {
     root, config, store, controller,
     enqueue(name, stage = 'verify', jobConfig = config) {
       const job = store.enqueue({
-        id: `scheduler-${name}`, name: `Scheduler ${name}`, framework: 'flutter',
+        id: `scheduler-${name}`, name: `Scheduler ${name}`, framework: 'flutter', platform: 'ios', channel: 'app-store', version: '1.0.0',
         purpose: `Coordinate ${name} work`, audience: 'Factory maintainers',
         differentiators: ['Explicit deterministic stage execution'], acceptance: ['Preserve stage ownership'],
       }, jobConfig);

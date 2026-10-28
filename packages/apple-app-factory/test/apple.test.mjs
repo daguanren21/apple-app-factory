@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { pollApple, shipApple } from '../dist/apple.js';
 
 const spec = {
+  platform: 'ios', channel: 'app-store',
+  version: '1.0',
   apple: {
-    appId: '123', bundleId: 'org.example.packing', version: '1.0', buildNumber: '1', locale: 'en-US',
+    appId: '123', bundleId: 'org.example.packing', buildNumber: '1', locale: 'en-US',
     description: 'Offline packing and luggage weight planning.', keywords: 'packing,luggage',
     supportUrl: 'https://example.org/support', privacyPolicyUrl: 'https://example.org/privacy',
     reviewNotes: 'Offline packing lists and weight calculations; no account is required.', copyright: 'Example Publisher',
@@ -49,7 +51,7 @@ function submissionNetwork(t, state = 'WAITING_FOR_REVIEW') {
 
 test('shipping requires publisher legal/privacy attestation before accessing the network', async t => {
   const requests = network(t, () => assert.fail('No API call is allowed before publisher setup'));
-  await assert.rejects(shipApple({ spec: { apple: { ...spec.apple, manualSetupConfirmed: false } }, save: async () => {} }), error => error.code === 'APPLE_SETUP_REQUIRED' && /privacy disclosures/.test(error.message));
+  await assert.rejects(shipApple({ spec: { ...spec, apple: { ...spec.apple, manualSetupConfirmed: false } }, save: async () => {} }), error => error.code === 'APPLE_SETUP_REQUIRED' && /privacy disclosures/.test(error.message));
   assert.equal(requests.length, 0);
 });
 
@@ -115,8 +117,8 @@ test('an uncertain submit that still appears as a draft is never blindly retried
 
 test('public release requires an exact bundle and version in the configured storefront', async t => {
   const { env } = await credentials(t);
-  const localized = { apple: { ...spec.apple, storefrontCountry: 'US' } };
-  let listing = { bundleId: 'another.app', version: spec.apple.version };
+  const localized = { ...spec, apple: { ...spec.apple, storefrontCountry: 'US' } };
+  let listing = { bundleId: 'another.app', version: spec.version };
   network(t, (url, options) => {
     if (url.pathname === '/v1/appStoreVersions/version/build') return { data: { id: 'build' } };
     if (url.origin === 'https://api.appstoreconnect.apple.com') return { data: [{ id: 'version', attributes: { appVersionState: 'READY_FOR_DISTRIBUTION' } }] };
@@ -129,7 +131,7 @@ test('public release requires an exact bundle and version in the configured stor
   assert.equal((await pollApple({ spec: localized, env, state: receipt })).available, false);
   listing = { bundleId: spec.apple.bundleId, version: '0.9' };
   assert.equal((await pollApple({ spec: localized, env, state: receipt })).available, false);
-  listing = { bundleId: spec.apple.bundleId, version: spec.apple.version };
+  listing = { bundleId: spec.apple.bundleId, version: spec.version };
   assert.equal((await pollApple({ spec: localized, env, state: receipt })).available, true);
 });
 
@@ -143,10 +145,10 @@ async function shippingFixture(t, { createOutcomes = [], localScreenshots = fals
   const ipaPath = join(directory, 'verified.ipa');
   await writeFile(ipaPath, 'Previously uploaded archive fixture');
   const apple = { ...spec.apple };
-  if (localScreenshots) {
-    apple.screenshotsDir = join(directory, 'screenshots');
-    await mkdir(join(apple.screenshotsDir, 'APP_IPHONE_67'), { recursive: true });
-    await writeFile(join(apple.screenshotsDir, 'APP_IPHONE_67', 'packing.png'), screenshotBytes);
+  const screenshotsDir = localScreenshots ? join(directory, 'screenshots') : undefined;
+  if (screenshotsDir) {
+    await mkdir(join(screenshotsDir, 'APP_IPHONE_67'), { recursive: true });
+    await writeFile(join(screenshotsDir, 'APP_IPHONE_67', 'packing.png'), screenshotBytes);
   }
   const remote = {
     versionState: 'PREPARE_FOR_SUBMISSION', selectedBuildId: 'build',
@@ -211,7 +213,7 @@ async function shippingFixture(t, { createOutcomes = [], localScreenshots = fals
   return {
     remote, requests, saves,
     get saved() { return saved; },
-    ship: () => shipApple({ spec: { apple }, ipaPath, env, state: saved, save: async value => { saved = value; saves.push(value); }, run: async argv => {
+    ship: () => shipApple({ spec: { ...spec, apple, screenshotsDir }, ipaPath, env, state: saved, save: async value => { saved = value; saves.push(value); }, run: async argv => {
       if (uploadExitCode === undefined) assert.fail('Recovery must not upload the archive again');
       if (argv.includes('--help')) return { code: 0, stdout: '--upload-package', stderr: '' };
       remote.uploads++;
@@ -287,12 +289,12 @@ test('approval and public release are never attributed to a missing or replaced 
       network(t, url => {
         if (url.origin === 'https://itunes.apple.com') {
           lookups++;
-          return { results: [{ bundleId: spec.apple.bundleId, version: spec.apple.version }] };
+          return { results: [{ bundleId: spec.apple.bundleId, version: spec.version }] };
         }
         if (url.pathname === '/v1/appStoreVersions/version/build') return selected ? { data: { id: selected } } : new Response(null, { status: 404 });
         return { data: [{ id: 'version', attributes: { appVersionState: versionState } }] };
       });
-      const monitor = state => pollApple({ spec: { apple: { ...spec.apple, storefrontCountry: 'US' } }, state, env });
+      const monitor = state => pollApple({ spec: { ...spec, apple: { ...spec.apple, storefrontCountry: 'US' } }, state, env });
       await assert.rejects(monitor({ versionId: 'version', buildId: 'build' }), { code: 'APPLE_STATE_MISMATCH' });
       selected = null;
       await assert.rejects(monitor({ versionId: 'version', buildId: 'build' }), { code: 'APPLE_STATE_MISMATCH' });

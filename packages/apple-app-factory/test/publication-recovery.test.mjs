@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../dist/config.js';
 import { Store } from '../dist/store.js';
-import { executeStep, nextTurn, sourceDigest } from '../dist/runner.js';
+import { executeStep, nextTurn } from '../dist/runner.js';
+import { sourceDigest } from '../dist/workspace.js';
 import { dependencyDigest } from '../dist/dependencies.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
@@ -28,12 +29,12 @@ function fixture(t, receipt = { upload: { status: 'delivered' }, versionId: 'ver
   const store = new Store(config.stateDir);
   t.after(() => store.close());
   const apple = {
-    appId: '123', bundleId: 'org.example.packing', version: '1.0', buildNumber: '1', locale: 'en-US',
+    appId: '123', bundleId: 'org.example.packing', buildNumber: '1', locale: 'en-US',
     description: 'Offline packing lists.', keywords: 'packing,luggage', supportUrl: 'https://example.org/support', privacyPolicyUrl: 'https://example.org/privacy',
     reviewNotes: 'Offline utility; no account required.', copyright: 'Example Publisher',
     contact: { firstName: 'Review', lastName: 'Contact', email: 'review@example.org', phone: '+12025550123' }, manualSetupConfirmed: true,
   };
-  let job = store.enqueue({ ...product, apple }, config);
+  let job = store.enqueue({ ...product, version: '1.0', screenshotsDir: undefined, apple }, config);
   mkdirSync(join(job.workspace, 'build'), { recursive: true });
   writeFileSync(join(job.workspace, 'source.dart'), 'verified source');
   const ipaPath = join(job.workspace, 'build', 'verified.ipa');
