@@ -4,15 +4,50 @@
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "aab",
-  "executionEnv": ["ANDROID_HOME", "ANDROID_SERIAL"],
+  "obfuscation": {
+    "options": {
+      "code": {
+        "removeComments": true
+      }
+    }
+  },
+  "executionEnv": [
+    "ANDROID_HOME",
+    "ANDROID_SERIAL"
+  ],
   "verification": {
-    "prerequisites": [["java", "-version"], ["adb", "version"]],
-    "checks": [["./gradlew", ":app:lintDebug", ":app:testDebugUnitTest"]],
-    "runtime": [["./gradlew", ":app:connectedDebugAndroidTest"]]
+    "prerequisites": [
+      [
+        "java",
+        "-version"
+      ],
+      [
+        "adb",
+        "version"
+      ]
+    ],
+    "checks": [
+      [
+        "./gradlew",
+        ":app:lintDebug",
+        ":app:testDebugUnitTest"
+      ]
+    ],
+    "runtime": [
+      [
+        "./gradlew",
+        ":app:connectedDebugAndroidTest"
+      ]
+    ]
   },
   "packaging": {
     "provider": "local",
-    "commands": [["./gradlew", ":app:bundleRelease"]],
+    "commands": [
+      [
+        "./gradlew",
+        ":app:bundleRelease"
+      ]
+    ],
     "artifactPath": "app/build/outputs/bundle/release/app-release.aab"
   }
 }

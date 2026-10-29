@@ -1,11 +1,19 @@
 import { readFileSync } from 'node:fs';
 import type { Framework, TransformOutcome } from './common.js';
-import { basenameWithoutExtension, classifyLanguage, deriveHash, deriveToken, isGeneratedCode, isResourceFile, walkProject, writeIfChanged } from './common.js';
+import { basenameWithoutExtension, classifyLanguage, deriveHash, deriveToken, isGeneratedCode, isReferenceCarrier, isResourceFile, walkProject, writeIfChanged } from './common.js';
 import type { ObfuscatorConfig } from './config.js';
 import { extractDeclaredIdentifiers, generateIdentifierMappings, transformCode } from './code.js';
 import { applyResourceRenames, perturbImageHashes, planResourceRenames, recolorImages } from './resources.js';
 import { obfuscateDirectories, remapUuids, renameProjectConfig } from './project.js';
 import { filterSensitiveWords, recolorSourceColors } from './content.js';
+import { renameObjcSymbols } from './objc-symbols.js';
+import { renameProjectIdentity } from './project-identity.js';
+import { applyStringEncryption } from './string-encrypt.js';
+import { renameFlutterSymbols } from './flutter.js';
+import { DFAFilter, mixKeywords } from './dfa.js';
+import { wordFilterList } from './lexicon-data.js';
+import { createJunkFiles, cleanUnusedResources, insertJunkCode } from './junk.js';
+import { flattenTransparency, hexToRgb, scaleImages } from './image-utils.js';
 
 export interface ObfuscationReport {
   /** Distinct owned files or directories whose content, path or binary payload changed. */
@@ -39,6 +47,11 @@ export function applyObfuscation(root: string, config: ObfuscatorConfig, seed: s
     walked = walkProject(root);
   }
   if (config.project?.uuids) record('projectUuids', remapUuids(walked.files, seed));
+  // iOS identity pass (project name, folders, xcassets images, xib/storyboard refs).
+  if (config.objc?.projectIdentity) {
+    record('objcProjectIdentity', renameProjectIdentity(walked.files, config.objc.projectIdentity, seed));
+    walked = walkProject(root);
+  }
 
   // 2. Resource transforms (path changes before content transforms).
   if (config.resources?.rename) {
@@ -56,12 +69,36 @@ export function applyObfuscation(root: string, config: ObfuscatorConfig, seed: s
     walked = walkProject(root);
   }
   if (config.resources?.hashPerturb) record('resourceHash', perturbImageHashes(walked.files, config.resources.hashPerturb.bytes, seed));
-  if (config.resources?.images) record('imageRecolor', recolorImages(walked.files, config.resources.images, seed));
+  if (config.resources?.images?.recolor.length || config.resources?.images?.recolorAll) {
+    record('imageRecolor', recolorImages(walked.files, config.resources.images, seed));
+  }
+  if (config.resources?.images?.scale) record('imageScale', scaleImages(walked.files, config.resources.images.scale));
+  if (config.resources?.images?.flatten) {
+    record('imageFlatten', flattenTransparency(walked.files, hexToRgb(config.resources.images.flatten.bgColor ?? '#ffffff')));
+  }
 
   // 3. Content transforms.
   if (config.content?.sensitiveWords) record('sensitiveWords', filterSensitiveWords(walked.files, config.content.sensitiveWords));
   if (config.content?.controlColors || config.content?.fontColors) {
     record('sourceColors', recolorSourceColors(walked.files, config.content.controlColors, config.content.fontColors));
+  }
+  if (config.content?.dfa) {
+    // DFA lexicon filter, then optional constant-keyword mixing.
+    const filter = new DFAFilter([...wordFilterList, ...(config.content.dfa.words ?? [])]);
+    const changedPaths: string[] = [];
+    let changed = 0;
+    for (const entry of walked.files) {
+      if (!isReferenceCarrier(entry.relative)) continue;
+      const before = readFileSync(entry.absolute, 'utf8');
+      let next = filter.filter(before, config.content.dfa.replace);
+      if (config.content.dfa.keywordMix) next = mixKeywords(next, { seed, prefix: config.content.dfa.keywordMix.prefix }).content;
+      if (next === before) continue;
+      if (writeIfChanged(entry, next)) {
+        changed += 1;
+        changedPaths.push(entry.relative);
+      }
+    }
+    record('dfaFilter', { changed, changedPaths });
   }
 
   // 4. Code transforms.
@@ -97,6 +134,21 @@ export function applyObfuscation(root: string, config: ObfuscatorConfig, seed: s
     }
     transforms.code = count;
   }
+
+  // 5. iOS passes: junk code/files first (they introduce new symbols), then
+  // ObjC/Swift symbol renames, XOR string encryption, Flutter symbols, and resource cleaning
+  // last (it scans the final code for references).
+  if (config.objc?.junkCode) record('objcJunkCode', insertJunkCode(walked.files, config.objc.junkCode, seed));
+  if (config.objc?.junkFiles) {
+    record('objcJunkFiles', createJunkFiles(root, walked.files, config.objc.junkFiles, seed));
+    walked = walkProject(root);
+  }
+  if (config.objc?.symbols) record('objcSymbols', renameObjcSymbols(walked.files, config.objc.symbols, seed));
+  if (config.objc?.stringEncryption) {
+    record('objcStringEncryption', applyStringEncryption(root, { ...config.objc.stringEncryption, seed }));
+  }
+  if (config.flutter) record('flutterSymbols', renameFlutterSymbols(walked.files, config.flutter, seed));
+  if (config.objc?.cleanResources) record('objcCleanResources', cleanUnusedResources(walked.files, config.objc.cleanResources));
 
   return { changedFiles: changed.size, transforms, skipped: { generated: walked.skipped, unsupported } };
 }

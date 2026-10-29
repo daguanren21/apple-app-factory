@@ -65,7 +65,7 @@ apphx 只负责在本地产出并验证 iOS/Android/macOS 包；App Store / Goog
 - **IPA 导出**：内置 Flutter 导出及配置中可识别的 `xcodebuild -exportArchive` 使用检查后的本地导出配置快照，拒绝 `destination=upload`。任意自定义脚本仍须信任审查；这不是脚本沙箱。
 - **默认值与云构建**：不传技术栈时，`init` 默认 Flutter/iOS/simulator；`android-java` 默认 Android/APK，Expo 默认 iOS/IPA。远程云编译另需 `allowCloudBuild`；不确定的远程结果先对账，不自动重放。
 - **升级旧数据**：先结束活跃任务，保留 `.factory`、配置和迁移备份。新需求显式带 `platform`，配置带 `packageTarget`；`version`、`screenshotsDir` 放在需求顶层。队列 v3 保留历史与回执、清除旧证明；重新验收后再继续。1.0 用户须在升级 CLI 前用原 `app-factory uninstall` 安全卸载未修改的旧 Skill，再安装新 `apphx` Skill；不要覆盖修改过的安装。
-- **宿主与调度**：更新、卸载时保持原 `--project` / `--global` 作用域。Hermes 项目级安装还需你手动授予信任；定时任务应唤醒宿主、续跑同一任务并避免重叠，不能只定时执行 `next`。详见 [Hermes 调度文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)。
+- **宿主与调度**：更新、卸载时保持原 `--project` / `--global` 作用域。Hermes 项目级安装还需你手动授予信任；定时任务应唤醒宿主、续跑同一任务并避免重叠，不能只定时执行 `next`。多任务（单任务同理）在 agent 内循环用 `apphx next --any` 取最早到期的可推进任务：`host` 回合做完即 `complete`，`step` 执行一次 `apphx step JOB_ID`，重复直到 `idle`（附最早下次唤醒时间）。详见 [Hermes 调度文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)。
 
 已安装的工作流需显式更新或卸载；这些操作不会删除应用代码、配置或任务数据：
 

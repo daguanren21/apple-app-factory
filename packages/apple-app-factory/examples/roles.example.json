@@ -1,0 +1,31 @@
+{
+  "$comment": "宿主侧角色→模型约定样例。apphx 不读取此文件；把每个角色绑定到你的宿主实际可用的模型/会话策略。model 填宿主模型 id（或类别占位），fresh=true 表示必须新会话，independentOf 表示该角色不能由这些角色的同一会话/同一模型执行。",
+  "product-analyst": {
+    "model": "reasoning-large",
+    "fresh": true,
+    "independentOf": []
+  },
+  "architect-proposal-1": { "model": "reasoning-a", "fresh": true, "independentOf": [] },
+  "architect-proposal-2": { "model": "reasoning-b", "fresh": true, "independentOf": [] },
+  "architect-proposal-3": { "model": "reasoning-c", "fresh": true, "independentOf": [] },
+  "developer": {
+    "model": "coding",
+    "fresh": false,
+    "parallel": "module slices under the synthesized design in docs/architecture.md"
+  },
+  "architect-review": {
+    "model": "reasoning-b",
+    "fresh": true,
+    "independentOf": ["developer"]
+  },
+  "qa-engineer": {
+    "model": "coding",
+    "fresh": true,
+    "independentOf": ["developer"]
+  },
+  "acceptance-reviewer": {
+    "model": "reasoning",
+    "fresh": true,
+    "independentOf": ["developer", "architect-review", "qa-engineer"]
+  }
+}

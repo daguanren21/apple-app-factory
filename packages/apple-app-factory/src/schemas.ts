@@ -21,6 +21,8 @@ export const PlatformSchema = z.enum(['ios', 'android', 'macos']);
 export type Platform = z.infer<typeof PlatformSchema>;
 export const ChannelSchema = z.enum(['local', 'app-store', 'google-play']);
 export type Channel = z.infer<typeof ChannelSchema>;
+export const PrioritySchema = z.enum(['P0', 'P1', 'P2']);
+export type Priority = z.infer<typeof PrioritySchema>;
 export const PackageTargetSchema = z.enum(['simulator', 'ipa', 'apk', 'aab', 'app', 'dmg']);
 export type PackageTarget = z.infer<typeof PackageTargetSchema>;
 export const AppleSpecSchema = z.strictObject({
@@ -33,9 +35,11 @@ export type AppleSpec = z.infer<typeof AppleSpecSchema>;
 const SpecObject = z.strictObject({
   id: text.regex(/^[a-z][a-z0-9-]{1,62}$/), name: text, purpose: text, audience: text,
   framework: FrameworkSchema, platform: PlatformSchema, channel: ChannelSchema.default('local'), version: text.default('1.0.0'),
+  priority: PrioritySchema.default('P1'),
   project: z.strictObject({ sourceDir: text.optional(), directory: text.refine(value => relativeProjectPath(value, true), 'project.directory must be a relative in-root directory without traversal').default('.') }).optional(),
   screenshotsDir: text.optional(), differentiators: z.array(text).min(1), acceptance: z.array(text).min(1),
   constraints: z.array(text).optional(), apple: AppleSpecSchema.optional(),
+  authorEmail: z.string().email().optional(),
   hiddenFeatures: z.literal(false).optional(), reviewBypass: z.literal(false).optional(),
 });
 function refineSpec(value: z.infer<typeof SpecObject>, context: z.RefinementCtx): void {
@@ -56,10 +60,44 @@ export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optiona
 
 export const ObfuscationConfigSchema = z.strictObject({
   command: z.array(command.element).min(1).default(['obfuscator']),
-  configPath: text,
+  /** Obfuscator rules file resolved against the factory config directory; must be a regular file. */
+  configPath: text.optional(),
+  /** Inline obfuscator rules (same shape as the rules file); validated by the bundled obfuscator at run time. */
+  options: z.record(z.string(), z.unknown()).optional(),
   seed: text.optional(),
+}).superRefine((value, context) => {
+  if (!value.configPath && !value.options) context.addIssue({ code: 'custom', path: [], message: 'obfuscation needs configPath or inline options; set one of them' });
+  if (value.configPath && value.options) context.addIssue({ code: 'custom', path: [], message: 'obfuscation accepts configPath or inline options, not both' });
 });
 export type ObfuscationConfig = z.infer<typeof ObfuscationConfigSchema>;
+
+/**
+ * Advisory role assignments per host stage. Role names are free-form so teams
+ * can add any missing agent (e.g. security-review, performance-analyst); the
+ * host adopts every returned role via its native delegation. Roles never
+ * change stage eligibility, budgets or evidence gates.
+ */
+export const RolesConfigSchema = z.strictObject({
+  research: z.array(text).default(['product-analyst']),
+  build: z.array(text).default(['developer']),
+  review: z.array(text).default(['architect-review', 'qa-engineer', 'acceptance-reviewer']),
+});
+export type RolesConfig = z.infer<typeof RolesConfigSchema>;
+
+export const NotifyEmailSchema = z.strictObject({
+  from: z.string().email(),
+  to: z.string().email(),
+  smtpHost: text,
+  smtpPort: z.number().int().positive().default(465),
+  secure: z.boolean().default(true),
+  user: text.optional(),
+  /** Environment variable name holding the SMTP password; the value is never stored or printed. */
+  passwordEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/).optional(),
+  timeoutMs: z.number().int().positive().default(15000),
+  subject: text.optional(),
+  body: text.optional(),
+});
+export type NotifyEmail = z.infer<typeof NotifyEmailSchema>;
 
 export const ConfigSchema = z.strictObject({
   configPath: text.optional(), stateDir: text, workspaceRoot: text,
@@ -74,6 +112,8 @@ export const ConfigSchema = z.strictObject({
   apple: z.strictObject({ exportOptionsPlist: text.optional() }).optional(),
   packageTarget: PackageTargetSchema, executionWarning: text.optional(),
   obfuscation: ObfuscationConfigSchema.optional(),
+  notify: z.strictObject({ email: NotifyEmailSchema }).optional(),
+  roles: RolesConfigSchema.optional(),
   packaging: z.strictObject({ commands: z.array(command).min(1), artifactPath: text.refine(value => relativeProjectPath(value), 'artifactPath must be an exact project-relative file or directory without traversal or wildcards'), provider: z.enum(['local', 'cloud']).default('local') }).optional(),
 }).superRefine((value, context) => {
   if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) context.addIssue({ code: 'custom', path: ['allowCloudBuild'], message: 'Cloud packaging requires explicit allowCloudBuild=true' });
@@ -137,6 +177,7 @@ export const JobSchema = z.object({
   obfuscationDigest: text.regex(/^[a-f0-9]{64}$/).optional(),
   obfuscationReport: z.strictObject({ changedFiles: count, transforms: z.record(text, count), skipped: z.strictObject({ generated: count, unsupported: count }) }).optional(),
   review: ReviewSchema.nullable().optional(), ipaPath: text.nullable().optional(), archiveDigest: text.nullable().optional(), artifact: ArtifactSchema.nullable().optional(),
+  notifiedAt: text.nullable().optional(), notifiedTo: text.nullable().optional(), notifyError: text.nullable().optional(), notifySendingAt: text.nullable().optional(),
   externalChecks: z.unknown().optional(),
 }).passthrough();
 export type Job = z.infer<typeof JobSchema>;
