@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Add qoder, oh-my-pi, and dimagent host integrations with verified skill directory conventions
+- Remove the internal QA checklist text and unused helper from generated research/review prompts, align README guidance with the retained host Skill quality checks and manual store submission, and drop obsolete prompt-wording tests while keeping behavioral coverage of typed verdicts, acceptance evidence, and verification proof gates.
 
 ## 2.0.0
 

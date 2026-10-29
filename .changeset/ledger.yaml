@@ -18,3 +18,4 @@ apphx@2.0.1:
   dir: packages/apple-app-factory
   intents:
     - chilly-houses-fly
+    - real-jokes-try
