@@ -12,14 +12,7 @@ export function parseResearch(text: string, channel: Spec['channel']) {
 /** Honest pre-delivery differentiation and quality checklist. Store submission and review stay manual. */
 export function internalQaChecklist(): string {
   return [
-    'Internal QA checklist for a normal, honest local package handoff. Store submission, account setup and platform review are manual human work outside this tool; nothing here bypasses, influences or pre-approves a store reviewer.',
-    'Real value: each package has its own genuine purpose, audience and functional behavior. Identical functionality with only renamed labels is not meaningful differentiation.',
-    'Visual identity: themes, layouts, colors and interaction flows are real product choices for this app, not templated reskins produced to look different.',
-    'Developer and identity metadata: app name, title, icon, bundle/package id, keywords and description truthfully describe this app and its actual developer. Never forge identities, accounts, locations or submission sources.',
-    'Functionality: every advertised feature works and is exercised by the frozen runtime acceptance; no hidden functionality for any audience and no fabricated screenshots or evidence.',
-    'Metadata: price, region, category and description reflect the actual product. Design rationale notes, if any, are the owner\'s honest answers, not scripted reply templates.',
-    'Code identity: project, folder, class, function and resource names follow this project\'s real conventions. Do not mutate hashes, names or resource bytes solely to defeat similarity checks; that would be deceptive.',
-    'Quality gate: source, dependency and runtime proofs must be current; independent review must cover every frozen acceptance requirement with observed evidence. Only then may the artifact be handed off to a human for store submission.',
+    
   ].join('\n');
 }
 
