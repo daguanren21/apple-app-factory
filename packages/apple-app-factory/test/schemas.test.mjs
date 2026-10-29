@@ -27,7 +27,7 @@ test('removed provider and daemon settings are rejected rather than silently ign
 test('optional obfuscation config defaults its command and rejects malformed shapes', () => {
   const config = { ...example, stateDir: '/owned/state', workspaceRoot: '/owned/workspaces' };
   const parsed = ConfigSchema.parse({ ...config, obfuscation: { configPath: 'obfuscator.json', seed: 's' } });
-  assert.deepEqual(parsed.obfuscation.command, ['apphx-obfuscator']);
+  assert.deepEqual(parsed.obfuscation.command, ['obfuscator']);
   assert.equal(parsed.obfuscation.configPath, 'obfuscator.json');
   for (const patch of [
     { obfuscation: { command: [], configPath: 'x.json' } },

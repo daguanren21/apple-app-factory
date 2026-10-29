@@ -1,5 +1,5 @@
 {
-  "name": "apphx-obfuscator",
+  "name": "obfuscator",
   "version": "0.1.0",
   "description": "Private deterministic source/resource/project obfuscator invoked by the apphx delivery pipeline or standalone",
   "license": "MIT",
@@ -9,7 +9,7 @@
     "node": ">=22.18"
   },
   "bin": {
-    "apphx-obfuscator": "./dist/cli.js"
+    "obfuscator": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsdown",

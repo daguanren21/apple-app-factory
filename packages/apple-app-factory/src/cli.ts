@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { resolve, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -153,6 +154,10 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   inbox                         Read durable intake results
   reconcile-intake <id> <json|-> Restore a legacy request identity from original input
   remote <command>              Call an installed Mac CLI over SSH (build-only)
+  obfuscator <project>          Run the bundled deterministic obfuscator on a project copy
+    --config <file>             Obfuscator options as JSON (required)
+    --framework <stack>         flutter|android-java|swift|react-native|expo|uni-app|mygo
+    --seed <text>               Determinism seed
   --version                     Print the installed package version
 
 Your agent supplies the model, session, tools and native delegation.
@@ -171,6 +176,7 @@ async function main(): Promise<void> {
       host: { type: 'string' },
       'allow-local-execution': { type: 'boolean' },
       framework: { type: 'string' },
+      seed: { type: 'string' },
       platform: { type: 'string' },
       'package-target': { type: 'string' },
       observe: { type: 'boolean' },
@@ -193,6 +199,7 @@ async function main(): Promise<void> {
     submit: ['config', 'build-only'], scan: ['config', 'build-only', 'observe'], inbox: ['config', 'build-only'],
     'reconcile-intake': ['config', 'build-only'],
     remote: ['config', 'observe'],
+    obfuscator: ['config', 'framework', 'seed'],
   };
   if (!(command in flags)) throw new Error(`Unknown command ${command}; run apphx --help`);
   for (const token of tokens) {
@@ -202,6 +209,22 @@ async function main(): Promise<void> {
   const buildOnly = values['build-only'];
   if (values.global && values.project) throw new Error('Choose --project or --global, not both');
   const scope = { project: values.project, global: values.global };
+  if (command === 'obfuscator') {
+    arity(args, 1, 1, 'obfuscator <project> --config <file> [--framework <stack>] [--seed <text>]');
+    const bundled = join(packageRoot, 'dist', 'vendor', 'obfuscator', 'dist', 'cli.js');
+    if (!existsSync(bundled)) throw new Error(`Bundled obfuscator is missing at ${bundled}; reinstall the apphx package`);
+    const forward = [bundled, '--project', resolve(args[0]!)];
+    // Forward only flags that were actually given, so the bundled binary sees exactly what the user
+    // typed; an explicit empty value must reach the child and be rejected there, not dropped here.
+    const configGiven = tokens.some(token => token.kind === 'option' && token.name === 'config');
+    if (configGiven) forward.push('--config', resolve(values.config));
+    if (values.framework !== undefined) forward.push('--framework', values.framework);
+    if (values.seed !== undefined) forward.push('--seed', values.seed);
+    const result = spawnSync(process.execPath, forward, { stdio: 'inherit' });
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+    return;
+  }
   if (command === 'hosts') { arity(args, 0, 0, 'hosts'); print(hosts); return; }
   if (command === 'install' || command === 'update' || command === 'uninstall') {
     arity(args, 1, 1, `${command} <host> [--project <directory> | --global]`);
