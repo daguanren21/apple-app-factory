@@ -54,6 +54,13 @@ export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optiona
   if (value.baseJobId && value.project?.sourceDir) context.addIssue({ code: 'custom', path: ['project', 'sourceDir'], message: 'project.sourceDir and baseJobId are mutually exclusive' });
 });
 
+export const ObfuscationConfigSchema = z.strictObject({
+  command: z.array(command.element).min(1).default(['apphx-obfuscator']),
+  configPath: text,
+  seed: text.optional(),
+});
+export type ObfuscationConfig = z.infer<typeof ObfuscationConfigSchema>;
+
 export const ConfigSchema = z.strictObject({
   configPath: text.optional(), stateDir: text, workspaceRoot: text,
   allowLocalExecution: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
@@ -66,6 +73,7 @@ export const ConfigSchema = z.strictObject({
   toolchain: z.strictObject({ flutterSdk: text }).optional(),
   apple: z.strictObject({ exportOptionsPlist: text.optional() }).optional(),
   packageTarget: PackageTargetSchema, executionWarning: text.optional(),
+  obfuscation: ObfuscationConfigSchema.optional(),
   packaging: z.strictObject({ commands: z.array(command).min(1), artifactPath: text.refine(value => relativeProjectPath(value), 'artifactPath must be an exact project-relative file or directory without traversal or wildcards'), provider: z.enum(['local', 'cloud']).default('local') }).optional(),
 }).superRefine((value, context) => {
   if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) context.addIssue({ code: 'custom', path: ['allowCloudBuild'], message: 'Cloud packaging requires explicit allowCloudBuild=true' });
@@ -81,7 +89,7 @@ export function validateJobConfig(spec: Spec, config: Config): void {
   if (spec.platform === 'macos' && (config.allowCloudBuild || config.packaging?.provider === 'cloud')) throw new Error('macos currently supports local build-only delivery; notarization and uploads are not part of this tool');
   if (spec.framework === 'mygo') validateMyGoPackaging(config, spec.screenshotsDir);
 }
-export const StageSchema = z.enum(['research', 'build', 'verify', 'review', 'package']);
+export const StageSchema = z.enum(['research', 'build', 'obfuscate', 'verify', 'review', 'package']);
 export type Stage = z.infer<typeof StageSchema>;
 export const StatusSchema = z.enum(['queued', 'running', 'waiting', 'blocked', 'failed', 'ready', 'built']);
 export type Status = z.infer<typeof StatusSchema>;

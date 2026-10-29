@@ -144,7 +144,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   next <id>                     Resume a host turn or show the next deterministic action
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
-  step <id>                     Execute one verification or packaging stage
+  step <id>                     Execute one obfuscation, verification or packaging stage
   status [id]                   Read durable task state as JSON
   events <id>                   Read task transitions and evidence
   retry <id>                    Resume stopped work; preserve budgets and proofs

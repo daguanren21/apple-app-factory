@@ -162,7 +162,7 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
     } else if (job.stage === 'build') {
       if (result !== undefined) throw new Error('Build completion accepts no result payload; actual deterministic verification is required');
       assertProject(projectDirectory(job), job.spec);
-      patch = { ...invalidateVerification(), stage: 'verify' };
+      patch = { ...invalidateVerification(), stage: job.config.obfuscation ? 'obfuscate' : 'verify' };
     } else {
       const review = ReviewSchema.parse(result);
       if (!job.spec.acceptance.every(requirement => review.acceptanceEvidence.some(item => item.requirement === requirement))) throw new Error('Review verdict must cover each acceptance requirement with concrete evidence');
@@ -213,7 +213,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       if (job.spec.framework === 'mygo') validateMyGoCommand(config, argv);
       const command = effectiveEnv.FLUTTER_ROOT && ['flutter', 'dart'].includes(argv[0]) ? [join(effectiveEnv.FLUTTER_ROOT, 'bin', argv[0]), ...argv.slice(1)] : argv;
       const cwd = options.cwd ?? projectDirectory(job);
-      if (config.isolation && ['verify', 'package'].includes(job.stage)) {
+      if (config.isolation && ['obfuscate', 'verify', 'package'].includes(job.stage)) {
         isolated = prepareIsolatedCommand(command, {
           config, workspace: job.workspace, cwd, env: effectiveEnv,
           readableFiles: [...readableFiles, ...(capabilities.readableFiles ?? [])],
@@ -310,6 +310,20 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       if (dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory) !== dependenciesBefore) throw new Error('Verification changed dependency resolution; the new resolution must be verified again');
       const screenshotDigest = job.spec.screenshotsDir ? sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) : null;
       return next(store, job, 'review', { verifiedDigest: before, verifiedDependencyDigest: dependenciesBefore, screenshotDigest, verifiedAt: new Date().toISOString() });
+    }
+    if (job.stage === 'obfuscate') {
+      const obfuscation = job.config.obfuscation;
+      if (!obfuscation) throw Object.assign(new Error('Obfuscation stage requires config.obfuscation'), { code: 'SETUP_REQUIRED' });
+      const argv = [
+        ...expandArgv(obfuscation.command, environment),
+        '--project', projectDirectory(job),
+        '--config', obfuscation.configPath,
+        '--framework', job.spec.framework,
+        ...(obfuscation.seed ? ['--seed', obfuscation.seed] : []),
+      ];
+      const result = await trackedRun(argv, {}, { readableFiles: [obfuscation.configPath] });
+      if (result.code !== 0) throw new Error(`Obfuscation failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
+      return next(store, job, 'verify');
     }
     if (job.stage === 'package') {
       requireReviewProof(job);

@@ -145,6 +145,41 @@ test('failed runtime verification returns to host build and cannot retain approv
   assert.equal(repair.job.hostTurns, 3);
 });
 
+test('configured obfuscation runs between build and verify before any verification evidence exists', async t => {
+  const configPath = join(tmpdir(), `obfuscator-${Date.now()}.json`);
+  writeFileSync(configPath, JSON.stringify({ code: { removeComments: true }, seed: 'fixture' }));
+  const marker = join(tmpdir(), `obfuscated-${Date.now()}`);
+  t.after(() => { rmSync(configPath, { force: true }); rmSync(marker, { force: true }); });
+  const f = fixture(t, { obfuscation: { command: [process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'obfuscated')`, '--'], configPath } });
+  const build = await buildTurn(f);
+  const pending = completeTurn(f.store, f.job.id, build.turn.id);
+  assert.equal(pending.stage, 'obfuscate');
+  assert.equal(pending.verifiedDigest, null);
+  assert.equal((await nextTurn(f.store, f.job.id)).action, 'step');
+  const obfuscated = await runStep(f.store, f.config, f.job.id);
+  assert.equal(obfuscated.stage, 'verify');
+  assert.equal(obfuscated.verifiedDigest, null);
+  assert.equal(readFileSync(marker, 'utf8'), 'obfuscated');
+  const verified = await runStep(f.store, f.config, f.job.id);
+  assert.equal(verified.stage, 'review');
+  assert.match(verified.verifiedDigest, /^[a-f0-9]{64}$/);
+});
+
+test('failed obfuscation returns for repair with feedback and never reaches verify', async t => {
+  const configPath = join(tmpdir(), `obfuscator-${Date.now()}.json`);
+  writeFileSync(configPath, JSON.stringify({ code: { removeComments: true } }));
+  t.after(() => rmSync(configPath, { force: true }));
+  const f = fixture(t, { obfuscation: { command: [process.execPath, '-e', 'process.exit(7)', '--'], configPath } });
+  const build = await buildTurn(f);
+  completeTurn(f.store, f.job.id, build.turn.id);
+  const failure = await runStep(f.store, f.config, f.job.id);
+  assert.equal(failure.stage, 'obfuscate');
+  assert.equal(failure.status, 'waiting');
+  assert.equal(failure.verifiedDigest, null);
+  assert.match(failure.feedback, /Obfuscation failed/);
+  assert.equal(existsSync(f.marker), false);
+});
+
 for (const mutation of ['source', 'dependencies', 'screenshots']) {
   test(`review completion invalidates ${mutation} mutations instead of granting packaging`, async t => {
     const product = mutation === 'screenshots' ? { ...spec, screenshotsDir: 'build/screenshots' } : spec;

@@ -56,6 +56,10 @@ export function loadConfig(path = 'factory.json'): Config & { configPath: string
     if (!child || !(child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child))) throw new Error('toolchain.flutterSdk must be outside workspaceRoot so verification does not trust an agent-writable SDK');
   }
   if (config.apple?.exportOptionsPlist) config.apple.exportOptionsPlist = resolve(root, config.apple.exportOptionsPlist);
+  if (config.obfuscation) {
+    config.obfuscation.configPath = resolve(root, config.obfuscation.configPath);
+    if (!existsSync(config.obfuscation.configPath) || !lstatSync(config.obfuscation.configPath).isFile()) throw new Error(`obfuscation.configPath must name an existing regular file: ${config.obfuscation.configPath}`);
+  }
   if (config.inbox) {
     config.inbox.directory = resolve(root, config.inbox.directory);
     const workspace = canonicalPath(config.workspaceRoot);

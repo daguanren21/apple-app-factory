@@ -4,7 +4,7 @@ function verificationContract(config: Config) {
   return {
     verification: config.verification, executionEnv: config.executionEnv, toolchain: config.toolchain,
     packaging: config.packaging, apple: config.apple, packageTarget: config.packageTarget, allowCloudBuild: config.allowCloudBuild,
-    isolation: config.isolation,
+    isolation: config.isolation, obfuscation: config.obfuscation,
   };
 }
 

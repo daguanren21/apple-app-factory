@@ -24,6 +24,18 @@ test('removed provider and daemon settings are rejected rather than silently ign
   ]) assert.equal(ConfigSchema.safeParse({ ...config, ...patch }).success, false);
 });
 
+test('optional obfuscation config defaults its command and rejects malformed shapes', () => {
+  const config = { ...example, stateDir: '/owned/state', workspaceRoot: '/owned/workspaces' };
+  const parsed = ConfigSchema.parse({ ...config, obfuscation: { configPath: 'obfuscator.json', seed: 's' } });
+  assert.deepEqual(parsed.obfuscation.command, ['apphx-obfuscator']);
+  assert.equal(parsed.obfuscation.configPath, 'obfuscator.json');
+  for (const patch of [
+    { obfuscation: { command: [], configPath: 'x.json' } },
+    { obfuscation: { configPath: '  ' } },
+    { obfuscation: { configPath: 'x.json', extraKey: 1 } },
+  ]) assert.equal(ConfigSchema.safeParse({ ...config, ...patch }).success, false);
+});
+
 test('products and host review results require complete typed acceptance evidence', () => {
   for (const patch of [{ acceptance: [] }, { differentiators: [' '] }, { framework: 'web' }, { hiddenFeatures: true }, { reviewBypass: true }]) assert.equal(SpecSchema.safeParse({ ...product, ...patch }).success, false);
   for (const verdict of [{ approved: 'true', findings: [], acceptanceEvidence: [] }, { approved: true, findings: [], acceptanceEvidence: [{ requirement: product.acceptance[0], evidence: '' }] }, { approved: true, findings: 'none', acceptanceEvidence: [] }]) assert.equal(ReviewSchema.safeParse(verdict).success, false);
