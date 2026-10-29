@@ -134,7 +134,7 @@ test('requirements reject path traversal and command or permission injection', (
   assert.equal(parseRequirement({ ...product, project: { directory: 'apps/mobile' }, baseJobId: randomUUID() }).spec.project.directory, 'apps/mobile');
   for (const directory of ['/tmp/app', '../app', 'app/../../outside', 'C:\\app', '..\\outside', 'app/../other']) assert.throws(() => parseRequirement({ ...product, project: { directory } }));
   assert.throws(() => parseRequirement({ ...product, project: { sourceDir: 'existing' }, baseJobId: randomUUID() }));
-  for (const patch of [{ packaging }, { allowSubmit: true }, { allowCloudBuild: true }, { hiddenFeatures: true }, { reviewBypass: true }]) assert.throws(() => parseRequirement({ ...product, ...patch }));
+  for (const patch of [{ packaging }, { allowCloudBuild: true }, { hiddenFeatures: true }, { reviewBypass: true }]) assert.throws(() => parseRequirement({ ...product, ...patch }));
 });
 
 test('packager configuration is explicit, strict, owner-controlled and cloud opt-in', t => {
@@ -171,8 +171,7 @@ test('spec and configuration cross-validation never assumes an Apple workflow', 
   validateJobConfig(android, apk);
   assert.throws(() => validateJobConfig(SpecSchema.parse({ ...android, channel: 'google-play' }), apk), /aab/);
   validateJobConfig(SpecSchema.parse({ ...android, channel: 'google-play' }), ConfigSchema.parse({ ...apk, packageTarget: 'aab' }));
-  assert.throws(() => validateJobConfig(SpecSchema.parse(product), ConfigSchema.parse({ ...f.config, allowSubmit: true, packageTarget: 'ipa' })), /app-store/);
-  validateJobConfig(SpecSchema.parse({ ...product, channel: 'app-store' }), ConfigSchema.parse({ ...f.config, allowSubmit: true, packageTarget: 'ipa' }));
+  validateJobConfig(SpecSchema.parse({ ...product, channel: 'app-store' }), ConfigSchema.parse({ ...f.config, packageTarget: 'ipa' }));
 });
 
 test('queue uniqueness uses product/platform/channel/version, not framework or purpose', t => {
@@ -374,7 +373,7 @@ test('migrated publication receipts block only their task while independent loca
   assert.deepEqual(job.receipt, receipt);
   assert.equal(job.ipaPath, '/saved/archive.ipa');
   assert.equal(job.archiveDigest, digest);
-  assert.equal(job.stage, 'publish');
+  assert.equal(job.stage, 'package');
   assert.equal(job.status, 'blocked');
   assert.equal(job.manualRecovery ?? null, null);
   assert.equal(job.artifact, null);

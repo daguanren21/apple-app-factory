@@ -18,9 +18,3 @@ export const AppleReceiptSchema = z.strictObject({
 
 export interface AppleReceipt extends z.infer<typeof AppleReceiptSchema> {}
 
-export interface ApplePollResult {
-  status: 'waiting' | 'approved' | 'rejected';
-  detail: string;
-  distributionReady?: boolean;
-  available?: boolean;
-}

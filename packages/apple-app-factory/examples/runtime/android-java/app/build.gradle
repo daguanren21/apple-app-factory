@@ -1,0 +1,7 @@
+// Deliberately no downloaded Android Gradle Plugin. This application compiles with
+// the owner-selected SDK: aapt -> javac -> d8 -> zipalign -> apksigner.
+plugins { id 'base' }
+tasks.register('assembleDebug', Exec) {
+    workingDir rootProject.projectDir
+    commandLine providers.gradleProperty('node').getOrElse('node'), 'sdk-build.mjs'
+}

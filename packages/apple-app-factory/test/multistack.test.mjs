@@ -13,7 +13,7 @@ import { dependencyDigest } from '../dist/dependencies.js';
 import { run } from '../dist/process.js';
 
 const cli = resolve('dist/cli.js');
-const research = { viable: true, policySources: [], distinctness: 'Controlled lifecycle fixture; not a store approval claim.', risks: [], plan: ['Exercise the configured local workflow.'] };
+const research = { viable: true, distinctness: 'Controlled lifecycle fixture; not a store approval claim.', risks: [], plan: ['Exercise the configured local workflow.'] };
 const profiles = [
   ['flutter', 'android', 'apk'], ['android-java', 'android', 'aab'], ['swift', 'ios', 'ipa'],
   ['react-native', 'ios', 'simulator'], ['expo', 'android', 'apk'], ['uni-app', 'android', 'aab'],
@@ -121,7 +121,6 @@ for (const [framework, platform, target] of profiles) {
     assert.equal(built.artifact.digest, digest);
     assert.equal(built.verifiedDigest, sourceDigest(built.workspace, true, framework));
     assert.deepEqual(built.receipt, {});
-    assert.equal(built.config.allowSubmit, false);
     assert.equal(built.hostTurns, 3);
     assert.deepEqual(built.groups, []);
     assert.deepEqual(built.commands, {});

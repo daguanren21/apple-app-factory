@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, delimiter, relative, sep } from 'node:path';
 import { inside } from './config.js';
+import { removeConfinedPath } from './isolation.js';
 import { ToolchainSchema, toError, type Config, type Job, type Toolchain } from './schemas.js';
 import type { Run } from './process.js';
 
@@ -86,7 +87,10 @@ export async function prepareFlutter(job: Pick<Job, 'config' | 'workspace' | 'sp
       if (cloned.code !== 0) throw unavailable(`Cannot create the workspace-local copy-on-write SDK: ${cloned.stderr || cloned.stdout}`, 'sdk-clone', source);
       signal?.throwIfAborted();
       renameSync(temporary, sdk);
-    } finally { rmSync(temporary, { recursive: true, force: true }); }
+    } finally {
+      if (job.config.isolation) removeConfinedPath(temporary, job.workspace);
+      else rmSync(temporary, { recursive: true, force: true });
+    }
   }
   if (metadata?.ready) return metadata;
   metadata = ToolchainSchema.parse({ ...metadata, ready: true });

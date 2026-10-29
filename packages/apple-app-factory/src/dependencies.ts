@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import { canonicalPath, inside } from './config.js';
 import type { Framework } from './schemas.js';
+import { goDependencyInputs } from './go-dependencies.js';
 
 export const GENERATED_PATHS = new Set([
   '.git', '.dart_tool', '.idea', '.factory-input', '.factory-cache', 'build',
@@ -16,6 +17,13 @@ export function isGeneratedPath(path: string, framework?: Framework): boolean {
   let candidate = sep === '/' ? path : path.split(sep).join('/');
   candidate = candidate.replace(/^\.\//, '').replace(/\/$/, '');
   const parts = candidate.split('/');
+  if (framework === 'mygo') {
+    // MyGo owns only its actual caches and root/selected-project outputs. In
+    // particular lib/build, Pods, .build and .gradle remain ordinary source.
+    return ['.git', '.idea', '.factory-input', '.factory-cache', 'build', 'dist'].includes(parts[0]!)
+      || parts.includes('.mygo') || parts.includes('node_modules')
+      || parts.some((part, index) => part === '.yarn' && ['cache', 'unplugged', 'install-state.gz'].includes(parts[index + 1] ?? ''));
+  }
   if (framework === 'flutter' && (parts.includes('.dart_tool') || parts.includes('.gradle'))) return true;
   // Exclusions are anchored: owned paths such as lib/build remain source.
   if (['.git', '.idea', '.factory-input', '.factory-cache', 'build'].includes(parts[0]!)) return true;
@@ -48,6 +56,17 @@ function manifestCode(path: string, ruby = false): string {
   });
 }
 
+// Consume complete literals before looking for declarations, including multiline
+// Gradle diagnostics. Their contents never establish source ownership.
+const GRADLE_TOKENS = /"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g;
+function gradleCode(path: string): string {
+  return readFileSync(path, 'utf8').replace(GRADLE_TOKENS, token =>
+    token.startsWith('/') ? token.replace(/[^\r\n]/g, ' ') : token);
+}
+function gradlePattern(expression: RegExp): RegExp {
+  return new RegExp(`${GRADLE_TOKENS.source}|${expression.source}`, 'g');
+}
+
 /** Workspace-relative build outputs for statically declared, real Gradle modules. */
 export function generatedModulePaths(root: string, framework: Framework, directory = '.'): ReadonlySet<string> {
   if (!['android-java', 'react-native', 'expo', 'uni-app'].includes(framework)) return new Set<string>();
@@ -58,6 +77,14 @@ export function generatedModulePaths(root: string, framework: Framework, directo
     for (const output of outputs) if (portable === output || portable.startsWith(`${output}/`)) return true;
     return false;
   }
+  function registerBuildOutput(absolute: string): void {
+    for (const build of ['build.gradle', 'build.gradle.kts']) {
+      const manifest = join(absolute, build);
+      const stat = lstatSync(manifest, { throwIfNoEntry: false });
+      if (stat?.isSymbolicLink()) throw new Error(`Gradle module manifest cannot be a symlink: ${manifest}`);
+      if (stat?.isFile()) outputs.add(relative(root, join(absolute, 'build')).split(sep).join('/'));
+    }
+  }
   function visit(current: string): void {
     current = resolve(current);
     if (visited.has(current)) return;
@@ -66,34 +93,39 @@ export function generatedModulePaths(root: string, framework: Framework, directo
     if (generatedInProject(path, framework, directory) || underOutput(path)) return;
     if (path !== relative(canonicalPath(root), canonicalPath(current))) throw new Error(`Gradle build directory cannot be a source symlink: ${current}`);
     visited.add(current);
+    registerBuildOutput(current);
     for (const name of ['settings.gradle', 'settings.gradle.kts']) {
       const settings = join(current, name);
       const stat = lstatSync(settings, { throwIfNoEntry: false });
       if (!stat) continue;
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Gradle settings must be a regular source file: ${settings}`);
-      const text = manifestCode(settings);
+      const text = gradleCode(settings);
       const modules = new Map<string, string>();
-      for (const include of text.matchAll(/\binclude\s*(?:\(([^)]*)\)|([^\r\n]+))/g)) {
-        for (const match of (include[1] ?? include[2]!).matchAll(/["'](:[\w.:-]+)["']/g)) modules.set(match[1]!, match[1]!.slice(1).split(':').join('/'));
+      for (const include of text.matchAll(gradlePattern(/\binclude\s*(?:\(([^)]*)\)|([^\r\n;]+))/))) {
+        const argumentsText = include[1] ?? include[2];
+        if (argumentsText === undefined || !/^\s*(?:(?:"[:\w.-]+"|'[:\w.-]+')\s*,?\s*)+$/.test(argumentsText)) continue;
+        for (const match of argumentsText.matchAll(/["'](:?[\w.-]+(?::[\w.-]+)*)["']/g)) {
+          const id = match[1]!.replace(/^:/, '');
+          modules.set(id, id.split(':').join('/'));
+        }
       }
-      for (const match of text.matchAll(/project\s*\(\s*["']([^"']+)["']\s*\)\s*\.projectDir\s*=\s*file\s*\(\s*["']([^"']+)["']\s*\)/g)) {
-        if (modules.has(match[1]!)) modules.set(match[1]!, match[2]!);
+      for (const match of text.matchAll(gradlePattern(/\bproject\s*\(\s*["'](:?[\w.-]+(?::[\w.-]+)*)["']\s*\)\s*\.projectDir\s*=\s*file\s*\(\s*(?:"([^"\\$]+)"|'([^'\\]+)')\s*\)/))) {
+        if (match[1] === undefined) continue;
+        const id = match[1].replace(/^:/, '');
+        if (modules.has(id)) modules.set(id, (match[2] ?? match[3])!);
       }
       for (const module of modules.values()) {
         if (isAbsolute(module)) throw new Error(`Gradle module requires a workspace-relative path: ${module}`);
         const absolute = resolve(current, module);
         inside(root, absolute);
         if (relative(resolve(root), absolute) !== relative(canonicalPath(root), canonicalPath(absolute))) throw new Error(`Gradle module directory cannot be a source symlink: ${module}`);
-        for (const build of ['build.gradle', 'build.gradle.kts']) {
-          const manifest = join(absolute, build);
-          const stat = lstatSync(manifest, { throwIfNoEntry: false });
-          if (stat?.isSymbolicLink()) throw new Error(`Gradle module manifest cannot be a symlink: ${manifest}`);
-          if (stat?.isFile()) outputs.add(relative(root, join(absolute, 'build')).split(sep).join('/'));
-        }
+        registerBuildOutput(absolute);
       }
-      for (const match of text.matchAll(/\bincludeBuild\s*\(?\s*["']([^"']+)["']/g)) {
-        if (isAbsolute(match[1]!)) throw new Error(`Included Gradle build requires a workspace-relative path: ${match[1]}`);
-        visit(resolve(current, match[1]!));
+      for (const match of text.matchAll(gradlePattern(/\bincludeBuild\s*\(?\s*(?:"([^"\\$]+)"|'([^'\\]+)')/))) {
+        const included = match[1] ?? match[2];
+        if (included === undefined) continue;
+        if (isAbsolute(included)) throw new Error(`Included Gradle build requires a workspace-relative path: ${included}`);
+        visit(resolve(current, included));
       }
     }
   }
@@ -288,14 +320,16 @@ function object(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function dependencyInputs(root: string, framework: Framework, activeDirectory = '.'): { files: string[]; local: Set<string>; resolutions: string[] } {
+function dependencyInputs(root: string, framework: Framework, activeDirectory = '.'): { files: string[]; local: Set<string>; resolutions: string[]; goFiles?: ReadonlySet<string> } {
   projectRoot(root, activeDirectory);
   const resolutions: string[] = [];
   const moduleOutputs = [...generatedModulePaths(root, framework, activeDirectory)];
   const files = sourceFiles(root, framework, activeDirectory, resolutions, moduleOutputs);
-  const local = new Set<string>();
+  const go = framework === 'mygo' ? goDependencyInputs(root, activeDirectory, path => generatedInProject(path, framework, activeDirectory)) : undefined;
+  const javascriptActive = framework !== 'mygo' || ['package.json', 'frontend/package.json'].some(path => existsSync(join(root, activeDirectory, path)));
+  const local = new Set<string>(go?.local);
   const packages = new Map<string, string>();
-  for (const path of files.filter(path => basename(path) === 'package.json')) {
+  for (const path of files.filter(path => javascriptActive && basename(path) === 'package.json')) {
     const pkg = object(JSON.parse(readFileSync(join(root, path), 'utf8')), path);
     if (typeof pkg.name === 'string') packages.set(pkg.name, dirname(path));
   }
@@ -374,6 +408,7 @@ function dependencyInputs(root: string, framework: Framework, activeDirectory = 
   for (const path of files) {
     const name = basename(path);
     const directory = dirname(path);
+    if (framework === 'mygo' && (!javascriptActive || !['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock'].includes(name))) continue;
     if (name === 'package.json') {
       const pkg = object(JSON.parse(readFileSync(join(root, path), 'utf8')), path);
       for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'overrides', 'resolutions']) declarations(pkg[field], directory);
@@ -404,11 +439,14 @@ function dependencyInputs(root: string, framework: Framework, activeDirectory = 
       const text = manifestCode(join(root, path));
       for (const match of text.matchAll(/\brelativePath\s*=\s*"?([^;"\r\n]+)"?\s*;/g)) owned(match[1]!.trim(), dirname(directory));
     } else if (/^(?:settings|build)\.gradle(?:\.kts)?$/.test(name)) {
-      const text = manifestCode(join(root, path));
-      for (const match of text.matchAll(/(?:includeBuild\s*\(?\s*|projectDir\s*=\s*file\s*\(\s*|fileTree\s*\(\s*(?:dir\s*[:=]\s*)?)["']([^"']+)["']/g)) owned(match[1]!, directory, true);
+      const text = gradleCode(join(root, path));
+      for (const match of text.matchAll(gradlePattern(/\b(?:includeBuild\s*\(?\s*|projectDir\s*=\s*file\s*\(\s*|fileTree\s*\(\s*(?:dir\s*[:=]\s*)?)(?:"([^"\\$]+)"|'([^'\\]+)')/))) {
+        const value = match[1] ?? match[2];
+        if (value !== undefined) owned(value, directory, true);
+      }
       // Only literal collections establish local ownership. Gradle is executable;
       // dynamic expressions cannot be proven by this static dependency check.
-      const collections = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(files|dirs)\b\s*(?:(\()|(?=["']))/g;
+      const collections = gradlePattern(/\b(files|dirs)\b\s*(?:(\()|(?=["']))/);
       const literalPath = /"([^"\\$]*)"|'([^'\\]*)'/y;
       for (let match; (match = collections.exec(text));) {
         if (!match[1]) continue;
@@ -436,8 +474,9 @@ function dependencyInputs(root: string, framework: Framework, activeDirectory = 
         }
         collections.lastIndex = offset;
       }
-      for (const match of text.matchAll(/\burl\s*(?:=\s*)?(?:uri\s*\(?\s*)?["']([^"']+)["']/g)) {
-        const value = match[1]!;
+      for (const match of text.matchAll(gradlePattern(/\burl\s*(?:=\s*)?(?:uri\s*\(?\s*)?(?:"([^"\\$]+)"|'([^'\\]+)')/))) {
+        const value = match[1] ?? match[2];
+        if (value === undefined) continue;
         if (/^[a-z][a-z0-9+.-]*:/i.test(value)) reference(value, directory);
         else owned(value, directory, true);
       }
@@ -465,7 +504,7 @@ function dependencyInputs(root: string, framework: Framework, activeDirectory = 
       }
     }
   }
-  return { files, local, resolutions };
+  return { files, local, resolutions, ...(go ? { goFiles: go.files } : {}) };
 }
 
 /** Validate declarations before any source is granted verification authority. */
@@ -477,8 +516,9 @@ export function validateLocalDependencies(root: string, framework?: Framework, d
   dependencyInputs(root, framework, directory);
 }
 
-function resolutionMetadata(path: string): boolean {
+function resolutionMetadata(path: string, framework: Framework): boolean {
   const name = basename(path);
+  if (framework === 'mygo') return ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb', '.pnp.cjs'].includes(name);
   return ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb', 'Podfile', 'Podfile.lock', 'Package.swift', 'Package.resolved', 'Cartfile', 'Cartfile.resolved', 'project.pbxproj', 'gradle.properties', 'gradle.lockfile', 'gradle-wrapper.properties', 'verification-metadata.xml', 'libs.versions.toml', '.pnp.cjs'].includes(name)
     || /\.(?:gradle(?:\.kts)?|podspec)$/.test(name) || path.includes('dependency-locks/');
 }
@@ -486,7 +526,7 @@ function resolutionMetadata(path: string): boolean {
 export function dependencyDigest(root: string, framework?: Framework, directory = '.'): string {
   // Keep the established normalized Dart resolution contract for standalone callers.
   if (framework === undefined || framework === 'flutter') return flutterDependencyDigest(projectRoot(root, directory));
-  const { files, local, resolutions } = dependencyInputs(root, framework, directory);
+  const { files, local, resolutions, goFiles } = dependencyInputs(root, framework, directory);
   const hash = createHash('sha256').update(`factory-dependency-resolution-v2\0${framework}\0`);
   function add(path: string): void {
     const content = readFileSync(join(root, path));
@@ -494,11 +534,23 @@ export function dependencyDigest(root: string, framework?: Framework, directory 
   }
   const localDirectories = [...local];
   for (const path of files) {
-    if (resolutionMetadata(path) || localDirectories.some(directory => !directory || path === directory || path.startsWith(`${directory}${sep}`))) add(path);
+    if (goFiles?.has(path) || resolutionMetadata(path, framework) || localDirectories.some(directory => !directory || path === directory || path.startsWith(`${directory}${sep}`))) add(path);
+  }
+  if (goFiles) {
+    const sourcePaths = new Set(files);
+    for (const path of [...goFiles].sort()) {
+      if (sourcePaths.has(path)) continue;
+      const absolute = inside(root, path);
+      const stat = lstatSync(absolute);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Generated frontend dependency must be a regular owned file: ${path}`);
+      add(path);
+    }
   }
   // Generated installation records are excluded from source proof, but changes to
   // effective resolution must still invalidate evidence.
-  for (const path of [...new Set([...resolutions, join(directory, '.yarn/install-state.gz'), join(directory, '.pnp.data.json')])].sort()) {
+  const installationRecords = [join(directory, '.yarn/install-state.gz'), join(directory, '.pnp.data.json')];
+  if (framework === 'mygo') installationRecords.push(join(directory, 'frontend/.yarn/install-state.gz'), join(directory, 'frontend/.pnp.data.json'));
+  for (const path of [...new Set([...resolutions, ...installationRecords])].sort()) {
     const absolute = join(root, path);
     if (!existsSync(absolute)) { hash.update(`${path}\0missing\0`); continue; }
     inside(root, absolute);
