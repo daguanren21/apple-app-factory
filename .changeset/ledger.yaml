@@ -6,3 +6,11 @@ apphx@1.1.0:
   dir: packages/apple-app-factory
   intents:
     - wise-walls-bathe
+apphx@2.0.0:
+  dir: packages/apple-app-factory
+  intents:
+    - brave-deers-reply
+    - fresh-apples-audit
+    - quiet-donkeys-obfuscate
+    - steady-walls-protect
+    - wide-owls-divide
