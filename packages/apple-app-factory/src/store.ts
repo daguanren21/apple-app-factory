@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { inspectProcessGroup, signalOwnedProcessGroup, TERMINATION_GRACE_MS } from './process.js';
-import { canonicalPath, validateProjectSource } from './config.js';
+import { canonicalPath, normalizeIsolationPaths, validateProjectSource } from './config.js';
 import { projectDirectory, sourceDigest } from './workspace.js';
 import { dependencyDigest } from './dependencies.js';
 import { ConfigSchema, JobSchema, SpecSchema, InboxEntrySchema, validateJobConfig, toError, type CommandMetadata, type Job, type Spec, type Config, type InboxEntry } from './schemas.js';
@@ -92,8 +92,8 @@ export class Store {
             const config = saved.config;
             config.executionEnv ??= config.agentEnv ?? [];
             config.maxHostTurns ??= config.maxAgentCalls ?? 16;
-            config.packageTarget ??= config.allowSubmit ? 'ipa' : 'simulator';
-            for (const key of ['builder', 'reviewer', 'researcher', 'agentEnv', 'maxAgentCalls', 'maxConcurrentJobs']) delete config[key];
+            config.packageTarget ??= saved.spec?.channel === 'google-play' ? 'aab' : 'simulator';
+            for (const key of ['builder', 'reviewer', 'researcher', 'agentEnv', 'maxAgentCalls', 'maxConcurrentJobs', 'allowSubmit', 'allowRelease']) delete config[key];
             saved.hostTurns ??= saved.agentCalls ?? 0;
             delete saved.agentCalls;
             const advanced = ['review', 'package', 'publish', 'monitor'].includes(saved.stage) || ['built', 'ready', 'approved', 'released'].includes(saved.status);
@@ -106,9 +106,10 @@ export class Store {
             saved.artifact = null;
             if (!published) { saved.ipaPath = null; saved.archiveDigest = null; }
             if (published) {
+              saved.stage = ['publish', 'monitor'].includes(saved.stage) ? 'package' : saved.stage;
               saved.status = 'blocked';
               saved.blockedReason = null;
-              saved.error = 'Saved publication receipts require reconciliation after the fingerprint contract migration; do not replay publication or create a replacement upload';
+              saved.error = 'Automatic store publication has been removed from this tool. Store submission and review are manual human work; legacy publication receipts are retained only as records and will not be replayed.';
             } else if (advanced) {
               saved.stage = 'verify';
               saved.status = 'blocked';
@@ -154,18 +155,35 @@ export class Store {
     const existing = row ? parseStoredJob(row.data) : undefined;
     if (existing?.requestSpec === null) throw new Error(existing.requestSpecError ?? 'Original intake identity is unknown; use reconcile-intake with the original requirements');
     const prospective = pending.find(item => sameIdentity(item.spec, spec));
-    const original = existing?.requestSpec ? { spec: existing.requestSpec, baseJobId: existing.baseJobId } : undefined;
+    const original = existing?.requestSpec ? { spec: existing.requestSpec, baseJobId: existing.automaticBase ? undefined : existing.baseJobId } : undefined;
     for (const candidate of [original, prospective]) {
       if (candidate && (JSON.stringify(candidate.spec) !== JSON.stringify(spec) || candidate.baseJobId !== baseJobId)) throw new Error(`${spec.id} already has immutable requirements for this platform, channel and version; submit a new version instead of editing its task`);
     }
-    if (existing) return existing;
-    const base = baseJobId === undefined ? undefined : this.get(baseJobId);
-    if (base && (base.spec.id !== spec.id || base.spec.platform !== spec.platform || base.spec.channel !== spec.channel || base.spec.framework !== spec.framework || !['built', 'ready', 'approved', 'released'].includes(base.status) || !base.verifiedDigest || !base.verifiedDependencyDigest || base.turn || base.groups.length || base.manualRecovery)) {
+    if (existing || prospective) return existing;
+    const base = this.selectBase(spec, baseJobId, pending);
+    if (base && (base.spec.id !== spec.id || base.spec.platform !== spec.platform || base.spec.channel !== spec.channel || base.spec.framework !== spec.framework || !['built', 'ready'].includes(base.status) || !base.verifiedDigest || !base.verifiedDependencyDigest || base.turn || base.groups.length || base.manualRecovery)) {
       throw new Error('baseJobId must identify a finished, verified task of the same product, platform, channel and framework with no active work');
     }
+    if (base) this.predecessorSpec(spec, base);
     if (base && sourceDigest(base.workspace, true, base.spec.framework, base.spec.project?.directory) !== base.verifiedDigest) throw new Error('baseJobId source changed after verification; verify the predecessor again before creating a successor');
     if (base && dependencyDigest(base.workspace, base.spec.framework, base.spec.project?.directory) !== base.verifiedDependencyDigest) throw new Error('baseJobId dependency resolution changed after verification; verify the predecessor again before creating a successor');
     return undefined;
+  }
+  private selectBase(spec: Spec, baseJobId?: string, pending: ReadonlyArray<{ spec: Spec; baseJobId?: string }> = []): Job | undefined {
+    if (baseJobId !== undefined) return this.get(baseJobId);
+    if (spec.platform !== 'ios' || spec.channel !== 'app-store' || spec.project?.sourceDir) return undefined;
+    const row = this.db.prepare("SELECT data FROM jobs WHERE product=? AND platform=? AND channel=? AND status IN ('built','ready') ORDER BY rowid DESC LIMIT 1").get(spec.id, spec.platform, spec.channel);
+    if (row) return parseStoredJob(row.data);
+    const history = this.db.prepare('SELECT 1 FROM jobs WHERE product=? AND platform=? AND channel=? LIMIT 1').get(spec.id, spec.platform, spec.channel);
+    if (history || pending.some(item => item.spec.id === spec.id && item.spec.platform === spec.platform && item.spec.channel === spec.channel && !sameIdentity(item.spec, spec))) throw new Error('Previous App Store versions exist but none is finished and verified; finish or explicitly import the existing application before creating a successor');
+    return undefined;
+  }
+
+  private predecessorSpec(spec: Spec, base: Job): Spec {
+    if (spec.platform !== 'ios' || spec.channel !== 'app-store') return spec;
+    const directory = base.spec.project?.directory ?? '.';
+    if (spec.project && spec.project.directory !== directory) throw new Error('project.directory must preserve the predecessor project directory');
+    return SpecSchema.parse({ ...spec, ...(base.spec.project || spec.project ? { project: { directory } } : {}) });
   }
   private snapshotConfig(value: unknown): Config {
     const config = ConfigSchema.parse(value);
@@ -173,11 +191,13 @@ export class Store {
     config.stateDir = canonicalPath(resolve(root, config.stateDir));
     config.workspaceRoot = canonicalPath(resolve(root, config.workspaceRoot));
     if (overlaps(config.stateDir, config.workspaceRoot) || overlaps(this.directory, config.workspaceRoot)) throw new Error('stateDir and workspaceRoot must not overlap in either direction');
+    normalizeIsolationPaths(config);
     return config;
   }
   private insertJob(spec: Spec, config: Config, baseJobId?: string): Job {
     if (this.checkIngest(spec, baseJobId)) throw new Error(`${spec.id} ${spec.platform} ${spec.channel} ${spec.version} is already queued; retry its task or use a new product version`);
-    const base = baseJobId === undefined ? undefined : this.get(baseJobId);
+    const base = this.selectBase(spec, baseJobId);
+    const effectiveSpec = base ? this.predecessorSpec(spec, base) : spec;
     const sourceDirectory = validateProjectSource(spec, config);
     let importDigest: string | undefined;
     if (sourceDirectory) {
@@ -186,10 +206,10 @@ export class Store {
     }
     const now = Date.now();
     const id = randomUUID();
-    const job = JobSchema.parse({ id, spec, requestSpec: spec, config, ...(base ? { baseJobId: base.id, baseDigest: base.verifiedDigest } : {}), ...(sourceDirectory ? { sourceDirectory, importDigest, importPrepared: false } : {}), stage: 'research', status: 'queued', blockedReason: null, manualRecovery: null, createdAt: now, updatedAt: now, nextAt: now, attempts: {}, hostTurns: 0, turn: null, groups: [], commands: {}, receipt: {}, logs: [], workspace: join(config.workspaceRoot, id) });
+    const job = JobSchema.parse({ id, spec: effectiveSpec, requestSpec: spec, config, ...(base ? { baseJobId: base.id, baseDigest: base.verifiedDigest, ...(baseJobId === undefined ? { automaticBase: true } : {}) } : {}), ...(sourceDirectory ? { sourceDirectory, importDigest, importPrepared: false } : {}), stage: 'research', status: 'queued', blockedReason: null, manualRecovery: null, createdAt: now, updatedAt: now, nextAt: now, attempts: {}, hostTurns: 0, turn: null, groups: [], commands: {}, receipt: {}, logs: [], workspace: join(config.workspaceRoot, id) });
     projectDirectory(job);
     this.db.prepare('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)').run(id, spec.id, spec.platform, spec.channel, spec.version, job.status, now, JSON.stringify(job));
-    this.event(id, { stage: job.stage, status: job.status, baseJobId });
+    this.event(id, { stage: job.stage, status: job.status, baseJobId: job.baseJobId });
     return job;
   }
   inboxEntries(): InboxEntry[] {
@@ -232,7 +252,7 @@ export class Store {
     const job = JobSchema.parse({ ...current, ...patch, config, updatedAt: Date.now() });
     validateJobConfig(job.spec, job.config);
     if (job.id !== current.id || !sameIdentity(job.spec, current.spec) || job.spec.framework !== current.spec.framework) throw new Error('Task product, platform, channel, version and framework are immutable; enqueue a new task');
-    if (job.workspace !== current.workspace || job.sourceDirectory !== current.sourceDirectory || job.importDigest !== current.importDigest || job.baseJobId !== current.baseJobId || job.baseDigest !== current.baseDigest || JSON.stringify(job.spec.project) !== JSON.stringify(current.spec.project)) throw new Error('Pinned project source and workspace identity cannot be changed by task updates');
+    if (job.workspace !== current.workspace || job.sourceDirectory !== current.sourceDirectory || job.importDigest !== current.importDigest || job.baseJobId !== current.baseJobId || job.baseDigest !== current.baseDigest || job.automaticBase !== current.automaticBase || JSON.stringify(job.spec.project) !== JSON.stringify(current.spec.project)) throw new Error('Pinned project source and workspace identity cannot be changed by task updates');
     if (!reconcileIntake && patch.requestSpec !== undefined && JSON.stringify(job.requestSpec) !== JSON.stringify(current.requestSpec)) throw new Error('Original intake requirements cannot be changed by task updates');
     this.db.prepare('UPDATE jobs SET status=?,next_at=?,data=? WHERE id=?').run(job.status, job.nextAt, JSON.stringify(job), job.id);
     this.event(job.id, patch);
@@ -243,7 +263,7 @@ export class Store {
     return this.transaction(() => {
       const current = this.get(id);
       if (current.requestSpec !== null) throw new Error('This task already has a known intake identity; it cannot be replaced');
-      if (!sameIdentity(spec, current.spec) || spec.framework !== current.spec.framework || baseJobId !== current.baseJobId) throw new Error('Original requirements must match this task product, platform, channel, framework, version and predecessor');
+      if (!sameIdentity(spec, current.spec) || spec.framework !== current.spec.framework || baseJobId !== (current.automaticBase ? undefined : current.baseJobId)) throw new Error('Original requirements must match this task product, platform, channel, framework, version and predecessor');
       return this.saveJob(current, { requestSpec: spec, requestSpecError: null }, true);
     });
   }

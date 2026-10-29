@@ -2,8 +2,6 @@
   "stateDir": ".factory",
   "workspaceRoot": "workspaces",
   "allowLocalExecution": false,
-  "allowSubmit": false,
-  "allowRelease": false,
   "allowCloudBuild": false,
   "packageTarget": "simulator",
   "executionEnv": ["IOS_DEVICE_ID"],

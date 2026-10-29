@@ -1,0 +1,18 @@
+{
+  "stateDir": ".factory",
+  "workspaceRoot": "workspaces",
+  "allowLocalExecution": false,
+  "allowCloudBuild": false,
+  "packageTarget": "dmg",
+  "executionEnv": [],
+  "verification": {
+    "prerequisites": [["go", "version"], ["go", "tool", "mygo", "version"], ["bun", "--version"]],
+    "checks": [["go", "vet", "./..."], ["go", "test", "./..."], ["bun", "run", "build"]],
+    "runtime": [["go", "run", "./cmd/acceptance"]]
+  },
+  "packaging": {
+    "provider": "local",
+    "commands": [["go", "tool", "mygo", "build", "-platform", "darwin/arm64", "-sign", "-", "-skip-notarize", "-o", "build"]],
+    "artifactPath": "build/darwin-arm64/MyGo App 0.1.0.dmg"
+  }
+}

@@ -37,15 +37,15 @@ function prerequisiteJob(store, config) {
   return store.update(job.id, { status: 'blocked', blockedReason: { kind: 'prerequisite', stage: 'research', prerequisite: { reason: 'Controlled missing tool' } } });
 }
 
-test('claim validates the final permissions under the same transaction that marks running', t => {
+test('claim validates the final configuration under the same transaction that marks running', t => {
   const f = fixture(t), first = f.open(), other = f.open();
   const job = prerequisiteJob(first, f.config);
-  beforeFirstTransaction(first, () => other.update(job.id, { config: { ...f.config, packageTarget: 'ipa', allowSubmit: true } }));
-  const claimed = first.next(candidate => !candidate.config.allowSubmit);
+  beforeFirstTransaction(first, () => other.update(job.id, { config: { ...f.config, packageTarget: 'ipa' } }));
+  const claimed = first.next(candidate => candidate.config.packageTarget !== 'ipa');
   assert.equal(claimed, undefined);
   const saved = other.get(job.id);
   assert.equal(saved.status, 'blocked');
-  assert.equal(saved.config.allowSubmit, true);
+  assert.equal(saved.config.packageTarget, 'ipa');
   assert.equal(saved.hostTurns, 0);
   assert.deepEqual(saved.attempts, {});
 });
@@ -69,21 +69,15 @@ test('a candidate made terminal or deferred before claim is not restarted', t =>
   }
 });
 
-test('feedback changes operational build identity without changing original intake identity', async t => {
+test('inbox replay preserves original intake identity without any build identity mutation', async t => {
   const f = fixture(t), store = f.open();
   mkdirSync(f.config.inbox.directory, { recursive: true });
   const input = join(f.config.inbox.directory, 'request.json');
   writeFileSync(input, JSON.stringify(product));
   const intake = await scanInbox(store, f.config);
   const id = intake.entries[0].jobId;
-  store.update(id, { stage: 'monitor', status: 'blocked', appleReview: { status: 'rejected', detail: 'Controlled rejection used only for local repair verification' } });
-  const feedbackPath = join(f.root, 'feedback.txt');
-  writeFileSync(feedbackPath, 'Controlled feedback: preserve backup data when import is corrupt. No Apple submission occurred.');
-  const feedback = await run([process.execPath, cli, 'feedback', id, feedbackPath, '--config', f.path]);
-  assert.equal(feedback.code, 0, feedback.stderr);
-  const repaired = store.get(id);
-  assert.equal(repaired.spec.apple.buildNumber, String(BigInt(product.apple.buildNumber) + 1n));
-  assert.deepEqual(repaired.requestSpec, product);
+  assert.deepEqual(store.get(id).spec, product);
+  assert.deepEqual(store.get(id).requestSpec, product);
   const observed = await scanInbox(store, f.config, { observe: true });
   assert.equal(observed.entries[0].status, 'accepted');
   assert.equal(observed.entries[0].jobId, id);
@@ -163,8 +157,8 @@ test('edited legacy jobs require explicit original-input reconciliation even whe
   assert.equal(restored.requestSpecError, null);
   assert.deepEqual(restored.spec, f.spec);
   assert.equal(restored.status, 'blocked');
-  assert.equal(restored.config.allowSubmit, false);
-  assert.equal(restored.config.allowRelease, false);
+  assert.equal(restored.config.allowSubmit, undefined);
+  assert.equal(restored.config.allowRelease, undefined);
   assert.throws(() => migrated.reconcileIntake(f.id, { ...product, name: 'Overwriting a known identity' }));
   const renamed = join(f.config.inbox.directory, 'renamed.json');
   renameSync(f.source, renamed);

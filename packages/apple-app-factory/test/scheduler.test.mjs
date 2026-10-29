@@ -122,26 +122,6 @@ for (const status of ['blocked', 'failed', 'built']) {
   });
 }
 
-for (const permission of ['allowSubmit', 'allowRelease']) {
-  test(`build-only rejects snapshotted ${permission} before changing the selected job`, async t => {
-    const f = fixture(t);
-    const job = f.enqueue('authorized-task', 'verify', { ...f.config, packageTarget: 'ipa', allowSubmit: true, [permission]: true });
-    const events = f.store.events(job.id);
-    await assert.rejects(f.start(job.id, { buildOnly: true }), /build-only refuses/);
-    assert.deepEqual(f.store.get(job.id), job);
-    assert.deepEqual(f.store.events(job.id), events);
-    assertUnlocked(f.store);
-  });
-}
-
-test('build-only rejects current configuration publication permission', async t => {
-  const f = fixture(t, { packageTarget: 'ipa', allowSubmit: true });
-  const job = f.enqueue('configuration-permission', 'verify', { ...f.config, allowSubmit: false });
-  await assert.rejects(f.start(job.id, { buildOnly: true }), /build-only refuses/);
-  assert.deepEqual(f.store.get(job.id), job);
-  assertUnlocked(f.store);
-});
-
 test('disabled local execution blocks without starting commands or consuming attempts', async t => {
   const f = fixture(t, { allowLocalExecution: false });
   const job = f.enqueue('local-permission');

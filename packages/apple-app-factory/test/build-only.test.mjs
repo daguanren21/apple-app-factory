@@ -39,6 +39,7 @@ for (const mode of ['artifact', 'missing', 'mutated-source']) {
     t.after(() => store.close());
     const spec = structuredClone(product);
     delete spec.screenshotsDir;
+    spec.channel = 'local';
     const job = store.enqueue(spec, f.config);
     mkdirSync(join(job.workspace, 'build', 'ios', 'iphonesimulator', 'Stale.app'), { recursive: true });
     writeFileSync(join(job.workspace, 'build', 'ios', 'iphonesimulator', 'Stale.app', 'Runner'), 'old output');
@@ -63,21 +64,29 @@ for (const mode of ['artifact', 'missing', 'mutated-source']) {
   });
 }
 
-test('build-only CLI refuses publication configuration before creating a queue', async t => {
-  const f = fixture(t, { packageTarget: 'ipa', allowSubmit: true });
-  const result = await run([process.execPath, cli, 'enqueue', '-', '--build-only', '--config', f.configPath], { input: JSON.stringify(product) });
+test('build-only CLI rejects removed publication permissions in configuration before creating a queue', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-build-only-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const configPath = join(root, 'factory.json');
+  // Written raw: loadConfig is strict and must be the thing that rejects the legacy keys.
+  writeFileSync(configPath, JSON.stringify({ ...example, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] }, allowSubmit: true, allowRelease: false }));
+  const result = await run([process.execPath, cli, 'enqueue', '-', '--build-only', '--config', configPath], { input: JSON.stringify(product) });
   assert.notEqual(result.code, 0);
-  assert.equal(existsSync(f.config.stateDir), false);
+  assert.match(result.stderr, /allowSubmit/);
+  assert.equal(existsSync(join(root, 'state')), false);
+  assert.equal(existsSync(join(root, 'workspaces')), false);
 });
 
-test('build-only step refuses previously authorized queued work without claiming it', async t => {
+test('build-only step refuses host-stage queued work without claiming it', async t => {
   const f = fixture(t);
   const store = new Store(f.config.stateDir);
   t.after(() => store.close());
-  const job = store.enqueue(product, { ...f.config, packageTarget: 'ipa', allowSubmit: true });
-  const before = store.update(job.id, { stage: 'verify' });
+  const job = store.enqueue(product, f.config);
+  assert.equal(job.stage, 'research');
+  const before = store.get(job.id);
   const result = await run([process.execPath, cli, 'step', job.id, '--build-only', '--config', f.configPath]);
   assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /belongs to the host/);
   assert.equal(store.get(job.id).status, 'queued');
   assert.equal(store.get(job.id).hostTurns, 0);
   assert.deepEqual(store.get(job.id), before);
@@ -99,8 +108,9 @@ test('remote command transports validated local requirements through stdin witho
   t.after(() => store.close());
   const saved = store.get(JSON.parse(result.stdout).id);
   assert.equal(saved.spec.name, spec.name);
-  assert.equal(saved.config.allowSubmit, false);
-  assert.equal(saved.config.allowRelease, false);
+  assert.equal(saved.config.allowLocalExecution, true);
+  assert.equal(saved.config.packageTarget, 'simulator');
+  assert.ok(!('allowSubmit' in saved.config) && !('allowRelease' in saved.config));
   assert.equal(saved.stage, 'research');
   assert.equal(existsSync('should-not-run'), false);
 });
@@ -125,6 +135,7 @@ for (const failure of ['missing-output', 'compiler-failure', 'interrupted']) {
     t.after(() => store.close());
     const spec = structuredClone(product);
     delete spec.screenshotsDir;
+    spec.channel = 'local';
     const job = store.enqueue(spec, f.config);
     mkdirSync(job.workspace, { recursive: true });
     writeFileSync(join(job.workspace, 'model.dart'), 'unchanged verified source');
@@ -159,66 +170,102 @@ for (const failure of ['missing-output', 'compiler-failure', 'interrupted']) {
   });
 }
 
-for (const action of ['retry', 'feedback']) {
-  test(`${action} preserves an authorized IPA task when global configuration remains build-only`, async t => {
-    const f = fixture(t);
-    const store = new Store(f.config.stateDir);
-    t.after(() => store.close());
-    const job = store.enqueue(product, { ...f.config, packageTarget: 'ipa', allowSubmit: true, allowRelease: false });
-    store.update(job.id, { stage: action === 'feedback' ? 'monitor' : 'package', status: 'blocked', ...(action === 'feedback' ? { appleReview: { status: 'rejected', detail: 'Controlled review feedback fixture' } } : {}) });
-    const feedback = join(f.root, 'feedback.txt');
-    writeFileSync(feedback, 'Controlled feedback fixture; no Apple submission is claimed.');
-    const result = await run([process.execPath, cli, action, job.id, ...(action === 'feedback' ? [feedback] : []), '--config', f.configPath]);
-    assert.equal(result.code, 0, result.stderr);
-    const resumed = store.get(job.id);
-    assert.equal(resumed.config.packageTarget, 'ipa');
-    assert.equal(resumed.config.allowSubmit, true);
-    assert.equal(resumed.config.allowRelease, false);
-    assert.equal(loadConfig(f.configPath).packageTarget, 'simulator');
-    assert.equal(loadConfig(f.configPath).allowSubmit, false);
+test('retry preserves queued proofs and budgets while adopting the current global configuration', async t => {
+  const f = fixture(t);
+  const store = new Store(f.config.stateDir);
+  t.after(() => store.close());
+  const job = store.enqueue(product, f.config);
+  mkdirSync(job.workspace, { recursive: true });
+  writeFileSync(join(job.workspace, 'model.dart'), 'Controlled verified source');
+  const digest = sourceDigest(job.workspace);
+  const before = store.update(job.id, {
+    stage: 'package', status: 'blocked', error: 'Controlled blocked fixture; store machinery is gone, only local evidence exists',
+    verifiedDigest: digest, verifiedDependencyDigest: dependencyDigest(job.workspace), verifiedAt: new Date().toISOString(),
+    review: { approved: true, findings: [], acceptanceEvidence: product.acceptance.map(requirement => ({ requirement, evidence: 'Controlled retry fixture' })) },
+    artifact: { kind: 'ios-simulator', path: join(f.root, 'controlled.app'), digest: 'a'.repeat(64), createdAt: new Date().toISOString() },
+    attempts: { build: 2, verify: 1, package: 1 }, hostTurns: 3,
   });
-}
+  // A non-verification knob changes: retry must adopt the current config without touching proofs.
+  const globalConfig = JSON.parse(readFileSync(f.configPath, 'utf8'));
+  globalConfig.maxAttempts = 5;
+  writeFileSync(f.configPath, JSON.stringify(globalConfig));
+  const result = await run([process.execPath, cli, 'retry', job.id, '--build-only', '--config', f.configPath]);
+  assert.equal(result.code, 0, result.stderr);
+  const resumed = store.get(job.id);
+  assert.equal(resumed.status, 'queued');
+  assert.equal(resumed.stage, 'package');
+  for (const field of ['verifiedDigest', 'verifiedDependencyDigest', 'verifiedAt', 'review', 'artifact', 'attempts', 'hostTurns', 'createdAt']) assert.deepEqual(resumed[field], before[field], field);
+  assert.equal(resumed.config.maxAttempts, 5);
+  assert.equal(resumed.config.packageTarget, 'simulator');
+  assert.deepEqual(resumed.config.verification, loadConfig(f.configPath).verification);
+  assert.equal(readFileSync(f.configPath, 'utf8'), JSON.stringify(globalConfig));
+});
 
-for (const scenario of ['no-receipt', 'receipt', 'changed-verification', 'changed-packaging', 'missing-source-proof', 'missing-dependency-proof']) {
-  test(`authorized IPA CLI retry preserves proof or rejects without mutation: ${scenario}`, async t => {
+test('removed publication commands stay unavailable in the CLI', async () => {
+  for (const command of ['authorize', 'feedback']) {
+    const result = await run([process.execPath, cli, command, 'controlled-id', '--build-only']);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Unknown command/);
+  }
+});
+
+for (const scenario of ['unchanged', 'changed-verification', 'changed-packaging', 'missing-source-proof']) {
+  test(`CLI retry preserves proof or rejects without mutation: ${scenario}`, async t => {
     const f = fixture(t);
     const store = new Store(f.config.stateDir);
     t.after(() => store.close());
-    const job = store.enqueue(product, { ...f.config, packageTarget: 'ipa', allowSubmit: true, allowRelease: false });
+    const job = store.enqueue(product, f.config);
     mkdirSync(job.workspace, { recursive: true });
     writeFileSync(join(job.workspace, 'model.dart'), 'Controlled verified source');
-    const ipaPath = join(f.root, 'controlled.ipa');
-    writeFileSync(ipaPath, 'Controlled archive fixture; not an Apple build');
+    const digest = sourceDigest(job.workspace);
     const before = store.update(job.id, {
-      status: 'blocked', stage: scenario === 'no-receipt' ? 'package' : 'publish',
-      verifiedDigest: scenario === 'missing-source-proof' ? null : sourceDigest(job.workspace),
-      verifiedDependencyDigest: scenario === 'missing-dependency-proof' ? null : dependencyDigest(job.workspace),
+      status: 'blocked', stage: 'package',
+      verifiedDigest: scenario === 'missing-source-proof' ? null : digest,
+      verifiedDependencyDigest: dependencyDigest(job.workspace), verifiedAt: new Date().toISOString(),
       review: { approved: true, findings: [], acceptanceEvidence: product.acceptance.map(requirement => ({ requirement, evidence: 'Controlled retry fixture' })) },
-      artifact: { kind: 'ipa', path: ipaPath, digest: 'a'.repeat(64), createdAt: new Date().toISOString() },
-      ipaPath, archiveDigest: 'a'.repeat(64),
-      receipt: scenario === 'no-receipt' ? {} : { versionId: 'saved-version', buildId: 'saved-build' },
-      attempts: { build: 2, verify: 1, publish: 2 }, hostTurns: 3,
+      artifact: { kind: 'ios-simulator', path: join(f.root, 'controlled.app'), digest: 'a'.repeat(64), createdAt: new Date().toISOString() },
+      receipt: { versionId: 'saved-version', buildId: 'saved-build' },
+      attempts: { build: 2, verify: 1, package: 1 }, hostTurns: 3,
     });
     const globalConfig = JSON.parse(readFileSync(f.configPath, 'utf8'));
     if (scenario === 'changed-verification') globalConfig.verification.checks.push([process.execPath, '-e', 'process.exit(1)']);
-    if (scenario === 'changed-packaging') globalConfig.packaging = { commands: [[process.execPath, '-e', 'process.exit(0)']], artifactPath: 'changed.ipa' };
+    if (scenario === 'changed-packaging') globalConfig.packaging = { commands: [[process.execPath, '-e', 'process.exit(0)']], artifactPath: 'build/changed.app' };
     if (scenario.startsWith('changed-')) writeFileSync(f.configPath, JSON.stringify(globalConfig));
     const result = await run([process.execPath, cli, 'retry', job.id, '--config', f.configPath]);
     const resumed = store.get(job.id);
-    if (scenario === 'no-receipt' || scenario === 'receipt') {
+    if (scenario === 'unchanged') {
       assert.equal(result.code, 0, result.stderr);
       assert.equal(resumed.status, 'queued');
-      for (const field of ['stage', 'verifiedDigest', 'verifiedDependencyDigest', 'review', 'artifact', 'ipaPath', 'archiveDigest', 'receipt', 'attempts', 'hostTurns', 'createdAt']) assert.deepEqual(resumed[field], before[field], field);
-      assert.equal(resumed.config.packageTarget, 'ipa');
-      assert.equal(resumed.config.allowSubmit, true);
-      assert.equal(resumed.config.allowRelease, false);
+      for (const field of ['stage', 'verifiedDigest', 'verifiedDependencyDigest', 'verifiedAt', 'review', 'artifact', 'receipt', 'attempts', 'hostTurns', 'createdAt']) assert.deepEqual(resumed[field], before[field], field);
+      assert.equal(resumed.config.packageTarget, loadConfig(f.configPath).packageTarget);
+      assert.deepEqual(resumed.config.verification, loadConfig(f.configPath).verification);
       assert.equal(readFileSync(f.configPath, 'utf8'), JSON.stringify(globalConfig));
-      assert.equal(loadConfig(f.configPath).packageTarget, 'simulator');
-      assert.equal(loadConfig(f.configPath).allowSubmit, false);
+    } else if (scenario === 'missing-source-proof') {
+      // Retry only re-queues; the packaging gate must refuse to build without a source proof.
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(resumed.status, 'queued');
+      assert.equal(resumed.stage, 'package');
+      assert.equal(resumed.verifiedDigest, null);
+      const stepped = await run([process.execPath, cli, 'step', job.id, '--build-only', '--config', f.configPath]);
+      assert.equal(stepped.code, 0, stepped.stderr);
+      const gated = store.get(job.id);
+      assert.equal(gated.status, 'waiting');
+      assert.equal(gated.stage, 'build');
+      assert.equal(gated.artifact, null);
+      assert.match(gated.error, /stale evidence/);
     } else {
-      assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /Verification proof is no longer valid/);
-      assert.deepEqual(resumed, before);
+      // Verification contract changed: proofs are invalidated and the task returns to verify, budgets kept.
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(resumed.status, 'queued');
+      assert.equal(resumed.stage, 'verify');
+      assert.equal(resumed.verifiedDigest, null);
+      assert.equal(resumed.verifiedDependencyDigest, null);
+      assert.equal(resumed.verifiedAt, undefined);
+      assert.equal(resumed.review, null);
+      assert.equal(resumed.artifact, null);
+      assert.deepEqual(resumed.receipt, before.receipt);
+      assert.deepEqual(resumed.attempts, before.attempts);
+      assert.equal(resumed.hostTurns, before.hostTurns);
     }
   });
 }

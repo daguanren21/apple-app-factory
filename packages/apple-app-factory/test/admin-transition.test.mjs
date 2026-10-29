@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { Store } from '../dist/store.js';
 import { loadConfig } from '../dist/config.js';
 import { nextTurn } from '../dist/runner.js';
@@ -16,16 +16,6 @@ const storeModule = new URL('../dist/store.js', import.meta.url).href;
 const digest = 'a'.repeat(64);
 const policyA = { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] };
 const policyB = { ...policyA, checks: [[process.execPath, '-e', 'process.exit(23)']] };
-const publishable = {
-  ...product,
-  apple: {
-    ...product.apple, appId: '123', description: 'Offline packing and luggage weight planning.', keywords: 'packing,luggage',
-    supportUrl: 'https://example.org/support', privacyPolicyUrl: 'https://example.org/privacy',
-    reviewNotes: 'Controlled local metadata fixture.', copyright: 'Example Publisher', storefrontCountry: 'US',
-    contact: { firstName: 'Review', lastName: 'Contact', email: 'review@example.org', phone: '+12025550123' },
-    manualSetupConfirmed: true,
-  },
-};
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-admin-transition-'));
@@ -34,13 +24,11 @@ function fixture(t) {
   writeFileSync(path, JSON.stringify(input));
   const config = loadConfig(path);
   const store = new Store(config.stateDir);
-  const feedback = join(root, 'feedback.txt');
-  writeFileSync(feedback, 'Controlled local feedback fixture; no Apple submission occurred.');
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
-  return { root, path, config, store, feedback, changeConfig(patch) { writeFileSync(path, JSON.stringify({ ...input, ...patch })); } };
+  return { root, path, config, store, changeConfig(patch) { writeFileSync(path, JSON.stringify({ ...input, ...patch })); } };
 }
 
-function invoke(f, action, id, { barrier, buildOnly = false, release = false } = {}) {
+function invoke(f, action, id, { barrier, buildOnly = false } = {}) {
   const imports = [];
   const snapshot = join(f.root, 'barrier.json');
   if (barrier) {
@@ -65,7 +53,6 @@ Store.prototype.transaction = function (action) {
     imports.push('--import', hook);
   }
   const result = spawnSync(process.execPath, [...imports, cli, action, id,
-    ...(action === 'feedback' ? [f.feedback] : action === 'authorize' ? ['--submit', ...(release ? ['--release'] : [])] : []),
     ...(buildOnly ? ['--build-only'] : []), '--config', f.path], { encoding: 'utf8', timeout: 10000 });
   assert.ifError(result.error);
   assert.equal(result.signal, null, result.stderr);
@@ -73,16 +60,12 @@ Store.prototype.transaction = function (action) {
 }
 
 function blocked(f, stage = 'verify', patch = {}) {
-  const job = f.store.enqueue(publishable, f.config);
+  const job = f.store.enqueue(product, f.config);
   return f.store.update(job.id, {
     stage, status: 'blocked', nextAt: 0,
     blockedReason: { kind: 'prerequisite', stage, prerequisite: { reason: 'Controlled transaction boundary' } },
     attempts: { verify: 2 }, hostTurns: 3, ...patch,
   });
-}
-
-function rejected(f) {
-  return blocked(f, 'monitor', { appleReview: { status: 'rejected', detail: 'Controlled local review rejection' } });
 }
 
 test('transition locks before reading and rolls back rejected changes without nested transactions', t => {
@@ -127,81 +110,21 @@ test('retry cannot queue policy B while deterministic execution owns its policy 
   assert.equal(queued.hostTurns, job.hostTurns);
 });
 
-for (const action of ['authorize', 'feedback']) {
-  test(`${action} cannot overwrite a stage claimed before its transaction`, t => {
-    const f = fixture(t), job = action === 'feedback' ? rejected(f) : blocked(f, 'research');
-    const result = invoke(f, action, job.id, { barrier: 'return other.next();' });
-    assert.equal(result.snapshot.status, 'running');
-    assert.notEqual(result.status, 0);
-    assert.deepEqual(f.store.get(job.id), result.snapshot);
-  });
-}
-
-test('build-only retry checks the current permission snapshot inside its transaction', t => {
-  const f = fixture(t), job = blocked(f);
-  const result = invoke(f, 'retry', job.id, { buildOnly: true, barrier: "return other.update(id, { config: { ...other.get(id).config, packageTarget: 'ipa', allowSubmit: true } });" });
-  assert.notEqual(result.status, 0);
-  assert.deepEqual(f.store.get(job.id), result.snapshot);
+test('retry checks a config change committed before its transaction', t => {
+  const f = fixture(t), job = blocked(f, 'package', { verifiedDigest: digest, verifiedDependencyDigest: digest });
+  const result = invoke(f, 'retry', job.id, { barrier: `return other.update(id, { config: { ...other.get(id).config, verification: ${JSON.stringify(policyB)} } });` });
+  assert.deepEqual(result.snapshot.config.verification, policyB);
+  assert.equal(result.status, 0, result.stderr);
+  const saved = f.store.get(job.id);
+  assert.equal(saved.status, 'queued');
+  assert.equal(saved.stage, 'verify');
+  assert.equal(saved.verifiedDigest, null);
+  assert.equal(saved.verifiedDependencyDigest, null);
+  assert.deepEqual(saved.config.verification, policyA);
+  assert.deepEqual(saved.attempts, job.attempts);
+  assert.equal(saved.hostTurns, job.hostTurns);
+  assert.deepEqual(saved.requestSpec, job.requestSpec);
 });
-
-for (const action of ['retry', 'authorize']) {
-  test(`${action} checks a remote intent committed before its transaction`, t => {
-    const f = fixture(t), job = blocked(f);
-    if (action === 'retry') f.changeConfig({ verification: policyB });
-    const result = invoke(f, action, job.id, { barrier: "return other.update(id, { receipt: { upload: { status: 'intent' } } });" });
-    assert.notEqual(result.status, 0);
-    assert.deepEqual(f.store.get(job.id), result.snapshot);
-  });
-}
-
-test('feedback cannot erase a changed remote intent and stage using an old rejection', t => {
-  const f = fixture(t), job = rejected(f);
-  const result = invoke(f, 'feedback', job.id, { barrier: "return other.update(id, { stage: 'publish', receipt: { pending: { key: 'controlled-local-intent', method: 'POST' } } });" });
-  assert.notEqual(result.status, 0);
-  assert.deepEqual(f.store.get(job.id), result.snapshot);
-});
-
-for (const action of ['retry', 'feedback']) {
-  test(`${action} preserves publication permission granted before its transaction`, t => {
-    const f = fixture(t), job = action === 'feedback' ? rejected(f) : blocked(f);
-    const result = invoke(f, action, job.id, { barrier: "return other.update(id, { config: { ...other.get(id).config, packageTarget: 'ipa', allowSubmit: true, allowRelease: true } });" });
-    assert.equal(result.status, 0, result.stderr);
-    const saved = f.store.get(job.id);
-    assert.equal(saved.status, 'queued');
-    assert.equal(saved.config.packageTarget, 'ipa');
-    assert.equal(saved.config.allowSubmit, true);
-    assert.equal(saved.config.allowRelease, true);
-    assert.deepEqual(saved.requestSpec, job.requestSpec);
-    if (action === 'retry') {
-      assert.deepEqual(saved.attempts, job.attempts);
-      assert.equal(saved.hostTurns, job.hostTurns);
-    } else {
-      assert.equal(saved.spec.apple.buildNumber, String(BigInt(job.spec.apple.buildNumber) + 1n));
-      assert.deepEqual(saved.attempts, {});
-      assert.equal(saved.hostTurns, 0);
-    }
-  });
-}
-
-for (const status of ['ready', 'built', 'blocked', 'queued']) {
-  test(`authorize preserves the existing ${status} eligibility contract`, t => {
-    const f = fixture(t), job = blocked(f, 'package', { status, blockedReason: null });
-    const result = invoke(f, 'authorize', job.id, { release: true });
-    const saved = f.store.get(job.id);
-    if (status === 'queued') {
-      assert.notEqual(result.status, 0);
-      assert.deepEqual(saved, job);
-    } else {
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(saved.status, status === 'blocked' ? 'blocked' : 'queued');
-      assert.equal(saved.config.allowSubmit, true);
-      assert.equal(saved.config.allowRelease, true);
-      assert.equal(saved.config.packageTarget, 'ipa');
-      assert.deepEqual(saved.attempts, job.attempts);
-      assert.equal(saved.hostTurns, job.hostTurns);
-    }
-  });
-}
 
 test('manual retry still clears explicit recovery acknowledgement without resetting budgets or unchanged evidence', t => {
   const f = fixture(t);
@@ -222,20 +145,6 @@ test('manual retry still clears explicit recovery acknowledgement without resett
   assert.deepEqual(saved.requestSpec, job.requestSpec);
 });
 
-test('FIFO review feedback is rejected without blocking the queue or changing the rejected task', t => {
-  const f = fixture(t), job = rejected(f);
-  rmSync(f.feedback);
-  execFileSync('mkfifo', [f.feedback]);
-  const before = f.store.get(job.id);
-  const result = spawnSync(process.execPath, [cli, 'feedback', job.id, f.feedback, '--config', f.path], { encoding: 'utf8', timeout: 1500 });
-  assert.ifError(result.error);
-  assert.notEqual(result.status, 0);
-  assert.deepEqual(f.store.get(job.id), before);
-  const other = f.store.enqueue({ ...publishable, version: '1.0.1' }, f.config);
-  f.store.update(other.id, { error: 'Independent task persisted after invalid feedback' });
-  assert.equal(f.store.get(other.id).error, 'Independent task persisted after invalid feedback');
-});
-
 test('retry re-verifies legacy source proof lacking an effective dependency snapshot without resetting budgets', t => {
   const f = fixture(t);
   const job = blocked(f, 'package', { verifiedDigest: digest, review: { approved: true, findings: [], acceptanceEvidence: [] } });
@@ -251,16 +160,14 @@ test('retry re-verifies legacy source proof lacking an effective dependency snap
   assert.equal(resumed.hostTurns, job.hostTurns);
 });
 
-for (const action of ['retry', 'authorize', 'feedback']) {
-  test(`${action} cannot alter an active native-host turn`, async t => {
-    const f = fixture(t);
-    const job = blocked(f, 'build', { status: 'queued', blockedReason: null });
-    const next = await nextTurn(f.store, job.id);
-    assert.equal(next.action, 'host');
-    const before = f.store.get(job.id);
-    const result = invoke(f, action, job.id);
-    assert.notEqual(result.status, 0);
-    assert.deepEqual(f.store.get(job.id), before);
-    assert.equal(f.store.get(job.id).turn.id, next.turn.id);
-  });
-}
+test('retry cannot alter an active native-host turn', async t => {
+  const f = fixture(t);
+  const job = blocked(f, 'build', { status: 'queued', blockedReason: null });
+  const next = await nextTurn(f.store, job.id);
+  assert.equal(next.action, 'host');
+  const before = f.store.get(job.id);
+  const result = invoke(f, 'retry', job.id);
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(f.store.get(job.id), before);
+  assert.equal(f.store.get(job.id).turn.id, next.turn.id);
+});

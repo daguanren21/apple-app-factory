@@ -1,0 +1,2 @@
+rootProject.name = 'apphx-runtime-records'
+include ':app'

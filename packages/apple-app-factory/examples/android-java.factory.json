@@ -2,8 +2,6 @@
   "stateDir": ".factory",
   "workspaceRoot": "workspaces",
   "allowLocalExecution": false,
-  "allowSubmit": false,
-  "allowRelease": false,
   "allowCloudBuild": false,
   "packageTarget": "aab",
   "executionEnv": ["ANDROID_HOME", "ANDROID_SERIAL"],

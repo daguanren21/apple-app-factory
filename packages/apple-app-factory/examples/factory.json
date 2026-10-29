@@ -3,8 +3,6 @@
   "workspaceRoot": "workspaces",
   "inbox": { "directory": "requirements", "pollMs": 2000 },
   "allowLocalExecution": false,
-  "allowSubmit": false,
-  "allowRelease": false,
   "packageTarget": "simulator",
   "executionEnv": ["IOS_DEVICE_ID"],
   "timeoutMs": 900000,

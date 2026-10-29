@@ -4,12 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { generateKeyPairSync } from 'node:crypto';
 import { Store } from '../dist/store.js';
 import { run, executionEnvironment } from '../dist/process.js';
 import { expandArgv, loadConfig, inside } from '../dist/config.js';
 import { executeStep, nextTurn } from '../dist/runner.js';
 import { sourceDigest } from '../dist/workspace.js';
+import { dependencyDigest } from '../dist/dependencies.js';
 
 const cli = resolve('dist/cli.js');
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
@@ -59,6 +59,9 @@ test('queue identity is product, platform, channel and version rather than purpo
   assert.equal(independent.spec.purpose, first.spec.purpose);
   const local = store.enqueue({ ...product, channel: 'local' }, f.config);
   const android = store.enqueue({ ...product, platform: 'android', channel: 'local' }, { ...f.config, packageTarget: 'apk' });
+  mkdirSync(first.workspace, { recursive: true });
+  writeFileSync(join(first.workspace, 'model.dart'), 'verified previous source');
+  store.update(first.id, { status: 'built', verifiedDigest: sourceDigest(first.workspace), verifiedDependencyDigest: dependencyDigest(first.workspace) });
   const update = store.enqueue({ ...product, version: '1.1.0' }, f.config);
   assert.equal(new Set([first, independent, local, android, update].map(job => job.workspace)).size, 5);
   assert.equal(update.spec.version, '1.1.0');
@@ -179,22 +182,17 @@ test('source fingerprints ignore generated build artifacts, reject escaping syml
   assert.throws(() => inside(root, 'outside'));
 });
 
-test('ordinary retry cannot escalate permissions or rewrite an existing manual-release intent', async t => {
+test('retry rejects removed publication configuration without changing the task', async t => {
   const f = fixture(t);
   const store = database(t, f.config);
   const job = store.enqueue(product, f.config);
   store.update(job.id, { status: 'blocked' });
-  writeFileSync(f.path, JSON.stringify({ ...example, packageTarget: 'ipa', allowSubmit: true, allowRelease: true }));
+  writeFileSync(f.path, JSON.stringify({ ...example, packageTarget: 'ipa', allowSubmit: true }));
   const retried = await run([process.execPath, cli, 'retry', job.id, '--config', f.path]);
-  assert.equal(retried.code, 0, retried.stderr);
-  assert.equal(store.get(job.id).config.allowSubmit, false);
-  assert.equal(store.get(job.id).config.allowRelease, false);
-  const pending = store.update(job.id, { stage: 'monitor', status: 'blocked', config: { ...f.config, packageTarget: 'ipa', allowSubmit: true, allowRelease: false }, receipt: { versionId: 'version', buildId: 'build' } });
-  const observed = await run([process.execPath, cli, 'retry', job.id, '--config', f.path]);
-  assert.notEqual(observed.code, 0);
-  assert.deepEqual(store.get(job.id), pending);
-  assert.equal(store.get(job.id).config.allowRelease, false);
-  assert.deepEqual(store.get(job.id).receipt, { versionId: 'version', buildId: 'build' });
+  assert.notEqual(retried.code, 0);
+  assert.match(retried.stderr, /unrecognized_keys/);
+  assert.equal(store.get(job.id).config.allowSubmit, undefined);
+  assert.equal(store.get(job.id).status, 'blocked');
 });
 
 test('cancellation before dispatch preserves the last available attempt', async t => {
@@ -233,8 +231,8 @@ test('interruption during verification is resumable without erasing completed fa
   assert.equal(resumed.verifiedDigest, sourceDigest(job.workspace));
 });
 
-test('a changed nested source cannot reach publication with a stale digest', async t => {
-  const f = fixture(t, { allowLocalExecution: true, allowSubmit: true });
+test('a changed nested source cannot reach packaging with a stale digest', async t => {
+  const f = fixture(t, { allowLocalExecution: true, verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } });
   const store = database(t, f.config);
   const job = store.enqueue(product, f.config);
   mkdirSync(join(job.workspace, 'lib', 'build'), { recursive: true });
@@ -242,39 +240,10 @@ test('a changed nested source cannot reach publication with a stale digest', asy
   writeFileSync(path, 'verified');
   const verifiedDigest = sourceDigest(job.workspace);
   writeFileSync(path, 'changed after review');
-  const result = await executeStep(store, store.update(job.id, { stage: 'publish', verifiedDigest }));
+  const result = await executeStep(store, store.update(job.id, { stage: 'package', verifiedDigest }));
   assert.equal(result.status, 'waiting');
+  assert.equal(result.stage, 'build');
+  assert.equal(result.verifiedDigest, null);
   assert.deepEqual(result.receipt, {});
   assert.equal(result.hostTurns, 0);
-  assert.notEqual(sourceDigest(job.workspace), result.verifiedDigest);
-});
-
-test('temporary Apple monitoring outages do not abandon an already submitted build', async t => {
-  const f = fixture(t, { allowLocalExecution: true, allowSubmit: true });
-  const store = database(t, f.config);
-  const privateKey = join(f.root, 'key.p8');
-  writeFileSync(privateKey, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ type: 'pkcs8', format: 'pem' }));
-  const credentials = { ASC_KEY_ID: 'TESTKEY', ASC_ISSUER_ID: 'test-issuer', ASC_PRIVATE_KEY_PATH: privateKey };
-  const original = Object.fromEntries(Object.keys(credentials).map(key => [key, process.env[key]]));
-  Object.assign(process.env, credentials);
-  t.after(() => { for (const [key, value] of Object.entries(original)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
-  let outages = true;
-  t.mock.method(globalThis, 'fetch', async url => {
-    if (outages) return Response.json({ errors: [{ code: 'TEMPORARY', detail: 'Try later' }] }, { status: 503 });
-    if (new URL(url).pathname.endsWith('/build')) return Response.json({ data: { type: 'builds', id: 'build' } });
-    return Response.json({ data: [{ id: 'version', attributes: { appVersionState: 'PENDING_DEVELOPER_RELEASE' } }] });
-  });
-  const spec = { ...product, apple: { ...product.apple, appId: '123' } };
-  let job = store.enqueue(spec, f.config);
-  job = store.update(job.id, { stage: 'monitor', receipt: { versionId: 'version', buildId: 'build' } });
-  for (let attempt = 0; attempt < 4; attempt++) {
-    job = await executeStep(store, job);
-    assert.equal(job.status, 'waiting');
-    assert.equal(job.stage, 'monitor');
-  }
-  outages = false;
-  const recovered = await executeStep(store, job);
-  assert.equal(recovered.status, 'approved');
-  assert.deepEqual(recovered.receipt, { versionId: 'version', buildId: 'build' });
-  assert.equal(recovered.hostTurns, 0);
 });
