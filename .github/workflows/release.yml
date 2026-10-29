@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       mode:
@@ -41,48 +43,91 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  inputs:
-    name: Validate release request
+  # Resolves the release mode for both triggers:
+  # - workflow_dispatch: the owner-picked mode is validated as before.
+  # - push to main: automatic. Pending changesets mean a feature PR just merged, so
+  #   prepare a version PR; no pending changesets but an unpublished version mean the
+  #   version PR just merged, so publish; otherwise skip.
+  resolve:
+    name: Resolve release mode
     runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
     steps:
-      - name: Require main and valid operation inputs
+      - name: Checkout release source
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve and validate release mode
+        id: mode
         env:
+          EVENT: ${{ github.event_name }}
           MODE: ${{ inputs.mode }}
           DRY_RUN: ${{ inputs.dry-run }}
           SOURCE_SHA: ${{ inputs.source-sha }}
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
         run: |
-          if [ "$GITHUB_REF" != 'refs/heads/main' ]; then
-            echo '::error::Dispatch releases from main; use source-sha for original-source recovery.'
-            exit 1
+          set -euo pipefail
+          if [ "$EVENT" = 'workflow_dispatch' ]; then
+            if [ "$GITHUB_REF" != 'refs/heads/main' ]; then
+              echo '::error::Dispatch releases from main; use source-sha for original-source recovery.'
+              exit 1
+            fi
+            case "$MODE" in
+              plan|prepare|oidc-audit)
+                if [ "$DRY_RUN" = 'true' ] || [ -n "$SOURCE_SHA$PACKAGE$VERSION" ]; then
+                  echo '::error::Recovery and dry-run inputs are only valid for publish modes.'
+                  exit 1
+                fi
+                ;;
+              publish)
+                if [ -n "$PACKAGE$VERSION" ]; then
+                  echo '::error::Package/version selectors require publish-unpublished mode.'
+                  exit 1
+                fi
+                ;;
+              publish-unpublished)
+                if [ -z "$PACKAGE" ] || [ -z "$VERSION" ]; then
+                  echo '::error::publish-unpublished requires an exact package and version.'
+                  exit 1
+                fi
+                ;;
+              *) exit 1 ;;
+            esac
+            echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          case "$MODE" in
-            plan|prepare|oidc-audit)
-              if [ "$DRY_RUN" = 'true' ] || [ -n "$SOURCE_SHA$PACKAGE$VERSION" ]; then
-                echo '::error::Recovery and dry-run inputs are only valid for publish modes.'
-                exit 1
-              fi
-              ;;
-            publish)
-              if [ -n "$PACKAGE$VERSION" ]; then
-                echo '::error::Package/version selectors require publish-unpublished mode.'
-                exit 1
-              fi
-              ;;
-            publish-unpublished)
-              if [ -z "$PACKAGE" ] || [ -z "$VERSION" ]; then
-                echo '::error::publish-unpublished requires an exact package and version.'
-                exit 1
-              fi
-              ;;
-            *) exit 1 ;;
-          esac
+          # Automatic mode on push to main.
+          pending=0
+          for file in .changeset/*.md; do
+            [ -e "$file" ] || continue
+            case "$file" in
+              */README.md) continue ;;
+            esac
+            pending=$((pending + 1))
+          done
+          if [ "$pending" -gt 0 ]; then
+            echo "mode=prepare" >> "$GITHUB_OUTPUT"
+            echo "::notice::$pending pending changeset(s) on main; preparing a version PR"
+            exit 0
+          fi
+          version=$(node -p "require('./packages/apple-app-factory/package.json').version")
+          published=$(npm view apphx version --registry=https://registry.npmjs.org 2>/dev/null || true)
+          if [ -n "$published" ] && [ "$version" != "$published" ]; then
+            echo "mode=publish" >> "$GITHUB_OUTPUT"
+            echo "::notice::apphx $version is not on npm (latest: $published); publishing"
+          else
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::no pending changesets and apphx $version already published; nothing to do"
+          fi
 
   plan:
     name: Review native version plan
-    needs: inputs
-    if: ${{ inputs.mode == 'plan' }}
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'plan' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,8 +146,8 @@ jobs:
 
   release:
     name: Prepare or publish stable release
-    needs: inputs
-    if: ${{ inputs.mode == 'prepare' || inputs.mode == 'publish' || inputs.mode == 'publish-unpublished' }}
+    needs: resolve
+    if: ${{ contains(fromJSON('["prepare", "publish", "publish-unpublished"]'), needs.resolve.outputs.mode) }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: npm
@@ -112,7 +157,7 @@ jobs:
       id-token: write
     steps:
       - name: Validate optional GitHub App credentials
-        if: ${{ inputs.mode == 'prepare' }}
+        if: ${{ needs.resolve.outputs.mode == 'prepare' }}
         env:
           APP_CLIENT_ID: ${{ vars.REPOCTL_APP_CLIENT_ID }}
           APP_PRIVATE_KEY_CONFIGURED: ${{ secrets.REPOCTL_APP_PRIVATE_KEY != '' }}
@@ -123,7 +168,7 @@ jobs:
             exit 1
           fi
       - name: Create preparation token
-        if: ${{ inputs.mode == 'prepare' && vars.REPOCTL_APP_CLIENT_ID != '' }}
+        if: ${{ needs.resolve.outputs.mode == 'prepare' && vars.REPOCTL_APP_CLIENT_ID != '' }}
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -136,7 +181,7 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token || github.token }}
           # Native preparation pushes its version PR branch; publication uses GitHub APIs.
-          persist-credentials: ${{ inputs.mode == 'prepare' }}
+          persist-credentials: ${{ needs.resolve.outputs.mode == 'prepare' }}
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -158,7 +203,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NPM_CONFIG_PROVENANCE: 'true'
           npm_config_registry: https://registry.npmjs.org
-          REPO_RELEASE_MODE: ${{ inputs.mode }}
+          REPO_RELEASE_MODE: ${{ needs.resolve.outputs.mode }}
           REPO_RELEASE_DRY_RUN: ${{ inputs.dry-run }}
           REPO_RELEASE_RECOVERY_SOURCE_SHA: ${{ inputs.source-sha }}
           REPO_RELEASE_PACKAGE: ${{ inputs.package }}
@@ -181,8 +226,8 @@ jobs:
 
   oidc-audit:
     name: Audit npm trusted publisher
-    needs: inputs
-    if: ${{ inputs.mode == 'oidc-audit' }}
+    needs: resolve
+    if: ${{ needs.resolve.outputs.mode == 'oidc-audit' }}
     runs-on: ubuntu-latest
     environment: npm
     permissions:
