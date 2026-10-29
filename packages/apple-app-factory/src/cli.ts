@@ -214,10 +214,12 @@ async function main(): Promise<void> {
     const bundled = join(packageRoot, 'dist', 'vendor', 'obfuscator', 'dist', 'cli.js');
     if (!existsSync(bundled)) throw new Error(`Bundled obfuscator is missing at ${bundled}; reinstall the apphx package`);
     const forward = [bundled, '--project', resolve(args[0]!)];
+    // Forward only flags that were actually given, so the bundled binary sees exactly what the user
+    // typed; an explicit empty value must reach the child and be rejected there, not dropped here.
     const configGiven = tokens.some(token => token.kind === 'option' && token.name === 'config');
     if (configGiven) forward.push('--config', resolve(values.config));
-    if (values.framework) forward.push('--framework', values.framework);
-    if (values.seed) forward.push('--seed', values.seed);
+    if (values.framework !== undefined) forward.push('--framework', values.framework);
+    if (values.seed !== undefined) forward.push('--seed', values.seed);
     const result = spawnSync(process.execPath, forward, { stdio: 'inherit' });
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;

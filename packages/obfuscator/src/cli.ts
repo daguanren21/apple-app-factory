@@ -50,6 +50,8 @@ async function main(): Promise<void> {
   const frameworkValue = values.framework ?? config.framework;
   if (!frameworkValue || !FRAMEWORKS.includes(frameworkValue as Framework)) usageError(`--framework must be one of ${FRAMEWORKS.join('|')}`);
   const framework = frameworkValue as Framework;
+  // The config schema enforces non-empty seeds; keep the CLI flag path consistent with it.
+  if (values.seed !== undefined && values.seed.trim().length === 0) usageError('--seed must be a non-empty string');
   const seed = values.seed ?? config.seed ?? deriveHash(JSON.stringify(config)).slice(0, 16);
   const report = applyObfuscation(resolve(values.project), config, seed, framework);
   console.log(JSON.stringify(report, null, 2));

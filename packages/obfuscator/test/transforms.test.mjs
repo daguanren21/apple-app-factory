@@ -461,4 +461,7 @@ test('CLI rejects unknown frameworks and invalid configs', t => {
   const empty = spawnSync(process.execPath, [dist, '--project', root], { encoding: 'utf8' });
   assert.equal(empty.status, 2);
   assert.match(empty.stderr, /Invalid obfuscator configuration/);
+  const blankSeed = spawnSync(process.execPath, [dist, '--project', root, '--config', configPath, '--framework', 'flutter', '--seed', ' '], { encoding: 'utf8' });
+  assert.equal(blankSeed.status, 2);
+  assert.match(blankSeed.stderr, /seed must be a non-empty string/);
 });
