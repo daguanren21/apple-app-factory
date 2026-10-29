@@ -57,8 +57,10 @@ export function loadConfig(path = 'factory.json'): Config & { configPath: string
   }
   if (config.apple?.exportOptionsPlist) config.apple.exportOptionsPlist = resolve(root, config.apple.exportOptionsPlist);
   if (config.obfuscation) {
-    config.obfuscation.configPath = resolve(root, config.obfuscation.configPath);
-    if (!existsSync(config.obfuscation.configPath) || !lstatSync(config.obfuscation.configPath).isFile()) throw new Error(`obfuscation.configPath must name an existing regular file: ${config.obfuscation.configPath}`);
+    if (config.obfuscation.configPath) {
+      config.obfuscation.configPath = resolve(root, config.obfuscation.configPath);
+      if (!existsSync(config.obfuscation.configPath) || !lstatSync(config.obfuscation.configPath).isFile()) throw new Error(`obfuscation.configPath must name an existing regular file: ${config.obfuscation.configPath}`);
+    }
   }
   if (config.inbox) {
     config.inbox.directory = resolve(root, config.inbox.directory);

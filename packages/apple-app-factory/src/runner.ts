@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -34,8 +34,14 @@ export interface TurnOptions { buildOnly?: boolean }
 export interface HostAction {
   job: Job;
   action: 'host' | 'step' | 'wait' | 'done';
-  turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string> };
+  turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string>; role: string[] };
 }
+
+const DEFAULT_ROLES: Record<HostStage, string[]> = {
+  research: ['product-analyst'],
+  build: ['developer'],
+  review: ['architect-review', 'qa-engineer', 'acceptance-reviewer'],
+};
 
 function assertTurnPermission(_job: Job, _options: TurnOptions): void {
   // No publication permission exists in this build; the flag remains accepted for CLI compatibility.
@@ -84,7 +90,9 @@ function hostAction(store: Store, job: Job): HostAction {
     environment.FLUTTER_ROOT = job.config.toolchain.flutterSdk;
     environment.PATH = `${join(job.config.toolchain.flutterSdk, 'bin')}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ''}`;
   }
-  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt: taskPrompt(job) + instruction, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)) } };
+  const role = [...(job.config.roles?.[turn.stage] ?? DEFAULT_ROLES[turn.stage])];
+  const prompt = `${taskPrompt(job)}${instruction}\nTurn roles (adopt every role through your native delegation, with independent contexts where the skill requires them): ${JSON.stringify(role)}`;
+  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)), role } };
 }
 
 function repair(job: Job, message: string): Partial<Job> {
@@ -147,6 +155,47 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
     });
     return job.turn ? hostAction(store, job) : { job, action: 'done' };
   } finally { store.release(); }
+}
+
+export type QueueTurn =
+  | HostAction
+  | { action: 'idle'; nextAt: number | null; pendingErrors: Array<{ id: string; error: string }>; summary: QueueSummary };
+
+export type QueueSummary = { total: number; built: number; failed: number; blocked: number; waiting: number; queued: number; running: number };
+
+/**
+ * Pick the earliest-due actionable task in the whole queue for a host loop:
+ * the first job (ordered by priority lane, then next_at, then insertion) whose
+ * `next` returns a host turn or a deterministic step. Jobs that are deferred, stopped or still
+ * owned by another execution are skipped; jobs whose persisted turn context no
+ * longer matches are surfaced in `pendingErrors` instead of silently blocking
+ * the queue. `idle` reports the earliest future due time plus a status summary
+ * so the host can audit whether the queue is truly finished or merely blocked,
+ * and knows when to wake again. Does not hold the queue worker lock across
+ * calls; each host claim stays transactional inside `nextTurn`.
+ */
+export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueueTurn> {
+  const pendingErrors: Array<{ id: string; error: string }> = [];
+  // Priority lanes order the scan (P0 > P1 > P2); within a lane, earliest due
+  // time wins, then insertion order. Priority never overrides eligibility:
+  // a deferred P0 job is skipped and the scan continues to the next safe action.
+  const rank = (job: Job): number => job.spec.priority === 'P0' ? 0 : job.spec.priority === 'P2' ? 2 : 1;
+  const jobs = [...store.list()].sort((left, right) => rank(left) - rank(right) || left.nextAt - right.nextAt);
+  for (const job of jobs) {
+    try {
+      const action = await nextTurn(store, job.id, options);
+      if (action.action === 'host' || action.action === 'step') return action;
+    } catch (cause) {
+      pendingErrors.push({ id: job.id, error: toError(cause).message });
+    }
+  }
+  const summary: QueueSummary = { total: jobs.length, built: 0, failed: 0, blocked: 0, waiting: 0, queued: 0, running: 0 };
+  for (const job of jobs) {
+    const status = job.status;
+    if (status === 'built' || status === 'failed' || status === 'blocked' || status === 'waiting' || status === 'queued' || status === 'running') summary[status] += 1;
+  }
+  const due = jobs.map(job => job.nextAt).filter(nextAt => nextAt > Date.now());
+  return { action: 'idle', nextAt: due.length ? Math.min(...due) : null, pendingErrors, summary };
 }
 
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {
@@ -315,21 +364,56 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     if (job.stage === 'obfuscate') {
       const obfuscation = job.config.obfuscation;
       if (!obfuscation) throw Object.assign(new Error('Obfuscation stage requires config.obfuscation'), { code: 'SETUP_REQUIRED' });
-      const expanded = expandArgv(obfuscation.command, environment);
-      // The default command resolves to the private obfuscator bundled inside this package, so it
-      // works for global installs, local dependency installs and the macOS sandbox alike.
-      const bundled = fileURLToPath(new URL('./vendor/obfuscator/dist/cli.js', import.meta.url));
-      const resolved = expanded[0] === 'obfuscator' && existsSync(bundled) ? [process.execPath, bundled, ...expanded.slice(1)] : expanded;
-      const argv = [
-        ...resolved,
-        '--project', projectDirectory(job),
-        '--config', obfuscation.configPath,
-        '--framework', job.spec.framework,
-        ...(obfuscation.seed ? ['--seed', obfuscation.seed] : []),
-      ];
-      const result = await trackedRun(argv, {}, { readableFiles: [obfuscation.configPath] });
-      if (result.code !== 0) throw new Error(`Obfuscation failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
-      return next(store, job, 'verify');
+      const obfuscationBase = { digest: sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory), path: projectDirectory(job) };
+      let configPath = obfuscation.configPath;
+      let snapshot: string | undefined;
+      if (!configPath) {
+        // Inline rules are materialized as a harness-owned snapshot file; the
+        // obfuscator validates them at run time, and the snapshot never becomes
+        // part of the verified source.
+        const directory = join(config.stateDir, 'obfuscation');
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        snapshot = join(directory, `${job.id}-${Date.now()}.json`);
+        writeFileSync(snapshot, `${JSON.stringify(obfuscation.options ?? {}, null, 2)}\n`, { mode: 0o600 });
+        configPath = snapshot;
+      }
+      try {
+        const expanded = expandArgv(obfuscation.command, environment);
+        // The default command resolves to the private obfuscator bundled inside this package, so it
+        // works for global installs, local dependency installs and the macOS sandbox alike.
+        const bundled = fileURLToPath(new URL('./vendor/obfuscator/dist/cli.js', import.meta.url));
+        const resolved = expanded[0] === 'obfuscator' && existsSync(bundled) ? [process.execPath, bundled, ...expanded.slice(1)] : expanded;
+        const argv = [
+          ...resolved,
+          '--project', projectDirectory(job),
+          '--config', configPath!,
+          '--framework', job.spec.framework,
+          ...(obfuscation.seed ? ['--seed', obfuscation.seed] : []),
+        ];
+        const result = await trackedRun(argv, {}, { readableFiles: [configPath!] });
+        if (result.code !== 0) throw new Error(`Obfuscation failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
+        let report: Job['obfuscationReport'];
+        try {
+          const parsed: unknown = JSON.parse(result.stdout);
+          if (parsed && typeof parsed === 'object') {
+            const value = parsed as Record<string, unknown>;
+            const skipped = value.skipped && typeof value.skipped === 'object' ? value.skipped as Record<string, unknown> : {};
+            if (Number.isSafeInteger(value.changedFiles) && value.transforms && typeof value.transforms === 'object' && !Array.isArray(value.transforms)) {
+              report = {
+                changedFiles: value.changedFiles as number,
+                transforms: Object.fromEntries(Object.entries(value.transforms).filter(([key, count]) => typeof key === 'string' && Number.isSafeInteger(count)) as Array<[string, number]>),
+                skipped: { generated: Number.isSafeInteger(skipped.generated) ? skipped.generated as number : 0, unsupported: Number.isSafeInteger(skipped.unsupported) ? skipped.unsupported as number : 0 },
+              };
+            }
+          }
+        } catch { /* report stays undefined */ }
+        // The bundled obfuscator always prints a typed report; a custom command may not.
+        if (!report && resolved[0] === process.execPath && resolved[1] === bundled) throw new Error('Bundled obfuscator produced no valid report; the transformed workspace cannot be evidenced');
+        const obfuscationDigest = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory);
+        return next(store, job, 'verify', { obfuscationBase, obfuscationDigest, ...(report ? { obfuscationReport: report } : {}) });
+      } finally {
+        if (snapshot) rmSync(snapshot, { force: true });
+      }
     }
     if (job.stage === 'package') {
       requireReviewProof(job);
