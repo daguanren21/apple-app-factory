@@ -55,7 +55,7 @@ export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optiona
 });
 
 export const ObfuscationConfigSchema = z.strictObject({
-  command: z.array(command.element).min(1).default(['apphx-obfuscator']),
+  command: z.array(command.element).min(1).default(['obfuscator']),
   configPath: text,
   seed: text.optional(),
 });

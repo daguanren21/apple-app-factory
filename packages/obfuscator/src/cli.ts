@@ -7,7 +7,7 @@ import type { Framework } from './common.js';
 import { ObfuscatorConfigSchema } from './config.js';
 import { applyObfuscation } from './obfuscate.js';
 
-const help = `apphx-obfuscator --project <dir> [--config <config.json>] [--framework <stack>] [--seed <text>]
+const help = `obfuscator --project <dir> [--config <config.json>] [--framework <stack>] [--seed <text>]
   Deterministically obfuscates an owned app project in place.
   --project <dir>      Existing project directory to transform (required)
   --config <file>      Obfuscator options as JSON; defaults to all features off

@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { run, executionEnvironment, processGroupAlive } from './process.js';
@@ -314,8 +315,13 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     if (job.stage === 'obfuscate') {
       const obfuscation = job.config.obfuscation;
       if (!obfuscation) throw Object.assign(new Error('Obfuscation stage requires config.obfuscation'), { code: 'SETUP_REQUIRED' });
+      const expanded = expandArgv(obfuscation.command, environment);
+      // The default command resolves to the private obfuscator bundled inside this package, so it
+      // works for global installs, local dependency installs and the macOS sandbox alike.
+      const bundled = fileURLToPath(new URL('./vendor/obfuscator/dist/cli.js', import.meta.url));
+      const resolved = expanded[0] === 'obfuscator' && existsSync(bundled) ? [process.execPath, bundled, ...expanded.slice(1)] : expanded;
       const argv = [
-        ...expandArgv(obfuscation.command, environment),
+        ...resolved,
         '--project', projectDirectory(job),
         '--config', obfuscation.configPath,
         '--framework', job.spec.framework,
