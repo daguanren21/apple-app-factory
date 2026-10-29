@@ -1,5 +1,11 @@
 # apphx
 
+## 2.0.1
+
+### Patch Changes
+
+- Add qoder, oh-my-pi, and dimagent host integrations with verified skill directory conventions
+
 ## 2.0.0
 
 ### Major Changes

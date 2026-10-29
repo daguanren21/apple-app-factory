@@ -14,3 +14,7 @@ apphx@2.0.0:
     - quiet-donkeys-obfuscate
     - steady-walls-protect
     - wide-owls-divide
+apphx@2.0.1:
+  dir: packages/apple-app-factory
+  intents:
+    - chilly-houses-fly
