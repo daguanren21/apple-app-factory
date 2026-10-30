@@ -38,7 +38,9 @@ const SpecObject = z.strictObject({
   priority: PrioritySchema.default('P1'),
   project: z.strictObject({ sourceDir: text.optional(), directory: text.refine(value => relativeProjectPath(value, true), 'project.directory must be a relative in-root directory without traversal').default('.') }).optional(),
   screenshotsDir: text.optional(), differentiators: z.array(text).min(1), acceptance: z.array(text).min(1),
-  constraints: z.array(text).optional(), apple: AppleSpecSchema.optional(),
+  constraints: z.array(text).optional(),
+  designRef: text.url().describe('Design reference URL (e.g. Figma link); the build\'s ui-designer role must reproduce the referenced design faithfully').optional(),
+  apple: AppleSpecSchema.optional(),
   authorEmail: z.string().email().optional(),
   hiddenFeatures: z.literal(false).optional(), reviewBypass: z.literal(false).optional(),
 });
@@ -79,7 +81,7 @@ export type ObfuscationConfig = z.infer<typeof ObfuscationConfigSchema>;
  */
 export const RolesConfigSchema = z.strictObject({
   research: z.array(text).default(['product-analyst']),
-  build: z.array(text).default(['developer']),
+  build: z.array(text).default(['ui-designer', 'developer']),
   review: z.array(text).default(['architect-review', 'qa-engineer', 'acceptance-reviewer']),
 });
 export type RolesConfig = z.infer<typeof RolesConfigSchema>;

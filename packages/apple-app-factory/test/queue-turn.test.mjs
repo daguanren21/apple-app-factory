@@ -50,12 +50,12 @@ test('nextQueueTurn returns the earliest-due host task without touching deferred
   assert.deepEqual(f.store.get(deferred.id), deferred);
 });
 
-test('build turns carry the developer role by default and config roles override it', async t => {
+test('build turns carry the ui-designer then developer roles by default and config roles override it', async t => {
   const f = fixture(t);
   const job = f.enqueue('roles-build', 'build', 0);
   const claim = await nextTurn(f.store, job.id);
   assert.equal(claim.action, 'host');
-  assert.deepEqual(claim.turn.role, ['developer']);
+  assert.deepEqual(claim.turn.role, ['ui-designer', 'developer']);
   const custom = fixture(t, { roles: { research: ['product-analyst', 'requirement-groomer'], build: ['senior-developer', 'junior-developer'], review: ['architect-review'] } });
   const job2 = custom.enqueue('roles-custom', 'build', 0);
   const claim2 = await nextTurn(custom.store, job2.id);
@@ -67,7 +67,7 @@ test('roles config fills default role lists per stage', () => {
   const base = { stateDir: '/tmp/roles-state', workspaceRoot: '/tmp/roles-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } };
   const parsed = ConfigSchema.parse({ ...base, roles: {} });
   assert.deepEqual(parsed.roles.research, ['product-analyst']);
-  assert.deepEqual(parsed.roles.build, ['developer']);
+  assert.deepEqual(parsed.roles.build, ['ui-designer', 'developer']);
   assert.deepEqual(parsed.roles.review, ['architect-review', 'qa-engineer', 'acceptance-reviewer']);
 });
 

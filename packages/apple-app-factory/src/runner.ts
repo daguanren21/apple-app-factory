@@ -42,7 +42,7 @@ export interface HostAction {
 
 const DEFAULT_ROLES: Record<HostStage, string[]> = {
   research: ['product-analyst'],
-  build: ['developer'],
+  build: ['ui-designer', 'developer'],
   review: ['architect-review', 'qa-engineer', 'acceptance-reviewer'],
 };
 
@@ -82,7 +82,10 @@ function hostAction(store: Store, job: Job): HostAction {
     const portfolio = store.list().filter(value => value.id !== job.id && value.spec.channel === job.spec.channel && value.spec.id !== job.spec.id).map(value => ({ id: value.spec.id, purpose: value.spec.purpose, audience: value.spec.audience, differentiators: value.spec.differentiators }));
     instruction = researchPrompt(job, portfolio);
   } else if (turn.stage === 'build') {
-    instruction = `Research plan: ${JSON.stringify(job.research)}\n${buildInstructions(job.spec)} Implement the entire requested product, accessibility and realistic empty/error states. Add genuine device/simulator acceptance workflows and real screenshots when requested; never fake screenshots or bypass tests. Do not add unrequested offline/backup/account features. Use the returned environment with your tools. Frozen verification and packaging: ${JSON.stringify({ verification: job.config.verification, packaging: job.config.packaging, packageTarget: job.config.packageTarget })}. Complete this turn without a result payload when source is ready; the Harness will then execute verification, not infer success.`;
+    const uiDesignerFlow = job.spec.designRef
+      ? `Build-stage role order: ui-designer first, then developer — the host adopts each through its native subagent facility with independent contexts. A design reference (designRef) is provided: ${job.spec.designRef}. The ui-designer reads the design reference and produces docs/ui-design.md (color/type/spacing/layout/component states extracted screen-by-screen), recording the actual design source URL it used. The developer must faithfully reproduce (忠实还原) that referenced design, never inventing unrequested visual decisions. If the design reference is inaccessible, record that honestly and fall back to the bundled ui-design-guide.md mode; never fabricate a design source you could not access.`
+      : `Build-stage role order: ui-designer first, then developer — the host adopts each through its native subagent facility with independent contexts. No design reference was supplied, so the ui-designer produces docs/ui-design.md following the bundled resource ui-design-guide.md (design tokens, type scale, spacing/radius, component states including empty/loading/error/success, per-screen layout, accessibility, light/dark). The developer must implement strictly in line with docs/architecture.md and docs/ui-design.md, recording which UI decision maps to which section of the design spec.`;
+    instruction = `Research plan: ${JSON.stringify(job.research)}\n${buildInstructions(job.spec)} ${uiDesignerFlow} Under autopilot the same holds: both roles run through the host's native subagents and never ask the user. Implement the entire requested product, accessibility and realistic empty/error states. Add genuine device/simulator acceptance workflows and real screenshots when requested; never fake screenshots or bypass tests. Do not add unrequested offline/backup/account features. Use the returned environment with your tools. Frozen verification and packaging: ${JSON.stringify({ verification: job.config.verification, packaging: job.config.packaging, packageTarget: job.config.packageTarget })}. Complete this turn without a result payload when source is ready; the Harness will then execute verification, not infer success.`;
   } else {
     instruction = reviewInstructions(job);
   }
