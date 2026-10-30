@@ -8,6 +8,10 @@ const text = z.string().min(1).refine(value => value.trim().length > 0 && !value
 const count = z.number().int().nonnegative().safe();
 const positive = z.number().positive().finite();
 const command = z.array(text).min(1);
+/** Decision-log stage/role labels may be empty because apphx decide defaults omitted fields to ''. */
+const decisionLabel = z.string().refine(value => !value.includes('\0') && (value === '' || value.trim().length > 0), 'Expected text without NUL characters');
+/** Decision rationale is a non-empty, longer text so every recorded verdict stays attributable. */
+const decisionRationale = z.string().min(1).max(100000).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
 
 function relativeProjectPath(value: string, allowRoot = false): boolean {
   if (allowRoot && value === '.') return true;
@@ -168,6 +172,7 @@ export const JobSchema = z.object({
   id: text, spec: SpecSchema, requestSpec: SpecSchema.nullable(), requestSpecError: text.nullable().default(null), config: ConfigSchema, stage: StageSchema, status: StatusSchema,
   createdAt: z.number().finite(), updatedAt: z.number().finite(), nextAt: z.number().finite(),
   attempts: z.partialRecord(StageSchema, count), hostTurns: count, turn: HostTurnSchema.nullable().optional(), groups: z.array(z.number().int()),
+  decisions: z.array(z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale })).default([]),
   commands: z.record(z.string(), CommandMetadataSchema).default({}), receipt: AppleReceiptSchema, logs: z.array(text), workspace: text,
   baseJobId: z.uuid().optional(), baseDigest: text.regex(/^[a-f0-9]{64}$/).optional(), basePrepared: z.boolean().optional(),
   automaticBase: z.literal(true).optional(),
@@ -185,6 +190,11 @@ export const JobSchema = z.object({
   externalChecks: z.unknown().optional(),
 }).passthrough();
 export type Job = z.infer<typeof JobSchema>;
+
+export const DecisionEntrySchema = z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale });
+export type DecisionEntry = z.infer<typeof DecisionEntrySchema>;
+export const DecisionInputSchema = z.strictObject({ stage: decisionLabel.default(''), role: decisionLabel.default(''), rationale: decisionRationale });
+export type DecisionInput = z.infer<typeof DecisionInputSchema>;
 
 export type FactoryError = Error & { code?: string; syscall?: string; prerequisite?: Prerequisite; httpStatus?: number | null; outcome?: string; transient?: boolean };
 export function toError(value: unknown): FactoryError {

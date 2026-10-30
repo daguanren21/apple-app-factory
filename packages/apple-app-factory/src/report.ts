@@ -46,6 +46,7 @@ export interface Report {
     attempts: Job['attempts'];
     hostTurns: number;
   };
+  decisions: Job['decisions'];
   error?: string | null;
   feedback?: string;
   blockedReason?: NonNullable<Job['blockedReason']>;
@@ -160,6 +161,7 @@ export function buildReport(job: Job): Report {
       attempts: job.attempts,
       hostTurns: job.hostTurns,
     },
+    decisions: job.decisions,
     ...(job.error != null ? { error: job.error } : {}),
     ...(job.feedback !== undefined ? { feedback: job.feedback } : {}),
     ...(job.blockedReason != null ? { blockedReason: job.blockedReason } : {}),
@@ -271,6 +273,15 @@ export function renderMarkdown(report: Report): string {
   lines.push('', '## Checklist', '', '| 验收项 | 状态 | 证据 / 原因 |', '| --- | --- | --- |');
   for (const entry of report.checklist) {
     lines.push(`| ${md(entry.requirement)} | ${STATUS_LABEL[entry.status]} | ${md(entry.evidence ?? entry.reason ?? '')} |`);
+  }
+  lines.push('', '## 决策日志', '');
+  if (report.decisions.length === 0) {
+    lines.push('无');
+  } else {
+    for (const decision of report.decisions) {
+      const labels = [decision.stage ? `stage=${decision.stage}` : '', decision.role ? `role=${decision.role}` : ''].filter(Boolean).join(' ');
+      lines.push(`- \`${md(iso(decision.at))}\`${labels ? ` (${md(labels)})` : ''}：${md(decision.rationale)}`);
+    }
   }
   lines.push('', '## 不通过项与原因', '');
   if (report.failures.length === 0) {
