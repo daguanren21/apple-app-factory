@@ -28,3 +28,9 @@ apphx@2.2.0:
   intents:
     - autopilot-mode
     - ui-designer-role
+apphx@2.3.0:
+  dir: packages/apple-app-factory
+  intents:
+    - fix-process-drain-success
+    - raise-attempt-budget
+    - report-handoff
