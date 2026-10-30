@@ -1,7 +1,7 @@
 {
   "name": "apphx",
-  "version": "1.1.0",
-  "description": "Host-native harness for verified Flutter, Java Android, Swift, React Native, Expo and uni-app delivery",
+  "version": "2.1.0",
+  "description": "Host-native harness for verified Flutter, Java Android, Swift, React Native, Expo, uni-app and MyGo macOS delivery",
   "license": "MIT",
   "type": "module",
   "preferUnplugged": true,
@@ -9,12 +9,16 @@
     "node": ">=22.18"
   },
   "bin": {
-    "apphx": "./dist/cli.js"
+    "apphx": "./dist/cli.js",
+    "obfuscator": "./dist/vendor/obfuscator/dist/cli.js"
   },
   "files": [
     "dist",
     "skills",
-    "examples"
+    "examples",
+    "evals",
+    "scripts",
+    "benchmarks"
   ],
   "repository": {
     "type": "git",
@@ -22,7 +26,7 @@
     "directory": "packages/apple-app-factory"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/bundle-obfuscator.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "prepack": "pnpm --workspace-root exec turbo run build typecheck --filter=apphx"
@@ -30,5 +34,8 @@
   "dependencies": {
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "obfuscator": "workspace:*"
   }
 }

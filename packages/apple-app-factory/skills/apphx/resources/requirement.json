@@ -5,6 +5,7 @@
   "platform": "ios",
   "channel": "local",
   "version": "1.0.0",
+  "priority": "P1",
   "screenshotsDir": "build/screenshots",
   "purpose": "离线规划多个行李包的重量，完成出发打包与返程核对，减少遗漏和超重",
   "audience": "需要管理随身包与托运行李的个人旅客",

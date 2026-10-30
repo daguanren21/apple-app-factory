@@ -1,6 +1,5 @@
 {
   "viable": false,
-  "policySources": [],
   "distinctness": "Unassessed local example: inspect the actual requirement and supplied channel-scoped portfolio before returning a real verdict.",
   "risks": ["No implementation or runtime acceptance has been assessed by this example."],
   "plan": ["Assess the selected stack, imported project constraints, owner-approved commands, privacy, accessibility and real device scenarios.", "Return a concrete implementation and verification plan for the actual product, or preserve viable=false with exact blockers. No store approval claim is needed for local delivery."]

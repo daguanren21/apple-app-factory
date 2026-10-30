@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { assertProject, buildInstructions, doctorCommands } from '../dist/project-profiles.js';
 import { dependencyDigest, generatedModulePaths, isGeneratedPath, validateLocalDependencies } from '../dist/dependencies.js';
+import { sourceDigest } from '../dist/workspace.js';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'apphx-profiles-'));
@@ -17,7 +18,7 @@ function file(root, path, content) {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), typeof content === 'string' ? content : JSON.stringify(content));
 }
-function spec(framework, platform = framework === 'android-java' ? 'android' : 'ios') {
+function spec(framework, platform = framework === 'mygo' ? 'macos' : framework === 'android-java' ? 'android' : 'ios') {
   return { id: 'profiles', name: 'Profiles', purpose: 'Exercise real project boundaries', audience: 'Owners', differentiators: ['Native stack ownership'], acceptance: ['Keep project structure'], framework, platform, channel: 'local', version: '1.0.0' };
 }
 const manifests = {
@@ -27,6 +28,7 @@ const manifests = {
   'react-native': { 'package.json': { name: 'app', dependencies: { 'react-native': '0.80.0' } } },
   expo: { 'package.json': { name: 'app', dependencies: { expo: '^53.0.0' } } },
   'uni-app': { 'package.json': { name: 'app', dependencies: { '@dcloudio/uni-app': '3.0.0' } }, 'src/manifest.json': '{\n // owner configuration\n "name": "App", "description": "https://example.com"\n}', 'src/pages.json': { pages: [{ path: 'pages/index/index' }] } },
+  mygo: { 'go.mod': 'module example.com/app\n\ngo 1.27.1\n\nrequire github.com/egoist/mygo v0.3.0\n', 'mygo.json': { name: 'MyGo App' } },
 };
 for (const [framework, files] of Object.entries(manifests)) {
   test(`${framework} requires and accepts its actual project manifests`, t => {
@@ -65,7 +67,7 @@ test('caller-selected nested project does not silently fall back to workspace ro
 });
 
 for (const framework of Object.keys(manifests)) {
-  for (const platform of ['ios', 'android']) {
+  for (const platform of framework === 'mygo' ? ['macos'] : ['ios', 'android']) {
     if ((framework === 'android-java' && platform === 'ios') || (framework === 'swift' && platform === 'android')) continue;
     test(`doctor ${framework}/${platform} probes only the selected stack and platform`, () => {
       const commands = doctorCommands(framework, platform);
@@ -74,10 +76,112 @@ for (const framework of Object.keys(manifests)) {
       assert.equal(commands.some(command => command.argv[0] === 'node'), ['react-native', 'expo'].includes(framework));
       assert.equal(commands.some(command => command.argv[0] === 'xcodebuild'), platform === 'ios');
       assert.equal(commands.some(command => command.argv[0] === 'java'), platform === 'android');
+      assert.equal(commands.some(command => command.argv[0] === 'go'), framework === 'mygo');
       for (const command of commands) assert.ok(!command.argv.some(arg => ['install', 'prebuild', 'create', 'upgrade', 'eject'].includes(arg)));
     });
   }
 }
+
+test('native MyGo completion is Go-only and leaves unrelated frontend metadata alone', t => {
+  const root = fixture(t);
+  for (const [path, content] of Object.entries(manifests.mygo)) file(root, path, content);
+  assert.doesNotThrow(() => assertProject(root, spec('mygo')));
+  file(root, 'package.json', 'not a JavaScript project manifest');
+  assert.doesNotThrow(() => assertProject(root, spec('mygo')));
+});
+
+for (const frontend of ['package.json', 'frontend/package.json']) {
+  test(`web MyGo completion preserves the original ${frontend} without evaluating TypeScript`, t => {
+    const root = fixture(t);
+    file(root, 'go.mod', manifests.mygo['go.mod']);
+    file(root, 'mygo.config.ts', 'export default (() => { throw new Error("must not execute during discovery"); })();');
+    assert.throws(() => assertProject(root, spec('mygo')), /package.json/);
+    file(root, frontend, { name: 'original-frontend', packageManager: 'npm@11.0.0', scripts: { build: 'vite build' } });
+    assert.doesNotThrow(() => assertProject(root, spec('mygo')));
+    file(root, frontend, []);
+    assert.throws(() => assertProject(root, spec('mygo')), /manifest object/);
+  });
+}
+
+test('MyGo requires one unambiguous native or web config', t => {
+  const root = fixture(t);
+  file(root, 'go.mod', manifests.mygo['go.mod']);
+  assert.throws(() => assertProject(root, spec('mygo')), /exactly one/);
+  file(root, 'mygo.json', { name: 'Native' });
+  file(root, 'mygo.config.ts', 'export default {};');
+  assert.throws(() => assertProject(root, spec('mygo')), /exactly one/);
+  rmSync(join(root, 'mygo.config.ts'));
+  for (const value of [[], null, '"not an object"', '{invalid']) {
+    file(root, 'mygo.json', value);
+    assert.throws(() => assertProject(root, spec('mygo')));
+  }
+});
+
+for (const declaration of [
+  '// require github.com/egoist/mygo v0.3.0\n',
+  'require example.com/other v0.3.0 // github.com/egoist/mygo\n',
+  'require github.com/egoist/mygo-extra v0.3.0\n',
+  'replace github.com/egoist/mygo => github.com/owner/mygo v0.3.0\n',
+  'tool github.com/egoist/mygo/cmd/mygo\n',
+]) {
+  test(`MyGo rejects a module without the actual dependency: ${declaration.trim()}`, t => {
+    const root = fixture(t);
+    file(root, 'go.mod', `module example.com/app\n\n${declaration}`);
+    file(root, 'mygo.json', {});
+    assert.throws(() => assertProject(root, spec('mygo')), /go.mod requiring github.com\/egoist\/mygo/);
+  });
+}
+
+test('MyGo accepts quoted block requirements rather than matching comments as source', t => {
+  const root = fixture(t);
+  file(root, 'go.mod', 'module example.com/app\n\nrequire (\n // owner-selected version\n "github.com/egoist/mygo" v0.3.0 // indirect\n)\n');
+  file(root, 'mygo.json', {});
+  assert.doesNotThrow(() => assertProject(root, spec('mygo')));
+});
+
+for (const path of ['go.mod', 'mygo.json', 'mygo.config.ts', 'package.json', 'frontend/package.json']) {
+  test(`MyGo rejects a symlinked ${path} manifest`, t => {
+    const root = fixture(t);
+    const web = !['go.mod', 'mygo.json'].includes(path);
+    file(root, 'go.mod', manifests.mygo['go.mod']);
+    file(root, web ? 'mygo.config.ts' : 'mygo.json', web ? 'export default {};' : {});
+    if (web) file(root, path === 'frontend/package.json' ? path : 'package.json', {});
+    const target = path === 'go.mod' ? manifests.mygo['go.mod'] : path === 'mygo.config.ts' ? 'export default {};' : {};
+    file(root, 'real-manifest', target);
+    rmSync(join(root, path), { force: true });
+    symlinkSync(path.startsWith('frontend/') ? '../real-manifest' : 'real-manifest', join(root, path));
+    assert.throws(() => assertProject(root, spec('mygo')), /regular source file/);
+  });
+}
+
+test('MyGo uses only Go and macOS utility probes without requiring frontend or mobile tools', () => {
+  assert.deepEqual(doctorCommands('mygo', 'macos').map(command => command.argv), [
+    ['go', 'version'], ['/usr/bin/which', 'codesign'], ['hdiutil', 'help'],
+  ]);
+  for (const platform of ['ios', 'android']) assert.throws(() => doctorCommands('mygo', platform), /only macOS/);
+  for (const framework of Object.keys(manifests).filter(framework => framework !== 'mygo')) {
+    assert.throws(() => doctorCommands(framework, 'macos'), /only MyGo/);
+  }
+});
+
+test('MyGo is the only new macOS project surface and does not expand existing stacks', t => {
+  const root = fixture(t);
+  for (const [path, content] of Object.entries(manifests.mygo)) file(root, path, content);
+  for (const platform of ['ios', 'android']) assert.throws(() => assertProject(root, spec('mygo', platform)), /macOS platform/);
+  for (const [framework, files] of Object.entries(manifests)) {
+    if (framework === 'mygo') continue;
+    const other = fixture(t);
+    for (const [path, content] of Object.entries(files)) file(other, path, content);
+    assert.throws(() => assertProject(other, spec(framework, 'macos')), /macOS is supported only for MyGo/);
+  }
+});
+
+test('MyGo manifest detection uses the caller-selected project directory only', t => {
+  const root = fixture(t);
+  for (const [path, content] of Object.entries(manifests.mygo)) file(root, `apps/desktop/${path}`, content);
+  assert.throws(() => assertProject(root, spec('mygo')), /go.mod/);
+  assert.doesNotThrow(() => assertProject(join(root, 'apps/desktop'), spec('mygo')));
+});
 
 test('generated exclusions are framework-specific and preserve owned source directories', () => {
   for (const framework of Object.keys(manifests)) {
@@ -400,6 +504,97 @@ test('Gradle collection scanning skips quoted text, identifier prefixes and cons
   file(root, 'libs/files(1).jar', 'modified second owned library');
   assert.notEqual(dependencyDigest(root, 'android-java'), before);
 });
+
+test('Gradle declarations and native references inside literals never acquire ownership', t => {
+  const root = fixture(t);
+  file(root, 'settings.gradle', `
+def diagnostic = "include ':lib'"
+def multiline = '''include ':lib'
+includeBuild('../outside')
+project(':actual').projectDir = file('../outside')
+'''
+// include ':lib'
+/* includeBuild('../outside') */
+include 'actual'
+def remapDiagnostic = "project(':actual').projectDir = file('lib')"
+`);
+  file(root, 'actual/build.gradle', `
+def references = """includeBuild('../outside')
+projectDir = file('../outside')
+fileTree(dir: '../outside')
+url uri('../outside')
+files('../outside')
+dirs('../outside')"""
+def quoted = "fileTree(dir: '../outside')"
+`);
+  file(root, 'lib/build.gradle', 'plugins { id "java-library" }');
+  file(root, 'lib/build/gradle.properties', 'owned=first');
+  assert.deepEqual([...generatedModulePaths(root, 'android-java')], ['actual/build']);
+  const source = sourceDigest(root, true, 'android-java');
+  const dependencies = dependencyDigest(root, 'android-java');
+  file(root, 'lib/build/gradle.properties', 'owned=second');
+  assert.notEqual(sourceDigest(root, true, 'android-java'), source);
+  assert.notEqual(dependencyDigest(root, 'android-java'), dependencies);
+});
+
+test('colon-optional Gradle module IDs and remaps share output ownership', t => {
+  const root = fixture(t);
+  file(root, 'settings.gradle.kts', `include("feature:search", ":shared", "tools")
+project("shared").projectDir = file("packages/shared")
+project(":tools").projectDir = file("packages/tools")
+`);
+  for (const path of ['feature/search', 'packages/shared', 'packages/tools']) {
+    file(root, `${path}/build.gradle.kts`, 'plugins { `java-library` }');
+  }
+  const paths = ['feature/search/build', 'packages/shared/build', 'packages/tools/build'];
+  assert.deepEqual([...generatedModulePaths(root, 'android-java')].sort(), paths);
+  const source = sourceDigest(root, true, 'android-java');
+  const dependencies = dependencyDigest(root, 'android-java');
+  for (const path of paths) file(root, `${path}/gradle.properties`, 'generated=true');
+  assert.equal(sourceDigest(root, true, 'android-java'), source);
+  assert.equal(dependencyDigest(root, 'android-java'), dependencies);
+});
+
+test('only active included build roots with regular manifests exclude root outputs', t => {
+  const root = fixture(t);
+  file(root, 'settings.gradle', "includeBuild('plugins')\nincludeBuild('manifestless')\n");
+  file(root, 'plugins/build.gradle.kts', 'plugins { `java-library` }');
+  file(root, 'manifestless/build/gradle.properties', 'owned=true');
+  file(root, 'fixtures/build.gradle', 'plugins { id "java-library" }');
+  file(root, 'fixtures/build/gradle.properties', 'owned=true');
+  assert.deepEqual([...generatedModulePaths(root, 'android-java')], ['plugins/build']);
+  const source = sourceDigest(root, true, 'android-java');
+  const dependencies = dependencyDigest(root, 'android-java');
+  file(root, 'plugins/build/gradle.properties', 'generated=true');
+  assert.equal(sourceDigest(root, true, 'android-java'), source);
+  assert.equal(dependencyDigest(root, 'android-java'), dependencies);
+  for (const path of ['manifestless', 'fixtures']) {
+    const beforeSource = sourceDigest(root, true, 'android-java');
+    const beforeDependencies = dependencyDigest(root, 'android-java');
+    file(root, `${path}/build/gradle.properties`, 'owned=changed');
+    assert.notEqual(sourceDigest(root, true, 'android-java'), beforeSource);
+    assert.notEqual(dependencyDigest(root, 'android-java'), beforeDependencies);
+  }
+});
+
+for (const kind of ['manifest', 'directory', 'escaping output']) {
+  test(`included Gradle build refuses symlinked ${kind}`, t => {
+    const root = fixture(t);
+    file(root, 'settings.gradle', "includeBuild('plugins')\n");
+    file(root, 'owned/build.gradle', 'plugins { id "java-library" }');
+    if (kind === 'directory') {
+      symlinkSync('owned', join(root, 'plugins'), 'dir');
+    } else {
+      mkdirSync(join(root, 'plugins'));
+      if (kind === 'manifest') symlinkSync('../owned/build.gradle', join(root, 'plugins/build.gradle'));
+      else {
+        file(root, 'plugins/build.gradle', 'plugins { id "java-library" }');
+        symlinkSync(fixture(t), join(root, 'plugins/build'), 'dir');
+      }
+    }
+    assert.throws(() => sourceDigest(root, true, 'android-java'), /symlink/);
+  });
+}
 
 for (const mode of ['dependencies', 'profile']) {
   test(`${mode} revalidates a replaced directory before traversing outside owned source`, t => {

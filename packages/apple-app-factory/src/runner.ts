@@ -1,29 +1,30 @@
-import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync } from 'node:fs';
-import { join, relative, delimiter, sep } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { run, executionEnvironment, processGroupAlive } from './process.js';
-import { shipApple, pollApple } from './apple.js';
-import { inside, expandArgv } from './config.js';
+import { canonicalPath, inside, expandArgv } from './config.js';
 import { checkPrerequisites } from './preflight.js';
 import { flutterEnvironment, prepareFlutter } from './flutter.js';
-import { prepareExportOptions } from './export-options.js';
+import { prepareExportOptions, prepareNativeExportCommands } from './export-options.js';
 import { dependencyDigest, generatedModulePaths, isGeneratedPath } from './dependencies.js';
-import { ReviewSchema, toError, validateJobConfig } from './schemas.js';
+import { ReviewSchema, SpecSchema, toError, validateJobConfig } from './schemas.js';
 import type { Job, HostStage, Stage } from './schemas.js';
-import type { Run, RunOptions } from './process.js';
+import type { Run, RunOptions, RunResult } from './process.js';
 import type { Store } from './store.js';
 import { sourceDigest, prepareWorkspace, projectDirectory, artifactOutputPath } from './workspace.js';
-import { parseResearch, researchPrompt } from './policy.js';
+import { parseResearch, researchPrompt, reviewInstructions } from './policy.js';
 import { assertProject, buildInstructions } from './project-profiles.js';
-
+import { closestOwnedGoWorkspace } from './go-dependencies.js';
+import { validateMacOSArtifact } from './macos.js';
+import { validateMyGoPackaging, validateMyGoCommand } from './mygo-build.js';
+import { invalidateVerification } from './proof.js';
+import { prepareIsolatedCommand, type IsolatedCommand, type IsolationCapabilities } from './isolation.js';
 
 function requireDependencyProof(job: Job): void {
   if (!job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution proof is missing; retry this stopped task to re-run verification'), { code: 'SETUP_REQUIRED' });
   if (dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory) !== job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution changed since verification; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
 }
-
-
-
 
 function taskPrompt(job: Job): string {
   const autopilot = job.config.autopilot === true
@@ -36,11 +37,17 @@ export interface TurnOptions { buildOnly?: boolean }
 export interface HostAction {
   job: Job;
   action: 'host' | 'step' | 'wait' | 'done';
-  turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string> };
+  turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string>; role: string[] };
 }
 
-function assertTurnPermission(job: Job, options: TurnOptions): void {
-  if (options.buildOnly && (job.config.allowSubmit || job.config.allowRelease)) throw new Error('--build-only refuses this task with snapshotted publication permission');
+const DEFAULT_ROLES: Record<HostStage, string[]> = {
+  research: ['product-analyst'],
+  build: ['developer'],
+  review: ['architect-review', 'qa-engineer', 'acceptance-reviewer'],
+};
+
+function assertTurnPermission(_job: Job, _options: TurnOptions): void {
+  // No publication permission exists in this build; the flag remains accepted for CLI compatibility.
 }
 
 function contextDigest(job: Job): string {
@@ -58,9 +65,9 @@ function deadlineExpired(job: Job): boolean {
 
 function requireReviewProof(job: Job): void {
   try {
-    if (!job.verifiedDigest || sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest) throw new Error('Source changed since verification; stale evidence cannot approve a release');
+    if (!job.verifiedDigest || sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest) throw new Error('Source changed since verification; stale evidence cannot approve a handoff');
     requireDependencyProof(job);
-    if (job.spec.screenshotsDir && sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) !== job.screenshotDigest) throw new Error('Screenshots changed since runtime verification; stale evidence cannot approve a release');
+    if (job.spec.screenshotsDir && sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) !== job.screenshotDigest) throw new Error('Screenshots changed since runtime verification; stale evidence cannot approve a handoff');
   } catch (cause) {
     const error = toError(cause);
     if (error.code !== 'SETUP_REQUIRED') error.code = 'EVIDENCE_CHANGED';
@@ -72,27 +79,29 @@ function hostAction(store: Store, job: Job): HostAction {
   const turn = job.turn!;
   let instruction: string;
   if (turn.stage === 'research') {
-    const portfolio = store.list().filter(value => value.id !== job.id && value.spec.channel === job.spec.channel).map(value => ({ id: value.spec.id, purpose: value.spec.purpose, audience: value.spec.audience, differentiators: value.spec.differentiators }));
+    const portfolio = store.list().filter(value => value.id !== job.id && value.spec.channel === job.spec.channel && value.spec.id !== job.spec.id).map(value => ({ id: value.spec.id, purpose: value.spec.purpose, audience: value.spec.audience, differentiators: value.spec.differentiators }));
     instruction = researchPrompt(job, portfolio);
   } else if (turn.stage === 'build') {
     instruction = `Research plan: ${JSON.stringify(job.research)}\n${buildInstructions(job.spec)} Implement the entire requested product, accessibility and realistic empty/error states. Add genuine device/simulator acceptance workflows and real screenshots when requested; never fake screenshots or bypass tests. Do not add unrequested offline/backup/account features. Use the returned environment with your tools. Frozen verification and packaging: ${JSON.stringify({ verification: job.config.verification, packaging: job.config.packaging, packageTarget: job.config.packageTarget })}. Complete this turn without a result payload when source is ready; the Harness will then execute verification, not infer success.`;
   } else {
-    instruction = `Use an independent reviewer with fresh context when supported; otherwise disclose the limitation. Review actual source and acceptance read-only. Verified source: ${job.verifiedDigest}; dependency resolution: ${job.verifiedDependencyDigest}; actual checks: ${JSON.stringify(job.config.verification)}. Reject incomplete requirements, data loss, fake screenshots, accessibility failures, placeholders, weak tests, hidden features and violations of the selected ${job.spec.channel} channel, not unrelated store rules. Return typed JSON {"approved":boolean,"findings":["blocking issue"],"acceptanceEvidence":[{"requirement":"exact acceptance string","evidence":"file/symbol + observed command or device scenario"}]}. Cover every acceptance requirement. Reviewer identity is advisory; the Harness gates typed results and unchanged execution evidence.`;
+    instruction = reviewInstructions(job);
   }
   // Host-visible JSON carries only task overrides, never inherited credential values.
   const environment = job.spec.framework === 'flutter' ? flutterEnvironment(job.config, job.workspace, { CI: '1' }) : { CI: '1' } as NodeJS.ProcessEnv;
+  if (job.spec.framework === 'mygo') Object.assign(environment, { GOENV: 'off', GOTOOLCHAIN: 'local', GOFLAGS: '-mod=readonly', GOWORK: closestOwnedGoWorkspace(job.workspace, job.spec.project?.directory) ?? 'off' });
   if (job.spec.framework === 'flutter' && job.config.toolchain) {
     environment.FLUTTER_ROOT = job.config.toolchain.flutterSdk;
     environment.PATH = `${join(job.config.toolchain.flutterSdk, 'bin')}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ''}`;
   }
-  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt: taskPrompt(job) + instruction, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)) } };
+  const role = [...(job.config.roles?.[turn.stage] ?? DEFAULT_ROLES[turn.stage])];
+  const prompt = `${taskPrompt(job)}${instruction}\nTurn roles (adopt every role through your native delegation, with independent contexts where the skill requires them): ${JSON.stringify(role)}`;
+  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)), role } };
 }
 
 function repair(job: Job, message: string): Partial<Job> {
   return {
     stage: 'build', status: (job.attempts[job.stage] ?? 0) >= job.config.maxAttempts ? 'failed' : 'waiting',
-    turn: null, review: null, verifiedDigest: null, verifiedDependencyDigest: null, screenshotDigest: null, verifiedAt: undefined,
-    artifact: null, ipaPath: null, archiveDigest: null, feedback: message, error: message,
+    ...invalidateVerification(), turn: null, feedback: message, error: message,
     nextAt: Date.now() + job.config.retryDelayMs,
   };
 }
@@ -116,7 +125,7 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
       return hostAction(store, job);
     }
     if (job.groups.length && !job.manualRecovery) return { job, action: 'step' };
-    if (['failed', 'ready', 'built', 'approved', 'released'].includes(job.status)) return { job, action: 'done' };
+    if (['failed', 'ready', 'built'].includes(job.status)) return { job, action: 'done' };
     const eligible = ['queued', 'waiting'].includes(job.status) || (job.status === 'blocked' && job.blockedReason?.kind === 'prerequisite');
     if (!eligible || job.nextAt > Date.now() || job.manualRecovery) return { job, action: 'wait' };
     if (!['research', 'build', 'review'].includes(job.stage)) return { job, action: 'step' };
@@ -151,6 +160,47 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
   } finally { store.release(); }
 }
 
+export type QueueTurn =
+  | HostAction
+  | { action: 'idle'; nextAt: number | null; pendingErrors: Array<{ id: string; error: string }>; summary: QueueSummary };
+
+export type QueueSummary = { total: number; built: number; failed: number; blocked: number; waiting: number; queued: number; running: number };
+
+/**
+ * Pick the earliest-due actionable task in the whole queue for a host loop:
+ * the first job (ordered by priority lane, then next_at, then insertion) whose
+ * `next` returns a host turn or a deterministic step. Jobs that are deferred, stopped or still
+ * owned by another execution are skipped; jobs whose persisted turn context no
+ * longer matches are surfaced in `pendingErrors` instead of silently blocking
+ * the queue. `idle` reports the earliest future due time plus a status summary
+ * so the host can audit whether the queue is truly finished or merely blocked,
+ * and knows when to wake again. Does not hold the queue worker lock across
+ * calls; each host claim stays transactional inside `nextTurn`.
+ */
+export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueueTurn> {
+  const pendingErrors: Array<{ id: string; error: string }> = [];
+  // Priority lanes order the scan (P0 > P1 > P2); within a lane, earliest due
+  // time wins, then insertion order. Priority never overrides eligibility:
+  // a deferred P0 job is skipped and the scan continues to the next safe action.
+  const rank = (job: Job): number => job.spec.priority === 'P0' ? 0 : job.spec.priority === 'P2' ? 2 : 1;
+  const jobs = [...store.list()].sort((left, right) => rank(left) - rank(right) || left.nextAt - right.nextAt);
+  for (const job of jobs) {
+    try {
+      const action = await nextTurn(store, job.id, options);
+      if (action.action === 'host' || action.action === 'step') return action;
+    } catch (cause) {
+      pendingErrors.push({ id: job.id, error: toError(cause).message });
+    }
+  }
+  const summary: QueueSummary = { total: jobs.length, built: 0, failed: 0, blocked: 0, waiting: 0, queued: 0, running: 0 };
+  for (const job of jobs) {
+    const status = job.status;
+    if (status === 'built' || status === 'failed' || status === 'blocked' || status === 'waiting' || status === 'queued' || status === 'running') summary[status] += 1;
+  }
+  const due = jobs.map(job => job.nextAt).filter(nextAt => nextAt > Date.now());
+  return { action: 'idle', nextAt: due.length ? Math.min(...due) : null, pendingErrors, summary };
+}
+
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {
   return store.transition(id, job => {
     assertTurnPermission(job, options);
@@ -161,11 +211,11 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
     let patch: Partial<Job>;
     if (job.stage === 'research') {
       const research = parseResearch(JSON.stringify(result), job.spec.channel);
-      patch = research.viable ? { stage: 'build', research } : { status: 'failed', research, error: 'Research rejected this product; no replacement product or review evasion will be attempted' };
+      patch = research.viable ? { stage: 'build', research } : { status: 'failed', research, error: 'Research rejected this product; no replacement product will be attempted' };
     } else if (job.stage === 'build') {
       if (result !== undefined) throw new Error('Build completion accepts no result payload; actual deterministic verification is required');
       assertProject(projectDirectory(job), job.spec);
-      patch = { stage: 'verify', verifiedDigest: null, verifiedDependencyDigest: null, screenshotDigest: null, verifiedAt: undefined, review: null, artifact: null, ipaPath: null, archiveDigest: null };
+      patch = { ...invalidateVerification(), stage: job.config.obfuscation ? 'obfuscate' : 'verify' };
     } else {
       const review = ReviewSchema.parse(result);
       if (!job.spec.acceptance.every(requirement => review.acceptanceEvidence.some(item => item.requirement === requirement))) throw new Error('Review verdict must cover each acceptance requirement with concrete evidence');
@@ -198,9 +248,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
   if (['research', 'build', 'review'].includes(job.stage) || job.turn) throw new Error(`Stage ${job.stage} belongs to a native host turn; use next and complete`);
   if (signal?.aborted) return store.update(job.id, { status: 'waiting', nextAt: Date.now(), error: 'Worker was interrupted before this stage started' });
   if (!config.allowLocalExecution) return store.update(job.id, { status: 'blocked', error: config.executionWarning ?? 'Local execution is disabled. Explicitly enable allowLocalExecution only for trusted deterministic commands in a dedicated account or VM.' });
-  if (deadlineExpired(job) && !['publish', 'monitor'].includes(job.stage)) {
-    return store.update(job.id, { status: 'failed', error: 'Task wall-clock limit reached; no further work will start' });
-  }
+  if (deadlineExpired(job)) return store.update(job.id, { status: 'failed', error: 'Task wall-clock limit reached; no further work will start' });
   const attemptNumber = (job.attempts[job.stage] ?? 0) + 1;
   let attempts = { ...job.attempts };
   let attemptCharged = false;
@@ -209,13 +257,24 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
   const environment = ['verify', 'package'].includes(job.stage) ? verifierEnv : developerEnv;
   const logPath = join(config.stateDir, 'logs', job.id, `${job.stage}-${attemptNumber}-${Date.now()}.log`);
   store.update(job.id, { logs: [...job.logs, logPath] });
-  const exec: Run = async (argv: string[], options: RunOptions = {}) => {
+  const readableFiles = new Set<string>();
+  const trackedRun = async (argv: string[], options: RunOptions = {}, capabilities: IsolationCapabilities = {}): Promise<RunResult> => {
     let pid: number | undefined;
+    let isolated: IsolatedCommand | undefined;
     try {
       const effectiveEnv = options.env ?? environment;
+      if (job.spec.framework === 'mygo') validateMyGoCommand(config, argv);
       const command = effectiveEnv.FLUTTER_ROOT && ['flutter', 'dart'].includes(argv[0]) ? [join(effectiveEnv.FLUTTER_ROOT, 'bin', argv[0]), ...argv.slice(1)] : argv;
-      const result = await run(command, {
-        cwd: projectDirectory(job), env: effectiveEnv, timeoutMs: config.timeoutMs, signal, logPath, ...options,
+      const cwd = options.cwd ?? projectDirectory(job);
+      if (config.isolation && ['obfuscate', 'verify', 'package'].includes(job.stage)) {
+        isolated = prepareIsolatedCommand(command, {
+          config, workspace: job.workspace, cwd, env: effectiveEnv,
+          readableFiles: [...readableFiles, ...(capabilities.readableFiles ?? [])],
+          writableDirectories: capabilities.writableDirectories,
+        });
+      }
+      const result = await run(isolated?.argv ?? command, {
+        timeoutMs: config.timeoutMs, signal, logPath, ...options, cwd, env: isolated?.env ?? effectiveEnv,
         onSpawn: (value, metadata) => {
           pid = value;
           const current = store.get(job.id);
@@ -229,20 +288,59 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       }
       return result;
     } finally {
-      const current = store.get(job.id);
-      const groups = current.groups.filter(processGroupAlive);
-      const commands = Object.fromEntries(Object.entries(current.commands ?? {}).filter(([pid]) => groups.includes(Number(pid))));
-      store.update(job.id, { groups, commands, recoveryStage: groups.length ? current.recoveryStage ?? job.stage : undefined });
+      try {
+        const current = store.get(job.id);
+        const groups = current.groups.filter(processGroupAlive);
+        const commands = Object.fromEntries(Object.entries(current.commands ?? {}).filter(([pid]) => groups.includes(Number(pid))));
+        store.update(job.id, { groups, commands, recoveryStage: groups.length ? current.recoveryStage ?? job.stage : undefined });
+      } finally { isolated?.cleanup(); }
     }
+  };
+  const exec: Run = (argv, options) => trackedRun(argv, options);
+  const utilityExec: Run = (argv, options) => {
+    if (!config.isolation) return trackedRun(argv, options);
+    if (argv[0] !== '/usr/bin/plutil') throw Object.assign(new Error('Unexpected isolated export utility'), { code: 'SETUP_REQUIRED' });
+    const file = resolve(options?.cwd ?? projectDirectory(job), argv[argv.length - 1]!);
+    const actual = canonicalPath(file), state = canonicalPath(config.stateDir), directory = dirname(actual);
+    const within = (root: string, target: string): boolean => {
+      const path = relative(root, target);
+      return path === '' || path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+    };
+    if (within(job.workspace, file) && !within(job.workspace, actual)
+      && !config.isolation.readOnlyPaths.some(root => within(root, actual))) throw Object.assign(new Error('Workspace export options cannot grant access to an unapproved external file'), { code: 'SETUP_REQUIRED' });
+    const snapshot = dirname(directory) === state && basename(directory).startsWith('export-options-') && basename(actual) === 'ExportOptions.plist';
+    if (within(state, actual) && !snapshot || within(canonicalPath(config.workspaceRoot), actual) && !within(job.workspace, actual)
+      || config.configPath && actual === canonicalPath(config.configPath)) throw Object.assign(new Error('Export utility cannot read protected control state or another task'), { code: 'SETUP_REQUIRED' });
+    const writing = argv[1] === '-convert' && argv[2] === 'xml1';
+    if (writing && !snapshot) throw Object.assign(new Error('Export utility writes require a harness-owned snapshot'), { code: 'SETUP_REQUIRED' });
+    return trackedRun([...argv.slice(0, -1), actual], options, {
+      readableFiles: within(job.workspace, actual) ? [] : [actual],
+      writableDirectories: writing ? [directory] : [],
+    });
+  };
+  const removeArtifact = async (output: string): Promise<void> => {
+    if (!config.isolation) { rmSync(output, { recursive: true, force: true }); return; }
+    const result = await exec(['/bin/rm', '-rf', '--', output]);
+    if (result.code !== 0) throw Object.assign(new Error(`Isolated artifact cleanup was denied: ${result.stderr || result.stdout}`), { code: 'SETUP_REQUIRED' });
   };
   try {
     validateJobConfig(job.spec, config);
+    if (job.spec.framework === 'mygo') validateMyGoPackaging(config);
     prepareWorkspace(store, job);
     mkdirSync(projectDirectory(job), { recursive: true, mode: 0o700 });
+    if (job.spec.framework === 'mygo') {
+      Object.assign(developerEnv, {
+        GOENV: 'off', GOTOOLCHAIN: 'local', GOFLAGS: '-mod=readonly',
+        GOWORK: closestOwnedGoWorkspace(job.workspace, job.spec.project?.directory) ?? 'off',
+        GOCACHE: developerEnv.GOCACHE ?? join(config.stateDir, 'verification-cache', 'go-build'),
+        GOMODCACHE: developerEnv.GOMODCACHE ?? join(config.stateDir, 'verification-cache', 'go-mod'),
+      });
+      for (const key of ['MYGO_UPDATER_PRIVATE_KEY', 'MYGO_WINDOWS_CERTIFICATE_PASSWORD', 'MYGO_CLI_BINARY', 'MYGO_LDFLAGS', 'MYGO_GENERATE', 'MYGO_INSPECTOR']) delete developerEnv[key];
+    }
     if (job.stage === 'verify' || job.stage === 'package') {
       await checkPrerequisites(config.verification.prerequisites ?? [], { cwd: projectDirectory(job), env: environment, run: exec, signal });
     }
-    if ((job.attempts[job.stage] ?? 0) >= config.maxAttempts && !['publish', 'monitor'].includes(job.stage)) return store.update(job.id, { status: 'failed', error: `Attempt limit reached at ${job.stage}` });
+    if ((job.attempts[job.stage] ?? 0) >= config.maxAttempts) return store.update(job.id, { status: 'failed', error: `Attempt limit reached at ${job.stage}` });
     if (job.spec.framework === 'flutter' && config.toolchain && ['verify', 'package'].includes(job.stage)) {
       const toolchain = await prepareFlutter(job, { run: exec, env: developerEnv, signal });
       if (toolchain) store.update(job.id, { toolchain });
@@ -266,6 +364,60 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       const screenshotDigest = job.spec.screenshotsDir ? sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) : null;
       return next(store, job, 'review', { verifiedDigest: before, verifiedDependencyDigest: dependenciesBefore, screenshotDigest, verifiedAt: new Date().toISOString() });
     }
+    if (job.stage === 'obfuscate') {
+      const obfuscation = job.config.obfuscation;
+      if (!obfuscation) throw Object.assign(new Error('Obfuscation stage requires config.obfuscation'), { code: 'SETUP_REQUIRED' });
+      const obfuscationBase = { digest: sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory), path: projectDirectory(job) };
+      let configPath = obfuscation.configPath;
+      let snapshot: string | undefined;
+      if (!configPath) {
+        // Inline rules are materialized as a harness-owned snapshot file; the
+        // obfuscator validates them at run time, and the snapshot never becomes
+        // part of the verified source.
+        const directory = join(config.stateDir, 'obfuscation');
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        snapshot = join(directory, `${job.id}-${Date.now()}.json`);
+        writeFileSync(snapshot, `${JSON.stringify(obfuscation.options ?? {}, null, 2)}\n`, { mode: 0o600 });
+        configPath = snapshot;
+      }
+      try {
+        const expanded = expandArgv(obfuscation.command, environment);
+        // The default command resolves to the private obfuscator bundled inside this package, so it
+        // works for global installs, local dependency installs and the macOS sandbox alike.
+        const bundled = fileURLToPath(new URL('./vendor/obfuscator/dist/cli.js', import.meta.url));
+        const resolved = expanded[0] === 'obfuscator' && existsSync(bundled) ? [process.execPath, bundled, ...expanded.slice(1)] : expanded;
+        const argv = [
+          ...resolved,
+          '--project', projectDirectory(job),
+          '--config', configPath!,
+          '--framework', job.spec.framework,
+          ...(obfuscation.seed ? ['--seed', obfuscation.seed] : []),
+        ];
+        const result = await trackedRun(argv, {}, { readableFiles: [configPath!] });
+        if (result.code !== 0) throw new Error(`Obfuscation failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
+        let report: Job['obfuscationReport'];
+        try {
+          const parsed: unknown = JSON.parse(result.stdout);
+          if (parsed && typeof parsed === 'object') {
+            const value = parsed as Record<string, unknown>;
+            const skipped = value.skipped && typeof value.skipped === 'object' ? value.skipped as Record<string, unknown> : {};
+            if (Number.isSafeInteger(value.changedFiles) && value.transforms && typeof value.transforms === 'object' && !Array.isArray(value.transforms)) {
+              report = {
+                changedFiles: value.changedFiles as number,
+                transforms: Object.fromEntries(Object.entries(value.transforms).filter(([key, count]) => typeof key === 'string' && Number.isSafeInteger(count)) as Array<[string, number]>),
+                skipped: { generated: Number.isSafeInteger(skipped.generated) ? skipped.generated as number : 0, unsupported: Number.isSafeInteger(skipped.unsupported) ? skipped.unsupported as number : 0 },
+              };
+            }
+          }
+        } catch { /* report stays undefined */ }
+        // The bundled obfuscator always prints a typed report; a custom command may not.
+        if (!report && resolved[0] === process.execPath && resolved[1] === bundled) throw new Error('Bundled obfuscator produced no valid report; the transformed workspace cannot be evidenced');
+        const obfuscationDigest = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory);
+        return next(store, job, 'verify', { obfuscationBase, obfuscationDigest, ...(report ? { obfuscationReport: report } : {}) });
+      } finally {
+        if (snapshot) rmSync(snapshot, { force: true });
+      }
+    }
     if (job.stage === 'package') {
       requireReviewProof(job);
       if (!job.review?.approved || job.review.findings.length) throw new Error('Packaging requires an approved host review');
@@ -273,7 +425,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       const project = projectDirectory(job);
       const profile = config.packaging;
       if (job.cloudBuildPending) throw Object.assign(new Error('A previous cloud build may have remote effects. Reconcile it with the provider before creating a new task; this build will not be replayed.'), { code: 'SETUP_REQUIRED' });
-      if (job.spec.platform === 'ios' && profile?.provider !== 'cloud' && process.platform !== 'darwin') throw Object.assign(new Error('Local iOS packaging requires a macOS worker'), { code: 'SETUP_REQUIRED' });
+      if (['ios', 'macos'].includes(job.spec.platform) && profile?.provider !== 'cloud' && process.platform !== 'darwin') throw Object.assign(new Error(`Local ${job.spec.platform} packaging requires a macOS worker`), { code: 'SETUP_REQUIRED' });
       let path: string;
       store.update(job.id, { artifact: null, ipaPath: null, archiveDigest: null });
       if (profile) {
@@ -282,62 +434,56 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
         let generated = isGeneratedPath(profile.artifactPath, job.spec.framework);
         if (!generated) for (const module of generatedModulePaths(job.workspace, job.spec.framework, job.spec.project?.directory)) if (outputRelative.startsWith(`${module}/`)) { generated = true; break; }
         if (!generated || !/(?:^|\/)(?:build|dist|unpackage)(?:\/|$)/.test(profile.artifactPath) || /(?:^|\/)(?:node_modules|\.git|\.gradle|\.factory-cache|Pods)(?:\/|$)/.test(profile.artifactPath)) throw Object.assign(new Error('packaging.artifactPath must name an exact generated build/dist/unpackage artifact, never source or dependency caches'), { code: 'SETUP_REQUIRED' });
-        if (!output.endsWith(target === 'simulator' ? '.app' : `.${target}`)) throw Object.assign(new Error(`packaging.artifactPath must end in ${target === 'simulator' ? '.app' : `.${target}`}`), { code: 'SETUP_REQUIRED' });
-        rmSync(output, { recursive: true, force: true });
-        if (profile.provider === 'cloud') store.update(job.id, { cloudBuildPending: true });
-        for (const argv of profile.commands) {
-          const result = await exec(expandArgv(argv, executionEnvironment(config)));
-          if (result.code !== 0) throw new Error(`Packaging failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
+        if (!output.endsWith(target === 'simulator' || target === 'app' ? '.app' : `.${target}`)) throw Object.assign(new Error(`packaging.artifactPath must end in ${target === 'simulator' || target === 'app' ? '.app' : `.${target}`}`), { code: 'SETUP_REQUIRED' });
+        const prepared = await prepareNativeExportCommands(profile.commands.map(argv => expandArgv(argv, executionEnvironment(config))), project, config.stateDir, utilityExec);
+        try {
+          for (const file of prepared.readableFiles) readableFiles.add(file);
+          await removeArtifact(output);
+          if (profile.provider === 'cloud') store.update(job.id, { cloudBuildPending: true });
+          for (const argv of prepared.commands) {
+            const result = await exec(argv);
+            if (result.code !== 0) throw new Error(`Packaging failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
+          }
+          path = artifactOutputPath(project, profile.artifactPath);
+        } finally {
+          for (const file of prepared.readableFiles) readableFiles.delete(file);
+          prepared.cleanup();
         }
-        path = artifactOutputPath(project, profile.artifactPath);
       } else {
         const output = artifactOutputPath(project, target === 'ipa' ? 'build/ios/ipa' : target === 'simulator' ? 'build/ios/iphonesimulator' : target === 'apk' ? 'build/app/outputs/flutter-apk' : 'build/app/outputs/bundle/release');
         if (target === 'ipa' && !config.apple?.exportOptionsPlist) throw Object.assign(new Error('Configure apple.exportOptionsPlist and valid local signing before IPA packaging'), { code: 'SETUP_REQUIRED' });
         if (target === 'ipa' && !job.spec.apple?.buildNumber) throw Object.assign(new Error('apple.buildNumber is required for IPA signing'), { code: 'SETUP_REQUIRED' });
         let exportOptions: { directory: string; path: string } | undefined;
         try {
-          if (target === 'ipa') exportOptions = await prepareExportOptions(config.apple!.exportOptionsPlist!, config.stateDir, exec);
-          rmSync(output, { recursive: true, force: true });
+          if (target === 'ipa') {
+            exportOptions = await prepareExportOptions(config.apple!.exportOptionsPlist!, config.stateDir, utilityExec);
+            readableFiles.add(exportOptions.path);
+          }
+          await removeArtifact(output);
           const argv = target === 'ipa'
             ? ['flutter', 'build', 'ipa', '--release', '--build-name', job.spec.version, '--build-number', job.spec.apple!.buildNumber!, '--export-options-plist', exportOptions!.path]
             : target === 'simulator' ? ['flutter', 'build', 'ios', '--simulator', '--debug', '--no-pub']
               : ['flutter', 'build', target === 'apk' ? 'apk' : 'appbundle', '--release', '--no-pub', '--build-name', job.spec.version];
           const built = await exec(argv);
           if (built.code !== 0) throw new Error(`${job.spec.framework} ${target} build failed: ${built.stderr.slice(-5000)}`);
-        } finally { if (exportOptions) rmSync(exportOptions.directory, { recursive: true, force: true }); }
+        } finally {
+          if (exportOptions) {
+            readableFiles.delete(exportOptions.path);
+            rmSync(exportOptions.directory, { recursive: true, force: true });
+          }
+        }
         const products = readdirSync(output).filter(name => name.endsWith(target === 'simulator' ? '.app' : `.${target}`));
         if (products.length !== 1) throw new Error(`Expected exactly one ${target} artifact in ${relative(job.workspace, output)}`);
         path = artifactOutputPath(project, join(relative(project, output), products[0]));
       }
-      if (sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest) throw Object.assign(new Error('Packaging changed source; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
-      requireDependencyProof(job);
+      requireReviewProof(job);
       const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || (target === 'simulator' ? !stat.isDirectory() || readdirSync(path).length === 0 : !stat.isFile() || stat.size === 0)) throw new Error('Packaging did not produce a nonempty regular artifact of the requested kind');
-      const digest = target === 'simulator' ? sourceDigest(path, false) : createHash('sha256').update(readFileSync(path)).digest('hex');
-      const artifact = { kind: target === 'simulator' ? 'ios-simulator' as const : target, path, digest, createdAt: new Date().toISOString() };
-      if (!config.allowSubmit) return store.update(job.id, { status: 'built', artifact, cloudBuildPending: false, error: null });
-      return next(store, job, 'publish', { artifact, ipaPath: path, archiveDigest: digest, cloudBuildPending: false });
-    }
-    if (job.stage === 'publish') {
-      if (!config.allowSubmit) throw Object.assign(new Error('This task has no upload/submission permission'), { code: 'SETUP_REQUIRED' });
-      if (!job.ipaPath || !job.archiveDigest) throw new Error('Publication requires a completed verified IPA artifact');
-      if (job.spec.channel !== 'app-store' || job.spec.platform !== 'ios') throw Object.assign(new Error('Automatic publishing is available only for the App Store channel'), { code: 'SETUP_REQUIRED' });
-      if (sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest || createHash('sha256').update(readFileSync(job.ipaPath)).digest('hex') !== job.archiveDigest) throw new Error('Source or archive changed after verification; refusing publication');
-      requireDependencyProof(job);
-      const spec = structuredClone(job.spec);
-      if (spec.screenshotsDir) spec.screenshotsDir = inside(projectDirectory(job), spec.screenshotsDir);
-      if (spec.screenshotsDir && sourceDigest(spec.screenshotsDir, false) !== job.screenshotDigest) throw new Error('Screenshots changed after runtime verification; refusing to upload different assets');
-      const receipt = await shipApple({ spec, ipaPath: job.ipaPath, state: store.get(job.id).receipt, save: receipt => { store.update(job.id, { receipt }); }, run: exec, signal, allowRelease: config.allowRelease });
-      return next(store, job, 'monitor', { receipt, status: 'waiting', nextAt: Date.now() + config.pollMs });
-    }
-    if (job.stage === 'monitor') {
-      if (job.spec.channel !== 'app-store') throw Object.assign(new Error('Monitoring requires the App Store channel'), { code: 'SETUP_REQUIRED' });
-      const result = await pollApple({ spec: job.spec, state: job.receipt, signal });
-      if (result.status === 'approved' && (result.available || !config.allowRelease)) return store.update(job.id, { status: result.available ? 'released' : 'approved', appleReview: result, error: null });
-      if (result.status === 'rejected') {
-        return store.update(job.id, { status: 'blocked', appleReview: result, error: 'Apple rejected this version. Rejection message details are not available through this API; do not invent feedback. Supply the actual App Review message with the feedback command to resume repairs.' });
-      }
-      return store.update(job.id, { status: 'waiting', appleReview: result, attempts: { ...attempts, monitor: 0 }, nextAt: Date.now() + config.pollMs, error: null });
+      const bundle = target === 'simulator' || target === 'app';
+      if (stat.isSymbolicLink() || (bundle ? !stat.isDirectory() || readdirSync(path).length === 0 : !stat.isFile() || stat.size === 0)) throw new Error('Packaging did not produce a nonempty regular artifact of the requested kind');
+      if (target === 'app' || target === 'dmg') await validateMacOSArtifact(path, target, exec);
+      const digest = bundle ? sourceDigest(path, false) : createHash('sha256').update(readFileSync(path)).digest('hex');
+      const artifact = { kind: target === 'simulator' ? 'ios-simulator' as const : target === 'app' ? 'macos-app' as const : target, path, digest, createdAt: new Date().toISOString() };
+      return store.update(job.id, { status: 'built', artifact, cloudBuildPending: false, error: null });
     }
     throw new Error(`Unknown task stage ${job.stage}`);
   } catch (cause) {
@@ -347,13 +493,8 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     if (signal?.aborted) return store.update(job.id, { status: 'waiting', attempts: { ...attempts, [job.stage]: job.attempts[job.stage] ?? 0 }, nextAt: Date.now(), error: error.message });
     if (error.code === 'PREREQUISITE_FAILED' && error.prerequisite) return store.update(job.id, { status: 'blocked', blockedReason: { kind: 'prerequisite', stage: job.stage, prerequisite: error.prerequisite }, attempts: { ...job.attempts }, nextAt: Date.now() + config.pollMs, error: error.message });
     if (!attemptCharged) return store.update(job.id, { status: 'blocked', blockedReason: null, attempts: { ...job.attempts }, nextAt: Date.now(), error: error.message });
-    const blocked = (error.code === 'ENOENT' && error.syscall?.startsWith('spawn')) || /SETUP_REQUIRED|UNSUPPORTED|APPLE_WRITE_UNCERTAIN|APPLE_STATE_|PROCESS_CLEANUP_BLOCKED/.test(error.code ?? '');
+    const blocked = (error.code === 'ENOENT' && error.syscall?.startsWith('spawn')) || /SETUP_REQUIRED|UNSUPPORTED|PROCESS_CLEANUP_BLOCKED/.test(error.code ?? '');
     if (blocked) return store.update(job.id, { status: 'blocked', error: error.message });
-    if (error.code === 'APPLE_PROCESSING' || error.code === 'APPLE_RATE_LIMIT') return store.update(job.id, { status: 'waiting', attempts: { ...attempts, [job.stage]: Math.max(0, (attempts[job.stage] ?? 0) - 1) }, error: error.message, nextAt: Date.now() + config.pollMs });
-    const receipt = store.get(job.id).receipt;
-    const publicationRecovery = ['publish', 'monitor'].includes(job.stage) && (job.stage === 'monitor' || !!(receipt.upload || receipt.pending || receipt.buildId || receipt.submissionId || receipt.versionId || Object.keys(receipt.effects ?? {}).length));
-    if (publicationRecovery && error.transient === true) return store.update(job.id, { status: 'waiting', error: error.message, nextAt: Date.now() + config.pollMs });
-    if (job.stage === 'monitor' || (publicationRecovery && error.code?.startsWith('APPLE_'))) return store.update(job.id, { status: 'blocked', error: error.message });
     const charged = attempts[job.stage] ?? 0;
     const exhausted = error.code === 'BUDGET' || charged >= config.maxAttempts;
     if (job.stage === 'verify' || (job.stage === 'package' && error.code === 'EVIDENCE_CHANGED')) return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'failed' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });

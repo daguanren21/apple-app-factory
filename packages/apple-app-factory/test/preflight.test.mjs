@@ -13,7 +13,7 @@ function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-preflight-'));
   const config = {
     stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator',
-    allowLocalExecution: true, allowSubmit: false, allowRelease: false,
+    allowLocalExecution: true,
     pollMs: 25, retryDelayMs: 25, timeoutMs: 5000,
     maxAttempts: 3, maxHostTurns: 3, maxJobHours: 1, executionEnv: [],
     verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
@@ -191,9 +191,9 @@ test('real environmental readiness unblocks the same verification stage without 
   assert.deepEqual(recovered.commands, {});
 });
 
-test('ordinary Apple write, rejection and permission blocks never auto-retry', async t => {
+test('permission-denied blocks never auto-retry', async t => {
   const { store, job } = fixture(t);
-  for (const error of ['APPLE_WRITE_UNCERTAIN', 'APPLE_SETUP_REQUIRED', 'APPLE_STATE_CONFLICT', 'Apple rejected this version', 'EACCES: permission denied']) {
+  for (const error of ['EACCES: permission denied', 'EPERM: operation not permitted']) {
     store.update(job.id, { status: 'blocked', nextAt: 0, blockedReason: null, error });
     assert.equal(store.next(), undefined, error);
     assert.equal(store.get(job.id).status, 'blocked');

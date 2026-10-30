@@ -20,6 +20,23 @@ export function canonicalPath(path: string): string {
   return resolve(canonicalPath(dirname(absolute)), basename(absolute));
 }
 
+export function normalizeIsolationPaths(config: Config): void {
+  if (!config.isolation) return;
+  const root = config.configPath ? dirname(resolve(config.configPath)) : process.cwd();
+  const protectedPaths = [config.stateDir, config.workspaceRoot, ...(config.configPath ? [config.configPath] : [])].map(path => canonicalPath(resolve(root, path)));
+  const contains = (parent: string, child: string): boolean => {
+    const path = relative(parent, child);
+    return path === '' || path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+  };
+  config.isolation.readOnlyPaths = [...new Set(config.isolation.readOnlyPaths.map(path => {
+    const absolute = canonicalPath(resolve(root, path));
+    const info = lstatSync(absolute, { throwIfNoEntry: false });
+    if (!info || !info.isDirectory() && !info.isFile()) throw new Error(`Isolation read-only path must exist as a regular file or directory: ${path}`);
+    if (protectedPaths.some(protectedPath => contains(absolute, protectedPath) || contains(protectedPath, absolute))) throw new Error('Isolation read-only paths must not expose control state, configuration or other task workspaces');
+    return absolute;
+  }))];
+}
+
 export function loadConfig(path = 'factory.json'): Config & { configPath: string } {
   const configPath = resolve(path);
   const source = z.record(z.string(), z.unknown()).parse(loadJSON(configPath));
@@ -39,6 +56,12 @@ export function loadConfig(path = 'factory.json'): Config & { configPath: string
     if (!child || !(child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child))) throw new Error('toolchain.flutterSdk must be outside workspaceRoot so verification does not trust an agent-writable SDK');
   }
   if (config.apple?.exportOptionsPlist) config.apple.exportOptionsPlist = resolve(root, config.apple.exportOptionsPlist);
+  if (config.obfuscation) {
+    if (config.obfuscation.configPath) {
+      config.obfuscation.configPath = resolve(root, config.obfuscation.configPath);
+      if (!existsSync(config.obfuscation.configPath) || !lstatSync(config.obfuscation.configPath).isFile()) throw new Error(`obfuscation.configPath must name an existing regular file: ${config.obfuscation.configPath}`);
+    }
+  }
   if (config.inbox) {
     config.inbox.directory = resolve(root, config.inbox.directory);
     const workspace = canonicalPath(config.workspaceRoot);
@@ -49,6 +72,7 @@ export function loadConfig(path = 'factory.json'): Config & { configPath: string
   if (!config.allowLocalExecution) config.executionWarning = 'Local execution is disabled. Use a dedicated OS account or VM, then set allowLocalExecution=true; a workspace is not a security sandbox.';
   const state = canonicalPath(config.stateDir), workspace = canonicalPath(config.workspaceRoot);
   if ([relative(workspace, state), relative(state, workspace)].some(child => !child || !(child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)))) throw new Error('stateDir and workspaceRoot must not overlap in either direction so host tools do not own task state');
+  normalizeIsolationPaths(config);
   return { ...config, configPath };
 }
 

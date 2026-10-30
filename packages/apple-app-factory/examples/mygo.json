@@ -1,0 +1,16 @@
+{
+  "id": "mygo-local-notes",
+  "name": "MyGo App",
+  "framework": "mygo",
+  "platform": "macos",
+  "channel": "local",
+  "version": "0.1.0",
+  "screenshotsDir": "build/screenshots",
+  "purpose": "Capture and recover private offline desktop notes",
+  "audience": "Mac users keeping local working notes",
+  "differentiators": ["Offline note editing with a reversible owner-controlled backup"],
+  "acceptance": ["Launch the actual macOS app, create and edit a note through its visible UI, then restart and recover the saved text", "Export notes, remove local data and restore the same notes through the desktop UI; record actual window screenshots"],
+  "constraints": ["Use native MyGo UI with go.mod and mygo.json, without requiring package.json or Bun", "Pin github.com/egoist/mygo v0.3.0 and its cmd/mygo tool directive in go.mod; use Go 1.27.1", "Set the MyGo app name to MyGo App and version to 0.1.0; match darwin/arm64 output paths in the paired profile", "Implement cmd/acceptance as a real app-specific desktop harness that launches and drives the actual app, waits for UI assertions and fails on errors; go test or a headless view test alone is insufficient", "No accounts, network dependency, Developer ID, notarization, upload or publishing"],
+  "hiddenFeatures": false,
+  "reviewBypass": false
+}

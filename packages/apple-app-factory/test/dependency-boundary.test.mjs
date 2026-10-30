@@ -8,7 +8,7 @@ import { inside } from '../dist/config.js';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { executeStep } from '../dist/runner.js';
-import { sourceDigest } from '../dist/workspace.js';
+import { prepareWorkspace, sourceDigest } from '../dist/workspace.js';
 import { dependencyDigest } from '../dist/dependencies.js';
 
 function fixture(t) {
@@ -167,5 +167,52 @@ test('successors retain owned package sources and validate before predecessor co
   file(join(base.workspace, 'packages', 'middle', 'pubspec.yaml'), `name: middle\ndependencies:\n  leaf: {path: ${JSON.stringify(relative(join(base.workspace, 'packages', 'middle'), join(root, 'outside')))}}\n`);
   const blocked = await executeStep(store, store.update(rejected.id, { stage: 'verify', status: 'running' }));
   assert.match(blocked.error, /outside fingerprinted workspace source/);
+  assert.equal(existsSync(rejected.workspace), false);
+});
+
+test('Gradle successor snapshot retains quoted-declaration source and omits active module outputs', t => {
+  const { root } = fixture(t);
+  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'apk', verification: { checks: [['unused']], runtime: [['unused']] }, packaging: { provider: 'local', commands: [['unused']], artifactPath: 'build/App.apk' } });
+  const store = new Store(config.stateDir);
+  t.after(() => store.close());
+  const spec = { id: 'gradle-owned-source', name: 'Gradle owned source', purpose: 'Keep Gradle source boundaries', audience: 'Owners', framework: 'android-java', platform: 'android', channel: 'local', version: '1.0.0', differentiators: ['Owned source'], acceptance: ['Copy only owned bytes'] };
+  const base = store.enqueue(spec, config);
+  file(join(base.workspace, 'settings.gradle'), `def diagnostic = "include ':lib'"
+include 'feature:search'
+include ':shared'
+project('shared').projectDir = file('packages/shared')
+includeBuild('plugins')
+includeBuild('manifestless')
+`);
+  for (const path of ['lib', 'feature/search', 'packages/shared', 'plugins', 'fixtures']) {
+    file(join(base.workspace, path, 'build.gradle'), 'plugins { id "java-library" }');
+    file(join(base.workspace, path, 'build', 'gradle.properties'), `${path}=original`);
+  }
+  file(join(base.workspace, 'manifestless/build/gradle.properties'), 'manifestless=owned');
+  const digest = sourceDigest(base.workspace, true, spec.framework);
+  const dependencies = dependencyDigest(base.workspace, spec.framework);
+  store.update(base.id, { status: 'built', stage: 'package', verifiedDigest: digest, verifiedDependencyDigest: dependencies });
+  const successor = store.enqueue({ ...spec, version: '1.1.0' }, config, base.id);
+  for (const path of ['feature/search', 'packages/shared', 'plugins']) {
+    file(join(base.workspace, path, 'build', 'gradle.properties'), 'generated=changed');
+  }
+  assert.equal(sourceDigest(base.workspace, true, spec.framework), digest);
+  assert.equal(dependencyDigest(base.workspace, spec.framework), dependencies);
+  prepareWorkspace(store, successor);
+  assert.equal(store.get(successor.id).basePrepared, true);
+  assert.equal(sourceDigest(successor.workspace, true, spec.framework), digest);
+  assert.equal(dependencyDigest(successor.workspace, spec.framework), dependencies);
+  for (const path of ['lib', 'fixtures']) {
+    assert.equal(readFileSync(join(successor.workspace, path, 'build', 'gradle.properties'), 'utf8'), `${path}=original`);
+  }
+  assert.equal(readFileSync(join(successor.workspace, 'manifestless/build/gradle.properties'), 'utf8'), 'manifestless=owned');
+  for (const path of ['feature/search', 'packages/shared', 'plugins']) {
+    assert.equal(existsSync(join(successor.workspace, path, 'build')), false);
+  }
+  const rejected = store.enqueue({ ...spec, version: '1.2.0' }, config, base.id);
+  file(join(base.workspace, 'lib/build/gradle.properties'), 'owned=changed');
+  assert.notEqual(sourceDigest(base.workspace, true, spec.framework), digest);
+  assert.notEqual(dependencyDigest(base.workspace, spec.framework), dependencies);
+  assert.throws(() => prepareWorkspace(store, rejected), /source changed/);
   assert.equal(existsSync(rejected.workspace), false);
 });

@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "apphx-mygo-web-smoke",
+      "dependencies": {
+        "mygo-runtime": "0.3.0",
+      },
+    },
+  },
+  "packages": {
+    "mygo-runtime": ["mygo-runtime@0.3.0", "", {}, "sha512-/GOa5qX6HmbUFDQlJ/ZPRUDXW5wURuTfH/aPNprTH19nibnblEIP+MIvfnDotK3ZYfXUcfkiPpZouXtRDseagA=="],
+  }
+}

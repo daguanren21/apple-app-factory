@@ -7,7 +7,7 @@ import { run } from '../dist/process.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
-const publishable = {
+const documented = {
   ...product,
   apple: {
     ...product.apple, appId: '123', description: 'Offline packing and luggage weight planning.', keywords: 'packing,luggage',
@@ -109,20 +109,10 @@ test('competing CLI submissions never overwrite the winning requirement', async 
   assertNoExecution(f);
 });
 
-test('build-only submit refuses authorized configuration before any writes', async t => {
-  const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
-  const result = await submit(f, product, ['--build-only']);
-  assert.notEqual(result.code, 0);
-  assert.equal(result.stdout, '');
-  assert.equal(existsSync(f.inbox), false);
-  assert.equal(existsSync(f.stateDir), false);
-  assertNoExecution(f);
-});
-
-for (const kind of ['invalid-json', 'unknown-field', 'invalid-publication']) {
+for (const kind of ['invalid-json', 'unknown-field', 'invalid-configuration']) {
   test(`submit CLI rejects ${kind} before writing inbox or queue`, async t => {
-    const f = fixture(t, kind === 'invalid-publication' ? { allowSubmit: true, packageTarget: 'ipa' } : {});
-    const input = kind === 'invalid-json' ? '{' : JSON.stringify(kind === 'unknown-field' ? { ...product, unknownField: true } : { ...product, channel: 'local', apple: undefined });
+    const f = fixture(t, kind === 'invalid-configuration' ? { packageTarget: 'aab' } : {});
+    const input = kind === 'invalid-json' ? '{' : JSON.stringify(kind === 'unknown-field' ? { ...product, unknownField: true } : { ...product, framework: 'android-java' });
     const result = await run([process.execPath, cli, 'submit', '-', '--config', f.configPath], { input });
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, '');
@@ -132,39 +122,46 @@ for (const kind of ['invalid-json', 'unknown-field', 'invalid-publication']) {
   });
 }
 
-for (const [name, apple, expected] of [
-  ['missing Apple metadata', undefined, /spec\.apple\.appId/],
-  ['missing app ID', { ...publishable.apple, appId: undefined }, /spec\.apple\.appId/],
-  ['missing description', { ...publishable.apple, description: undefined }, /spec\.apple\.description/],
-  ['missing review contact', { ...publishable.apple, contact: { ...publishable.apple.contact, email: undefined } }, /spec\.apple\.contact\.email/],
-  ['missing legal attestation', { ...publishable.apple, manualSetupConfirmed: undefined }, /publisher’s attestation/],
-  ['unconfirmed legal attestation', { ...publishable.apple, manualSetupConfirmed: false }, /publisher’s attestation/],
-]) {
-  test(`publisher submit CLI rejects ${name} without inbox or state writes`, async t => {
-    const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
-    mkdirSync(f.stateDir);
-    writeFileSync(join(f.stateDir, 'sentinel'), 'unchanged queue state');
-    const before = statSync(f.stateDir, { bigint: true });
-    const result = await submit(f, { ...publishable, apple });
-    assert.notEqual(result.code, 0);
-    assert.equal(result.stdout, '');
-    assert.match(result.stderr, expected);
-    assert.equal(existsSync(f.inbox), false);
-    const after = statSync(f.stateDir, { bigint: true });
-    for (const field of ['ino', 'size', 'mtimeNs', 'ctimeNs']) assert.equal(after[field], before[field], field);
-    assert.deepEqual(readdirSync(f.stateDir), ['sentinel']);
-    assert.equal(readFileSync(join(f.stateDir, 'sentinel'), 'utf8'), 'unchanged queue state');
-    assertNoExecution(f);
-  });
-}
+test('app-store submit accepts minimal apple documentation', async t => {
+  const f = fixture(t, { packageTarget: 'ipa' });
+  const minimal = { ...product, apple: { bundleId: product.apple.bundleId, buildNumber: product.apple.buildNumber } };
+  const result = await submit(f, minimal);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(JSON.parse(result.stdout).path, 'utf8')), minimal);
+  assert.equal(existsSync(f.stateDir), false);
+  assertNoExecution(f);
+});
 
-test('publisher submit CLI admits complete controlled metadata without opening queue state', async t => {
-  const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
-  const result = await submit(f, publishable);
+test('submit accepts a spec with apple omitted entirely', async t => {
+  const f = fixture(t, { packageTarget: 'ipa' });
+  const { apple, ...withoutApple } = product;
+  const result = await submit(f, withoutApple);
   assert.equal(result.code, 0, result.stderr);
   const published = JSON.parse(result.stdout);
-  assert.deepEqual(JSON.parse(readFileSync(published.path, 'utf8')), publishable);
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(published.path, 'utf8')), 'apple'), false);
+  assert.equal(existsSync(f.stateDir), false);
+  assertNoExecution(f);
+});
+
+test('submit accepts complete controlled metadata as optional owner documentation without opening queue state', async t => {
+  const f = fixture(t, { packageTarget: 'ipa' });
+  const result = await submit(f, documented);
+  assert.equal(result.code, 0, result.stderr);
+  const published = JSON.parse(result.stdout);
+  assert.deepEqual(JSON.parse(readFileSync(published.path, 'utf8')), documented);
   assert.deepEqual(readdirSync(f.inbox), [published.path.slice(f.inbox.length + 1)]);
+  assert.equal(existsSync(f.stateDir), false);
+  assertNoExecution(f);
+});
+
+test('submit refuses removed publication permissions in the configuration', async t => {
+  const f = fixture(t, { packageTarget: 'ipa' });
+  const configPath = f.configPath;
+  writeFileSync(configPath, JSON.stringify({ ...JSON.parse(readFileSync(configPath, 'utf8')), allowSubmit: true }));
+  const result = await submit(f);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /unrecognized_keys/);
+  assert.equal(existsSync(f.inbox), false);
   assert.equal(existsSync(f.stateDir), false);
   assertNoExecution(f);
 });
@@ -175,7 +172,7 @@ for (const [framework, platform, channel, packageTarget] of [
 ]) {
   test(`${framework} ${channel} submit CLI needs no Apple metadata`, async t => {
     const f = fixture(t, {
-      allowSubmit: false, packageTarget,
+      packageTarget,
       packaging: { commands: [['owner-build']], artifactPath: 'build/artifact' },
     });
     const result = await submit(f, { ...product, framework, platform, channel, apple: undefined });

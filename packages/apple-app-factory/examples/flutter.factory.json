@@ -2,14 +2,48 @@
   "stateDir": ".factory",
   "workspaceRoot": "workspaces",
   "allowLocalExecution": false,
-  "allowSubmit": false,
-  "allowRelease": false,
   "allowCloudBuild": false,
   "packageTarget": "simulator",
-  "executionEnv": ["IOS_DEVICE_ID"],
+  "obfuscation": {
+    "options": {
+      "code": {
+        "removeComments": true
+      }
+    }
+  },
+  "executionEnv": [
+    "IOS_DEVICE_ID"
+  ],
   "verification": {
-    "prerequisites": [["xcodebuild", "-version"]],
-    "checks": [["flutter", "analyze", "--fatal-infos"], ["flutter", "test"]],
-    "runtime": [["flutter", "drive", "--driver", "test_driver/integration_test.dart", "--target", "integration_test/app_test.dart", "-d", "${IOS_DEVICE_ID}", "--no-pub"]]
+    "prerequisites": [
+      [
+        "xcodebuild",
+        "-version"
+      ]
+    ],
+    "checks": [
+      [
+        "flutter",
+        "analyze",
+        "--fatal-infos"
+      ],
+      [
+        "flutter",
+        "test"
+      ]
+    ],
+    "runtime": [
+      [
+        "flutter",
+        "drive",
+        "--driver",
+        "test_driver/integration_test.dart",
+        "--target",
+        "integration_test/app_test.dart",
+        "-d",
+        "${IOS_DEVICE_ID}",
+        "--no-pub"
+      ]
+    ]
   }
 }

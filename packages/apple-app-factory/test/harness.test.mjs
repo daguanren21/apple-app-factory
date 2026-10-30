@@ -12,10 +12,10 @@ import { runStep } from '../dist/scheduler.js';
 
 const research = {
   viable: true,
-  policySources: ['2.1', '2.3.1', '2.5.19', '4.2', '4.2.6', '4.3', '5.1.1'].map(rule => ({ rule, url: 'https://developer.apple.com/app-store/review/guidelines/' })),
   distinctness: 'A controlled lifecycle fixture, not an App Store compliance attestation.',
   risks: ['Content ownership still requires a human decision.'], plan: ['Implement and externally exercise the requested workflow.'],
 };
+function researchFor() { return { ...research, risks: [...research.risks], plan: [...research.plan] }; }
 const spec = { id: 'host-fixture', name: 'Host fixture', purpose: 'Exercise native host transition safety', audience: 'Harness maintainers', framework: 'flutter', platform: 'ios', channel: 'app-store', version: '1.0.0', differentiators: ['Persisted typed turns'], acceptance: ['Real configured commands gate review'] };
 
 function fixture(t, overrides = {}, product = spec) {
@@ -37,7 +37,7 @@ function reviewFor(job, patch = {}) {
 
 async function buildTurn(f) {
   const first = await nextTurn(f.store, f.job.id);
-  completeTurn(f.store, f.job.id, first.turn.id, research);
+  completeTurn(f.store, f.job.id, first.turn.id, researchFor());
   const build = await nextTurn(f.store, f.job.id);
   writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: host_fixture\ndependencies:\n  flutter: {sdk: flutter}\n');
   writeFileSync(join(build.turn.cwd, 'main.dart'), 'void main() {}\n');
@@ -68,8 +68,8 @@ test('host-native research/build/review persist while actual deterministic comma
   assert.deepEqual(resumed.job.attempts, { research: 1 });
   assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, 'approved'));
   assert.equal(f.store.get(f.job.id).turn.id, first.turn.id);
-  assert.equal(completeTurn(f.store, f.job.id, first.turn.id, research).stage, 'build');
-  assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, research), /Stale/);
+  assert.equal(completeTurn(f.store, f.job.id, first.turn.id, researchFor()).stage, 'build');
+  assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, researchFor()));
   const build = await nextTurn(f.store, f.job.id);
   assert.throws(() => completeTurn(f.store, f.job.id, build.turn.id));
   writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: host_fixture\ndependencies:\n  flutter: {sdk: flutter}\n');
@@ -89,8 +89,8 @@ test('host-native research/build/review persist while actual deterministic comma
   const approved = completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job));
   assert.equal(approved.stage, 'package');
   assert.equal(approved.status, 'queued');
-  assert.equal(approved.config.allowSubmit, false);
-  assert.equal(approved.config.allowRelease, false);
+  assert.equal(Object.hasOwn(approved.config, 'allowSubmit'), false);
+  assert.equal(Object.hasOwn(approved.config, 'allowRelease'), false);
   assert.deepEqual(approved.receipt, {});
   assert.equal(approved.hostTurns, 3);
   assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)), /Stale/);
@@ -105,7 +105,7 @@ test('abandonment releases only its matching claim and never refunds turn budget
   assert.equal(abandoned.turn, null);
   assert.equal(abandoned.hostTurns, 1);
   assert.deepEqual(abandoned.attempts, { research: 1 });
-  assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, research));
+  assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, researchFor()));
   const next = await nextTurn(f.store, f.job.id);
   assert.notEqual(next.turn.id, first.turn.id);
   assert.equal(next.job.hostTurns, 2);
@@ -143,6 +143,41 @@ test('failed runtime verification returns to host build and cannot retain approv
   assert.equal(repair.turn.stage, 'build');
   assert.notEqual(repair.turn.id, build.turn.id);
   assert.equal(repair.job.hostTurns, 3);
+});
+
+test('configured obfuscation runs between build and verify before any verification evidence exists', async t => {
+  const configPath = join(tmpdir(), `obfuscator-${Date.now()}.json`);
+  writeFileSync(configPath, JSON.stringify({ code: { removeComments: true }, seed: 'fixture' }));
+  const marker = join(tmpdir(), `obfuscated-${Date.now()}`);
+  t.after(() => { rmSync(configPath, { force: true }); rmSync(marker, { force: true }); });
+  const f = fixture(t, { obfuscation: { command: [process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'obfuscated')`, '--'], configPath } });
+  const build = await buildTurn(f);
+  const pending = completeTurn(f.store, f.job.id, build.turn.id);
+  assert.equal(pending.stage, 'obfuscate');
+  assert.equal(pending.verifiedDigest, null);
+  assert.equal((await nextTurn(f.store, f.job.id)).action, 'step');
+  const obfuscated = await runStep(f.store, f.config, f.job.id);
+  assert.equal(obfuscated.stage, 'verify');
+  assert.equal(obfuscated.verifiedDigest, null);
+  assert.equal(readFileSync(marker, 'utf8'), 'obfuscated');
+  const verified = await runStep(f.store, f.config, f.job.id);
+  assert.equal(verified.stage, 'review');
+  assert.match(verified.verifiedDigest, /^[a-f0-9]{64}$/);
+});
+
+test('failed obfuscation returns for repair with feedback and never reaches verify', async t => {
+  const configPath = join(tmpdir(), `obfuscator-${Date.now()}.json`);
+  writeFileSync(configPath, JSON.stringify({ code: { removeComments: true } }));
+  t.after(() => rmSync(configPath, { force: true }));
+  const f = fixture(t, { obfuscation: { command: [process.execPath, '-e', 'process.exit(7)', '--'], configPath } });
+  const build = await buildTurn(f);
+  completeTurn(f.store, f.job.id, build.turn.id);
+  const failure = await runStep(f.store, f.config, f.job.id);
+  assert.equal(failure.stage, 'obfuscate');
+  assert.equal(failure.status, 'waiting');
+  assert.equal(failure.verifiedDigest, null);
+  assert.match(failure.feedback, /Obfuscation failed/);
+  assert.equal(existsSync(f.marker), false);
 });
 
 for (const mutation of ['source', 'dependencies', 'screenshots']) {
@@ -200,7 +235,7 @@ test('snapshotted context changes invalidate completion and require explicit aba
   const f = fixture(t);
   const turn = await nextTurn(f.store, f.job.id);
   f.store.update(f.job.id, { feedback: 'Owner changed the required context while this turn was active.' });
-  assert.throws(() => completeTurn(f.store, f.job.id, turn.turn.id, research), /context changed/);
+  assert.throws(() => completeTurn(f.store, f.job.id, turn.turn.id, researchFor()));
   await assert.rejects(nextTurn(f.store, f.job.id), /context changed/);
   const released = abandonTurn(f.store, f.job.id, turn.turn.id);
   assert.equal(released.turn, null);
@@ -208,20 +243,26 @@ test('snapshotted context changes invalidate completion and require explicit aba
   assert.notEqual(replacement.turn.id, turn.turn.id);
 });
 
-test('build-only host APIs reject snapshotted publication permission without changing the claim', async t => {
-  const f = fixture(t, { allowSubmit: true, packageTarget: 'ipa' });
-  await assert.rejects(nextTurn(f.store, f.job.id, { buildOnly: true }), /build-only/);
-  assert.equal(f.store.get(f.job.id).hostTurns, 0);
-  const turn = await nextTurn(f.store, f.job.id);
-  const before = f.store.get(f.job.id);
-  assert.throws(() => completeTurn(f.store, f.job.id, turn.turn.id, research, { buildOnly: true }), /build-only/);
-  assert.throws(() => abandonTurn(f.store, f.job.id, turn.turn.id, { buildOnly: true }), /build-only/);
-  assert.deepEqual(f.store.get(f.job.id), before);
-  await assert.rejects(executeStep(f.store, before), /native host turn/);
+test('build-only host APIs stay accepted for CLI compatibility without creating publication permission', async t => {
+  const f = fixture(t, { packageTarget: 'ipa' });
+  const turn = await nextTurn(f.store, f.job.id, { buildOnly: true });
+  assert.equal(turn.action, 'host');
+  assert.equal(turn.turn.stage, 'research');
+  const researched = completeTurn(f.store, f.job.id, turn.turn.id, researchFor(), { buildOnly: true });
+  assert.equal(researched.stage, 'build');
+  assert.equal(Object.hasOwn(researched.config, 'allowSubmit'), false);
+  assert.equal(Object.hasOwn(researched.config, 'allowRelease'), false);
+  const build = await nextTurn(f.store, f.job.id, { buildOnly: true });
+  assert.equal(build.action, 'host');
+  const released = abandonTurn(f.store, f.job.id, build.turn.id, { buildOnly: true });
+  assert.equal(released.turn, null);
+  assert.equal(released.hostTurns, 2);
+  assert.deepEqual(f.store.get(f.job.id).receipt, {});
+  await assert.rejects(executeStep(f.store, released), /native host turn/);
 });
 
 function legacySnapshot(f) {
-  const job = f.store.update(f.job.id, { stage: 'monitor', status: 'waiting', attempts: { build: 2, publish: 4 }, hostTurns: 7, receipt: { versionId: 'saved-version', buildId: 'saved-build' } });
+  const job = f.store.update(f.job.id, { stage: 'package', status: 'waiting', attempts: { build: 2, package: 4 }, hostTurns: 7, receipt: { versionId: 'saved-version', buildId: 'saved-build' } });
   const saved = structuredClone(job);
   for (const value of [saved.spec, saved.requestSpec]) {
     value.apple = { ...value.apple, version: value.version, ...(value.screenshotsDir ? { screenshotsDir: value.screenshotsDir } : {}) };
@@ -239,6 +280,8 @@ function legacySnapshot(f) {
   delete saved.config.maxHostTurns;
   saved.config.builder = { kind: 'codex' };
   saved.config.reviewer = { kind: 'cursor' };
+  saved.config.allowSubmit = true;
+  saved.config.allowRelease = false;
   saved.config.maxConcurrentJobs = 2;
   const text = JSON.stringify(saved);
   f.store.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(text, f.job.id);
@@ -259,6 +302,8 @@ test('legacy snapshot migration preserves raw data, receipts, budgets and histor
   assert.deepEqual(job.requestSpec, { ...legacy.job.requestSpec, apple: {} });
   assert.equal(Object.hasOwn(job, 'agentCalls'), false);
   assert.equal(Object.hasOwn(job.config, 'builder'), false);
+  assert.equal(Object.hasOwn(job.config, 'allowSubmit'), false);
+  assert.equal(Object.hasOwn(job.config, 'allowRelease'), false);
   assert.equal(job.spec.platform, 'ios');
   assert.equal(job.spec.channel, 'app-store');
   assert.equal(job.spec.version, legacy.job.spec.version);
@@ -270,6 +315,7 @@ test('legacy snapshot migration preserves raw data, receipts, budgets and histor
   assert.equal(job.review, null);
   assert.equal(job.artifact, null);
   assert.equal(job.status, 'blocked');
+  assert.match(job.error, /Automatic store publication has been removed/);
   assert.equal(job.manualRecovery ?? null, null);
   assert.equal(migrated.db.prepare('SELECT data FROM snapshot_migrations WHERE job=? AND version=1').get(job.id).data, legacy.text);
   assert.deepEqual(migrated.db.prepare('SELECT seq,at,data FROM events WHERE job=? ORDER BY seq').all(job.id), events);
@@ -331,7 +377,7 @@ for (const operation of ['resume', 'complete']) {
       assert.equal(result.action, 'done');
       assert.equal(result.turn, undefined);
     } else {
-      assert.equal(completeTurn(f.store, f.job.id, first.turn.id, research).status, 'failed');
+      assert.equal(completeTurn(f.store, f.job.id, first.turn.id, researchFor()).status, 'failed');
     }
     const stopped = f.store.get(f.job.id);
     assert.equal(stopped.status, 'failed');
@@ -340,6 +386,84 @@ for (const operation of ['resume', 'complete']) {
     assert.equal(stopped.hostTurns, 1);
     assert.deepEqual(stopped.attempts, { research: 1 });
     assert.equal(stopped.research, undefined);
-    assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, research), /Stale/);
+    assert.throws(() => completeTurn(f.store, f.job.id, first.turn.id, researchFor()));
   });
 }
+
+test('ten pending packages gate their own verdicts and reviews, repair automatically and isolate failed facts', async t => {
+  const f = fixture(t);
+  const jobs = [f.job, ...Array.from({ length: 9 }, (_, index) => f.store.enqueue({ ...spec, id: `batch-package-${index + 1}` }, f.config))];
+  for (const [index, job] of jobs.entries()) {
+    const first = await nextTurn(f.store, job.id);
+    const verdict = researchFor();
+    if (index === 1) verdict.viable = false;
+    const researched = completeTurn(f.store, job.id, first.turn.id, verdict);
+    if (index === 1) {
+      assert.equal(researched.status, 'failed');
+      assert.equal(researched.research.viable, false);
+      assert.equal((await nextTurn(f.store, job.id)).action, 'done');
+      assert.equal(researched.artifact, undefined);
+      continue;
+    }
+    const build = await nextTurn(f.store, job.id);
+    writeFileSync(join(build.turn.cwd, 'pubspec.yaml'), 'name: batch_fixture\ndependencies:\n  flutter: {sdk: flutter}\n');
+    writeFileSync(join(build.turn.cwd, 'main.dart'), 'void main() {}\n');
+    if (index === 0) {
+      const pinned = f.store.get(job.id);
+      for (const value of [{ appleMetadata: { appId: 'different-app' } }, { apple: { description: 'x' } }, { allowSubmit: true }, { verified: true }]) assert.throws(() => completeTurn(f.store, job.id, build.turn.id, value));
+      assert.deepEqual(f.store.get(job.id).spec, pinned.spec);
+      assert.deepEqual(f.store.get(job.id).requestSpec, pinned.requestSpec);
+      assert.equal(Object.hasOwn(f.store.get(job.id).config, 'allowSubmit'), false);
+      assert.equal(f.store.get(job.id).verifiedDigest ?? null, null);
+    }
+    completeTurn(f.store, job.id, build.turn.id);
+    assert.equal((await runStep(f.store, f.config, job.id)).stage, 'review');
+    let review = await nextTurn(f.store, job.id);
+    const copied = reviewFor(review.job);
+    copied.appStoreAudit = { jobId: jobs[1].id };
+    assert.throws(() => completeTurn(f.store, job.id, review.turn.id, copied));
+    if (index === 0) {
+      const repair = completeTurn(f.store, job.id, review.turn.id, reviewFor(review.job, { findings: ['An empty-state action remains incomplete'] }));
+      assert.equal(repair.stage, 'build');
+      assert.equal(repair.status, 'waiting');
+      assert.equal(repair.verifiedDigest, null);
+      assert.equal(repair.artifact, null);
+      f.store.update(job.id, { nextAt: 0 });
+      const retry = await nextTurn(f.store, job.id);
+      writeFileSync(join(retry.turn.cwd, 'main.dart'), 'void main() { print("empty-state result"); }\n');
+      completeTurn(f.store, job.id, retry.turn.id);
+      assert.equal((await runStep(f.store, f.config, job.id)).stage, 'review');
+      review = await nextTurn(f.store, job.id);
+    }
+    const approved = completeTurn(f.store, job.id, review.turn.id, reviewFor(review.job));
+    assert.equal(approved.stage, 'package');
+    assert.equal(approved.review.approved, true);
+    assert.equal(approved.review.findings.length, 0);
+  }
+  assert.deepEqual(jobs.map(job => f.store.get(job.id).stage), ['package', 'research', ...Array(8).fill('package')]);
+  assert.equal(f.store.get(jobs[1].id).status, 'failed');
+  assert.equal(f.store.list().every(job => !job.artifact && !Object.keys(job.receipt).length), true);
+});
+
+test('packaging requires an approved review and unchanged proofs, and never replays remote effects', async t => {
+  const f = fixture(t);
+  const review = await reviewTurn(f);
+  const packaged = completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job));
+  assert.equal(packaged.stage, 'package');
+  assert.equal(packaged.status, 'queued');
+  const before = readFileSync(f.marker, 'utf8');
+  const tampered = f.store.update(f.job.id, { review: { ...packaged.review, approved: false, findings: ['The stored verdict was tampered with.'] } });
+  const gated = await executeStep(f.store, tampered);
+  assert.equal(gated.stage, 'package');
+  assert.equal(gated.status, 'waiting');
+  assert.match(gated.error, /Packaging requires an approved host review/);
+  assert.equal(gated.artifact, null);
+  assert.deepEqual(gated.attempts, { ...tampered.attempts, package: 1 });
+  assert.equal(readFileSync(f.marker, 'utf8'), before);
+  const remote = f.store.update(f.job.id, { cloudBuildPending: true });
+  const blocked = await executeStep(f.store, remote);
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.stage, 'package');
+  assert.match(blocked.error, /automatic replay is forbidden/);
+  assert.deepEqual(blocked.attempts, { ...remote.attempts, package: 2 });
+});

@@ -107,7 +107,7 @@ for (const removed of ['none', 'clone', 'cache']) {
     writeFileSync(join(source, 'bin', 'flutter'), `#!/bin/sh\n: > '${invoked}'\nexit 91\n`);
     chmodSync(join(source, 'bin', 'flutter'), 0o700);
     writeFileSync(join(source, 'bin', 'cache', 'flutter.version.json'), JSON.stringify({ frameworkRevision: 'new-framework', engineRevision: 'engine' }));
-    const config = { ...f.config, packageTarget: 'ipa', allowSubmit: true, verification: { ...f.config.verification, prerequisites: [] } };
+    const config = { ...f.config, packageTarget: 'ipa', verification: { ...f.config.verification, prerequisites: [] } };
     const store = new Store(config.stateDir);
     try {
       const job = store.enqueue(product, config);
@@ -119,7 +119,7 @@ for (const removed of ['none', 'clone', 'cache']) {
       writeFileSync(marker, JSON.stringify(toolchain));
       if (removed === 'clone') rmSync(sdk, { recursive: true });
       if (removed === 'cache') rmSync(cache, { recursive: true });
-      const pinned = store.update(job.id, { stage: 'package', toolchain });
+      let pinned = store.update(job.id, { stage: 'package', toolchain });
       await assert.rejects(prepareFlutter(pinned, { run: async () => assert.fail('A changed SDK must not initialize, copy, or package') }), error => {
         assert.equal(error.code, 'PREREQUISITE_FAILED');
         assert.deepEqual(error.prerequisite, { reason: 'sdk-version-changed', path: realpathSync(source) });

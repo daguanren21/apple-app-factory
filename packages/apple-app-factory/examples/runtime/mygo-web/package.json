@@ -1,0 +1,1 @@
+{"name":"apphx-mygo-web-smoke","private":true,"scripts":{"build:web":"bun build ./src/main.ts --outdir dist && cp index.html dist/index.html"},"dependencies":{"mygo-runtime":"0.3.0"}}

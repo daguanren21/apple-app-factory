@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from '../dist/integrations.js';
@@ -11,6 +11,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const projectPaths = {
   codex: '.agents/skills', claude: '.claude/skills', cursor: '.cursor/skills',
   pi: '.pi/skills', gemini: '.gemini/skills', opencode: '.opencode/skills', deepseek: '.dsh/skills', hermes: '.hermes/skills',
+  qoder: '.qoder/skills', 'oh-my-pi': '.omp/skills', dimagent: '.dimcode/skills',
 };
 
 function fixture(t) {
@@ -44,6 +45,7 @@ for (const [host, directory] of Object.entries(projectPaths)) {
     const root = fixture(t);
     if (host === 'hermes') mkdirSync(join(root, '.git'));
     const expected = join(root, directory, 'apphx');
+    const expectedObfuscator = join(root, directory, 'apphx-obfuscator');
     assert.equal(inspectIntegration(host, { project: root }).installed, false);
     assert.equal(existsSync(join(root, directory)), false, 'inspection must not create host configuration');
     const installed = installIntegration(host, { project: root });
@@ -52,21 +54,32 @@ for (const [host, directory] of Object.entries(projectPaths)) {
     assert.equal(installed.changed, true);
     assert.equal(installed.installed, true);
     assert.ok(lstatSync(join(expected, 'SKILL.md')).isFile());
+    assert.ok(lstatSync(join(expectedObfuscator, 'SKILL.md')).isFile());
     const manifest = JSON.parse(readFileSync(join(expected, marker), 'utf8'));
     assert.equal(manifest.owner, 'apphx');
     assert.equal(manifest.skill, 'apphx');
     assert.equal(manifest.host, host);
+    const obfuscatorManifest = JSON.parse(readFileSync(join(expectedObfuscator, marker), 'utf8'));
+    assert.equal(obfuscatorManifest.owner, 'apphx');
+    assert.equal(obfuscatorManifest.skill, 'apphx-obfuscator');
+    assert.equal(obfuscatorManifest.host, host);
     assert.equal(inspectIntegration(host, { project: root }).current, true);
+    assert.equal(inspectIntegration(host, { project: root }, 'apphx-obfuscator').installed, true);
+    assert.equal(inspectIntegration(host, { project: root }, 'apphx-obfuscator').current, true);
+    assert.ok(inspectIntegration(host, { project: root }, 'apphx-obfuscator').invocation);
     const before = statSync(join(expected, 'SKILL.md'));
+    const obfuscatorBefore = statSync(join(expectedObfuscator, 'SKILL.md'));
     assert.equal(installIntegration(host, { project: root }).changed, false);
     assert.equal(updateIntegration(host, { project: root }).changed, false);
     assert.equal(statSync(join(expected, 'SKILL.md')).ino, before.ino, 'idempotence must not rewrite files');
     assert.equal(statSync(join(expected, 'SKILL.md')).mtimeMs, before.mtimeMs);
+    assert.equal(statSync(join(expectedObfuscator, 'SKILL.md')).ino, obfuscatorBefore.ino);
     const unrelated = join(dirname(expected), 'user-skill');
     mkdirSync(unrelated);
     writeFileSync(join(unrelated, 'SKILL.md'), 'user owned');
     assert.equal(uninstallIntegration(host, { project: root }).changed, true);
     assert.equal(existsSync(expected), false);
+    assert.equal(existsSync(expectedObfuscator), false);
     assert.equal(readFileSync(join(unrelated, 'SKILL.md'), 'utf8'), 'user owned');
     assert.equal(uninstallIntegration(host, { project: root }).changed, false);
   });
@@ -80,19 +93,23 @@ test('default scope is the working project, never the home directory', t => {
     const result = installIntegration('claude');
     assert.equal(result.path, join(root, '.claude/skills/apphx'));
     assert.equal(result.scope, 'project');
+    assert.ok(existsSync(join(root, '.claude/skills/apphx-obfuscator/SKILL.md')));
   } finally { process.chdir(old); }
 });
 
 test('explicit global installs use documented home locations and leave the project untouched', t => {
   const root = fixture(t);
-  environment(t, { HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: undefined, GEMINI_CLI_HOME: undefined, PI_CODING_AGENT_DIR: undefined, DSH_HOME: undefined, HERMES_HOME: undefined, XDG_CONFIG_HOME: undefined });
-  const globalPaths = { ...projectPaths, pi: '.pi/agent/skills', opencode: '.config/opencode/skills' };
+  environment(t, { HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: undefined, GEMINI_CLI_HOME: undefined, PI_CODING_AGENT_DIR: undefined, OMP_PROFILE: undefined, PI_PROFILE: undefined, DSH_HOME: undefined, HERMES_HOME: undefined, XDG_CONFIG_HOME: undefined });
+  const globalPaths = { ...projectPaths, pi: '.pi/agent/skills', 'oh-my-pi': '.omp/agent/skills', dimagent: '.dimcode/v2/skills', opencode: '.config/opencode/skills' };
   for (const [host, directory] of Object.entries(globalPaths)) {
     const result = installIntegration(host, { global: true });
     assert.equal(result.scope, 'global');
     assert.equal(result.path, join(root, directory, 'apphx'));
+    assert.ok(existsSync(join(root, directory, 'apphx-obfuscator/SKILL.md')));
     assert.equal(inspectIntegration(host, { global: true }).installed, true);
+    assert.equal(inspectIntegration(host, { global: true }, 'apphx-obfuscator').installed, true);
     assert.equal(uninstallIntegration(host, { global: true }).changed, true);
+    assert.equal(existsSync(join(root, directory, 'apphx-obfuscator')), false);
   }
 });
 
@@ -101,7 +118,7 @@ test('documented host home overrides select the same global locations as the hos
   const defaultHome = join(root, 'default-home');
   mkdirSync(defaultHome);
   writeFileSync(join(defaultHome, 'keep.txt'), 'default profile remains untouched');
-  environment(t, { HOME: defaultHome, USERPROFILE: defaultHome, CLAUDE_CONFIG_DIR: join(root, 'claude-home'), GEMINI_CLI_HOME: join(root, 'gemini-home'), PI_CODING_AGENT_DIR: join(root, 'pi-home'), DSH_HOME: join(root, 'dsh-home'), HERMES_HOME: join(root, 'hermes-home'), XDG_CONFIG_HOME: join(root, 'xdg') });
+  environment(t, { HOME: defaultHome, USERPROFILE: defaultHome, CLAUDE_CONFIG_DIR: join(root, 'claude-home'), GEMINI_CLI_HOME: join(root, 'gemini-home'), PI_CODING_AGENT_DIR: join(root, 'pi-home'), OMP_PROFILE: undefined, PI_PROFILE: undefined, DSH_HOME: join(root, 'dsh-home'), HERMES_HOME: join(root, 'hermes-home'), XDG_CONFIG_HOME: join(root, 'xdg') });
   for (const [host, expected] of [['claude', 'claude-home/skills'], ['gemini', 'gemini-home/.gemini/skills'], ['pi', 'pi-home/skills'], ['deepseek', 'dsh-home/skills'], ['hermes', 'hermes-home/skills'], ['opencode', 'xdg/opencode/skills']]) {
     const installed = installIntegration(host, { global: true });
     assert.equal(installed.path, join(root, expected, 'apphx'));
@@ -111,6 +128,39 @@ test('documented host home overrides select the same global locations as the hos
   }
   assert.deepEqual(readdirSync(defaultHome), ['keep.txt']);
   assert.equal(readFileSync(join(defaultHome, 'keep.txt'), 'utf8'), 'default profile remains untouched');
+});
+
+test('Oh My Pi profile variables select the profile skill root the host reads', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: 'design', PI_PROFILE: undefined });
+  const installed = installIntegration('oh-my-pi', { global: true });
+  assert.equal(installed.path, join(root, '.omp', 'profiles', 'design', 'agent', 'skills', 'apphx'));
+  assert.ok(lstatSync(join(installed.path, 'SKILL.md')).isFile());
+  assert.equal(existsSync(join(root, '.omp', 'agent', 'skills')), false, 'the un-profiled root must not receive a profiled install');
+  assert.equal(inspectIntegration('oh-my-pi', { global: true }).installed, true);
+  assert.equal(uninstallIntegration('oh-my-pi', { global: true }).changed, true);
+  assert.equal(existsSync(join(root, '.omp', 'profiles', 'design', 'agent', 'skills', 'apphx')), false);
+});
+
+test('PI_PROFILE alone selects the same Oh My Pi profile skill root', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: undefined, PI_PROFILE: 'ship' });
+  assert.equal(installIntegration('oh-my-pi', { global: true }).path, join(root, '.omp', 'profiles', 'ship', 'agent', 'skills', 'apphx'));
+  assert.equal(uninstallIntegration('oh-my-pi', { global: true }).changed, true);
+});
+
+test('conflicting Oh My Pi profile variables reject before writing anything', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: 'a', PI_PROFILE: 'b' });
+  assert.throws(() => installIntegration('oh-my-pi', { global: true }), /different profiles/);
+  assert.equal(existsSync(join(root, '.omp')), false, 'rejected install must not create the root');
+});
+
+test('an unusable Oh My Pi profile name rejects before writing anything', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: '../escape', PI_PROFILE: undefined });
+  assert.throws(() => installIntegration('oh-my-pi', { global: true }), /not a usable profile name/);
+  assert.equal(existsSync(join(root, '.omp')), false, 'rejected install must not create the root');
 });
 
 test('DeepSeek local discovery uses the nearest Git root, unlike cwd-local Pi', t => {
@@ -142,6 +192,11 @@ test('only explicit update upgrades an unchanged installation and removes obsole
   assert.equal(existsSync(join(path, 'retired.json')), false);
   assert.equal(inspectIntegration('claude', { project: root }).version, version);
   assert.equal(inspectIntegration('claude', { project: root }).current, true);
+  // A historical install predating the obfuscator skill gains it on update.
+  const obfuscatorPath = join(dirname(path), 'apphx-obfuscator');
+  rmSync(obfuscatorPath, { recursive: true });
+  assert.equal(updateIntegration('claude', { project: root }).changed, true);
+  assert.ok(lstatSync(join(obfuscatorPath, 'SKILL.md')).isFile());
   assert.equal(uninstallIntegration('claude', { project: root }).changed, true);
 });
 
@@ -190,9 +245,36 @@ test('foreign directories are never adopted even when their skill has the expect
   assert.throws(() => updateIntegration('claude', { project: root }), /Foreign/);
   assert.throws(() => uninstallIntegration('claude', { project: root }), /Foreign/);
   assert.equal(readFileSync(join(path, 'SKILL.md'), 'utf8'), 'foreign content');
+  assert.equal(existsSync(join(root, '.claude/skills/apphx-obfuscator')), false);
 });
 
-for (const entry of ['.claude', '.claude/skills', '.claude/skills/apphx']) {
+test('a foreign obfuscator skill blocks install/update/uninstall without displacing owned skills', t => {
+  const root = fixture(t);
+  // Fresh install refuses before creating the primary skill.
+  const skillsDir = join(root, '.claude/skills');
+  const obfuscatorPath = join(skillsDir, 'apphx-obfuscator');
+  mkdirSync(obfuscatorPath, { recursive: true });
+  writeFileSync(join(obfuscatorPath, 'SKILL.md'), 'foreign obfuscator content');
+  assert.equal(inspectIntegration('claude', { project: root }, 'apphx-obfuscator').installed, false);
+  assert.throws(() => installIntegration('claude', { project: root }), /Foreign/);
+  assert.equal(readFileSync(join(obfuscatorPath, 'SKILL.md'), 'utf8'), 'foreign obfuscator content');
+  assert.equal(existsSync(join(skillsDir, 'apphx')), false);
+  rmSync(obfuscatorPath, { recursive: true });
+
+  // With the primary owned, a foreign obfuscator sibling blocks update and uninstall too.
+  const installed = installIntegration('claude', { project: root });
+  assert.ok(lstatSync(join(obfuscatorPath, 'SKILL.md')).isFile());
+  const backup = join(root, 'foreign-backup');
+  renameSync(obfuscatorPath, backup);
+  mkdirSync(obfuscatorPath);
+  writeFileSync(join(obfuscatorPath, 'SKILL.md'), 'foreign obfuscator content');
+  assert.throws(() => updateIntegration('claude', { project: root }), /Foreign/);
+  assert.throws(() => uninstallIntegration('claude', { project: root }), /Foreign/);
+  assert.equal(readFileSync(join(obfuscatorPath, 'SKILL.md'), 'utf8'), 'foreign obfuscator content');
+  assert.ok(existsSync(installed.path), 'primary skill survives the refused operations');
+});
+
+for (const entry of ['.claude', '.claude/skills', '.claude/skills/apphx', '.claude/skills/apphx-obfuscator']) {
   test(`refuses symlink escape through ${entry}`, t => {
     const root = fixture(t);
     const outside = join(root, 'outside');

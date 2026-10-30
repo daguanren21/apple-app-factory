@@ -1,21 +1,12 @@
 {
   "viable": false,
-  "policySources": [
-    { "rule": "2.1", "url": "https://developer.apple.com/app-store/review/guidelines/#app-completeness" },
-    { "rule": "2.3.1", "url": "https://developer.apple.com/app-store/review/guidelines/#accurate-metadata" },
-    { "rule": "2.5.19", "url": "https://developer.apple.com/app-store/review/guidelines/#software-requirements" },
-    { "rule": "4.2", "url": "https://developer.apple.com/app-store/review/guidelines/#minimum-functionality" },
-    { "rule": "4.2.6", "url": "https://developer.apple.com/app-store/review/guidelines/#minimum-functionality" },
-    { "rule": "4.3", "url": "https://developer.apple.com/app-store/review/guidelines/#spam" },
-    { "rule": "5.1.1", "url": "https://developer.apple.com/app-store/review/guidelines/#data-collection-and-storage" }
-  ],
-  "distinctness": "Unassessed example: evaluate the owner's actual requirements against the supplied portfolio and current official policies before returning a real verdict.",
+  "distinctness": "Unassessed example: evaluate this pending package's real purpose, audience, function, visual identity, developer/app metadata and code identity against the same-channel portfolio. Identical functionality with renamed labels is not meaningful differentiation.",
   "risks": [
-    "The current policy contents have not been researched by this example.",
-    "The content owner and submitting account's eligibility under 4.2.6 are unknown; a model must not invent an attestation."
+    "No implementation or runtime acceptance has been assessed by this example.",
+    "Store submission, account setup and platform review are manual human work outside this tool; nothing here pre-approves a store reviewer."
   ],
   "plan": [
-    "Read the current official policy sections and assess viability, ownership, distinct utility, privacy and runtime acceptance for the actual product.",
-    "If viable, return a concrete product-specific implementation and verification plan; otherwise preserve viable=false and report the specific blockers."
+    "Assess real value, honest visual identity, truthful developer and app metadata, exercised functionality and genuine code identity for this package, comparing same-channel peers and treating earlier versions of this same app as its source baseline.",
+    "Plan concrete agent work followed by real runtime verification and a fresh independent review; preserve viable=false with exact blockers when owner facts are missing. Do not promise store approval or add unrequested features."
   ]
 }

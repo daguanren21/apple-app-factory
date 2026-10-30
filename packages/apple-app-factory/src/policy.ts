@@ -1,33 +1,19 @@
 import { ResearchSchema } from './schemas.js';
 import type { Job, Spec } from './schemas.js';
 
-const APPLE_RULES = ['2.1', '2.3.1', '2.5.19', '4.2', '4.2.6', '4.3', '5.1.1'];
-const PLAY_RULES = ['repetitive-content', 'user-data'];
-
 export function parseResearch(text: string, channel: Spec['channel']) {
   const content = text.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
   let value: unknown;
   try { value = JSON.parse(content); }
   catch { throw new Error('Host did not return a JSON verdict; no approval was inferred from text or an exit code'); }
-  const research = ResearchSchema.parse(value);
-  const required = channel === 'app-store' ? APPLE_RULES : channel === 'google-play' ? PLAY_RULES : [];
-  const cited = new Set<string>();
-  for (const source of research.policySources) {
-    const url = new URL(source.url);
-    const official = channel === 'app-store'
-      ? url.hostname === 'developer.apple.com' && url.pathname.startsWith('/app-store/review/guidelines')
-      : url.hostname === 'support.google.com' && url.pathname.startsWith('/googleplay/android-developer/');
-    if (url.protocol === 'https:' && !url.username && !url.password && !url.port && official) cited.add(source.rule);
-  }
-  if (!required.every(rule => cited.has(rule))) throw new Error(`Research verdict requires official HTTPS policy references for ${channel}: ${required.join(', ')}`);
-  return research;
+  return ResearchSchema.parse(value);
 }
 
 export function researchPrompt(job: Job, portfolio: Array<Pick<Spec, 'id' | 'purpose' | 'audience' | 'differentiators'>>): string {
-  const policy = job.spec.channel === 'app-store'
-    ? `Read the current official Apple review guidelines at https://developer.apple.com/app-store/review/guidelines/ and assess rules ${APPLE_RULES.join(', ')}. Assess actual content ownership and submitting-account eligibility under 4.2.6; unknown attestations require the owner. Compare meaningful user value against the same-channel portfolio ${JSON.stringify(portfolio)}. Cite every listed rule using the official HTTPS guidelines URL.`
-    : job.spec.channel === 'google-play'
-      ? `Read current Google Play policies: https://support.google.com/googleplay/android-developer/answer/9899034 and https://support.google.com/googleplay/android-developer/answer/10144311 . Assess repetitive content and user data/privacy with policySources rules ${PLAY_RULES.join(', ')} and official HTTPS Play policy URLs. Compare actual user value against the same-channel portfolio ${JSON.stringify(portfolio)}. APK testing is not AAB store acceptance. This channel produces a verified local handoff; automatic Google Play submission is not enabled.`
-      : 'This is local artifact delivery, not a store submission. Do not impose Apple or Google Play admission rules, submitting-account requirements or portfolio exclusivity. Research technical feasibility, dependencies, licensing, privacy and the actual product acceptance. No store policy citations are required; policySources may be empty.';
-  return `Research only with your own host tools. Preserve the requested ${job.spec.framework} ${job.spec.platform} project and its existing architecture. ${policy} Do not promise store approval. Return typed JSON {"viable":boolean,"policySources":[{"rule":"exact rule","url":"https://official-source/..."}],"distinctness":"specific value and channel reasoning","risks":["..."],"plan":["concrete implementation and device acceptance step"]}. Citations supplied by the host are not independently verified policy evidence. Do not add unrequested product features.`;
+  const siblings = `Other same-channel products ${JSON.stringify(portfolio)}; earlier versions of this same app are its source baseline, not competing products.`;
+  return `Research only with your own host tools. Preserve the requested ${job.spec.framework} ${job.spec.platform} project and its existing architecture. ${siblings} Assess technical feasibility, dependencies, licensing, privacy and real acceptance for this local package. Return typed JSON {"viable":boolean,"distinctness":"specific honest differentiation","risks":["..."],"plan":["concrete implementation and device acceptance step"]}. Do not promise store approval and do not add unrequested features.`;
+}
+
+export function reviewInstructions(job: Job): string {
+  return `Use an independent reviewer with fresh context when supported; otherwise disclose the limitation. Review actual source and acceptance read-only. Verified source: ${job.verifiedDigest}; dependency resolution: ${job.verifiedDependencyDigest}; actual checks: ${JSON.stringify(job.config.verification)}. Reject incomplete requirements, data loss, fake screenshots, accessibility failures, placeholders, weak tests and hidden features. Return typed JSON {"approved":boolean,"findings":["blocking issue"],"acceptanceEvidence":[{"requirement":"exact acceptance string","evidence":"file/symbol + observed command or device scenario"}]}. Cover every acceptance requirement. Reviewer identity is advisory; the Harness gates typed results and unchanged execution evidence.`;
 }
