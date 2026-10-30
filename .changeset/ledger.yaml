@@ -34,3 +34,9 @@ apphx@2.3.0:
     - fix-process-drain-success
     - raise-attempt-budget
     - report-handoff
+apphx@2.4.0:
+  dir: packages/apple-app-factory
+  intents:
+    - decision-log
+    - role-panels
+    - verify-repair-evidence

@@ -1,5 +1,15 @@
 # apphx
 
+## 2.4.0
+
+### Minor Changes
+
+- 任务决策日志（apphx decide）并随 report 交付。
+
+- roles 席位支持 provider/fresh 钉扎与跨家族评审披露，build 指令加入 test-first 与状态机要求。
+
+- Classify verification failures by source mutation so unchanged-source evidence failures re-run verify without spending build/obfuscate budget, and clear the screenshots evidence directory before each verify for idempotent proof.
+
 ## 2.3.0
 
 ### Minor Changes
