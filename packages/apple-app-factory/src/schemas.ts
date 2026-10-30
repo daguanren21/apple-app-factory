@@ -107,7 +107,7 @@ export const ConfigSchema = z.strictObject({
   autopilot: z.boolean().optional(),
   executionEnv: z.array(text.regex(/^[A-Z][A-Z0-9_]*$/).refine(value => !/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value), 'Publisher credentials must not be passed to host or verification tools')).default([]),
   isolation: z.strictObject({ mode: z.literal('macos-sandbox'), readOnlyPaths: z.array(text).default([]), network: z.enum(['deny', 'allow']).default('deny') }).optional(),
-  timeoutMs: positive.default(900000), maxAttempts: positive.int().default(3), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
+  timeoutMs: positive.default(900000), maxAttempts: positive.int().default(8), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
   retryDelayMs: positive.default(30000), pollMs: positive.default(300000),
   inbox: z.strictObject({ directory: text, pollMs: positive.default(2000) }).optional(),
   verification: z.strictObject({ prerequisites: z.array(command).default([]), checks: z.array(command).min(1), runtime: z.array(command).min(1) }),
