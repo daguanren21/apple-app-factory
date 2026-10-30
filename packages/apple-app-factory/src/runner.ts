@@ -248,6 +248,8 @@ function next(store: Store, job: Job, stage: Stage, extra: Partial<Job> = {}): J
 
 export async function executeStep(store: Store, job: Job, { signal }: { signal?: AbortSignal } = {}): Promise<Job> {
   const config = job.config;
+  let before: string | undefined;
+  let dependenciesBefore: string | undefined;
   if (['research', 'build', 'review'].includes(job.stage) || job.turn) throw new Error(`Stage ${job.stage} belongs to a native host turn; use next and complete`);
   if (signal?.aborted) return store.update(job.id, { status: 'waiting', nextAt: Date.now(), error: 'Worker was interrupted before this stage started' });
   if (!config.allowLocalExecution) return store.update(job.id, { status: 'blocked', error: config.executionWarning ?? 'Local execution is disabled. Explicitly enable allowLocalExecution only for trusted deterministic commands in a dedicated account or VM.' });
@@ -356,8 +358,14 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
         const dependencies = await exec(['flutter', 'pub', 'get']);
         if (dependencies.code !== 0) throw new Error(`Verification dependency resolution failed: ${dependencies.stderr.slice(-4000)}`);
       }
-      const before = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory);
-      const dependenciesBefore = dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory);
+      if (job.spec.screenshotsDir) {
+        const screenshots = inside(projectDirectory(job), job.spec.screenshotsDir);
+        if (existsSync(screenshots)) {
+          for (const entry of readdirSync(screenshots)) rmSync(join(screenshots, entry), { recursive: true, force: true });
+        }
+      }
+      before = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory);
+      dependenciesBefore = dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory);
       for (const argv of [...config.verification.checks, ...config.verification.runtime]) {
         const result = await exec(expandArgv(argv, executionEnvironment(config)));
         if (result.code !== 0) throw new Error(`Verification failed (${result.code}) ${JSON.stringify(argv)}:\n${result.stderr.slice(-5000)}\n${result.stdout.slice(-5000)}`);
@@ -500,7 +508,20 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     if (blocked) return store.update(job.id, { status: 'blocked', error: error.message });
     const charged = attempts[job.stage] ?? 0;
     const exhausted = error.code === 'BUDGET' || charged >= config.maxAttempts;
-    if (job.stage === 'verify' || (job.stage === 'package' && error.code === 'EVIDENCE_CHANGED')) return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'failed' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
+    if (job.stage === 'verify') {
+      let changed = before === undefined || dependenciesBefore === undefined;
+      if (!changed) {
+        try {
+          changed = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== before
+            || dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory) !== dependenciesBefore;
+        } catch { changed = true; }
+      }
+      if (!changed) {
+        return store.update(job.id, { stage: 'verify', status: exhausted ? 'failed' : 'waiting', recoveryStage: 'verify', ...invalidateVerification(), turn: null, feedback: error.message, error: error.message, nextAt: Date.now() + config.retryDelayMs * charged });
+      }
+      return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'failed' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
+    }
+    if (job.stage === 'package' && error.code === 'EVIDENCE_CHANGED') return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'failed' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
     return store.update(job.id, { status: exhausted ? 'failed' : 'waiting', error: error.message, feedback: error.message, nextAt: Date.now() + config.retryDelayMs * charged });
   }
 }

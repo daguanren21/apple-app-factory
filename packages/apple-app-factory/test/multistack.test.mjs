@@ -128,7 +128,7 @@ for (const [framework, platform, target] of profiles) {
 }
 
 for (const framework of ['android-java', 'swift', 'react-native', 'expo', 'uni-app']) {
-  test(`${framework}: failed runtime cannot grant review or invoke packaging`, async t => {
+  test(`${framework}: failed runtime re-runs verify without granting review or invoking packaging`, async t => {
     const platform = framework === 'swift' ? 'ios' : 'android';
     const f = fixture(t, framework, platform, platform === 'ios' ? 'ipa' : 'apk');
     const config = { ...f.config, verification: { ...f.config.verification, runtime: [[process.execPath, '-e', 'process.exit(17)']] } };
@@ -136,7 +136,9 @@ for (const framework of ['android-java', 'swift', 'react-native', 'expo', 'uni-a
     project(job.workspace, framework);
     f.store.update(job.id, { stage: 'verify' });
     const rejected = await runStep(f.store, config, job.id);
-    assert.equal(rejected.stage, 'build');
+    assert.equal(rejected.stage, 'verify');
+    assert.equal(rejected.status, 'waiting');
+    assert.equal(rejected.recoveryStage, 'verify');
     assert.equal(rejected.verifiedDigest, null);
     assert.equal(rejected.verifiedDependencyDigest, null);
     assert.equal(rejected.artifact ?? null, null);

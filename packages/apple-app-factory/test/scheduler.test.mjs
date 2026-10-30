@@ -134,12 +134,13 @@ test('disabled local execution blocks without starting commands or consuming att
   assertUnlocked(f.store);
 });
 
-test('a failed verification queues host repair but never executes it or another job', async t => {
+test('a failed verification without a source change re-runs verify and never executes another job', async t => {
   const f = fixture(t, { verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(7)']], runtime: [success] } });
   const job = f.enqueue('failed-check'), sibling = f.enqueue('untouched-sibling');
   const result = await f.start(job.id);
-  assert.equal(result.stage, 'build');
+  assert.equal(result.stage, 'verify');
   assert.equal(result.status, 'waiting');
+  assert.equal(result.recoveryStage, 'verify');
   assert.deepEqual(result.attempts, { verify: 1 });
   assert.equal(result.hostTurns, 0);
   assert.match(result.error, /Verification failed \(7\)/);
