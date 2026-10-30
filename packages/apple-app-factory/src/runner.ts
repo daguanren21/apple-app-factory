@@ -9,7 +9,7 @@ import { flutterEnvironment, prepareFlutter } from './flutter.js';
 import { prepareExportOptions, prepareNativeExportCommands } from './export-options.js';
 import { dependencyDigest, generatedModulePaths, isGeneratedPath } from './dependencies.js';
 import { ReviewSchema, SpecSchema, toError, validateJobConfig } from './schemas.js';
-import type { Job, HostStage, Stage } from './schemas.js';
+import type { Job, HostStage, RoleSeat, Stage } from './schemas.js';
 import type { Run, RunOptions, RunResult } from './process.js';
 import type { Store } from './store.js';
 import { sourceDigest, prepareWorkspace, projectDirectory, artifactOutputPath } from './workspace.js';
@@ -45,6 +45,8 @@ const DEFAULT_ROLES: Record<HostStage, string[]> = {
   build: ['ui-designer', 'developer'],
   review: ['architect-review', 'qa-engineer', 'acceptance-reviewer'],
 };
+
+const BUILD_PRINCIPLES = 'Work test-first: write a failing test before the implementation and never add tests after the fact just to pass acceptance. Enumerate every state machine in docs/architecture.md explicitly (states, transitions, events), and make each UI loading/empty/error/success state traceable to it.';
 
 function assertTurnPermission(_job: Job, _options: TurnOptions): void {
   // No publication permission exists in this build; the flag remains accepted for CLI compatibility.
@@ -85,7 +87,7 @@ function hostAction(store: Store, job: Job): HostAction {
     const uiDesignerFlow = job.spec.designRef
       ? `Build-stage role order: ui-designer first, then developer — the host adopts each through its native subagent facility with independent contexts. A design reference (designRef) is provided: ${job.spec.designRef}. The ui-designer reads the design reference and produces docs/ui-design.md (color/type/spacing/layout/component states extracted screen-by-screen), recording the actual design source URL it used. The developer must faithfully reproduce (忠实还原) that referenced design, never inventing unrequested visual decisions. If the design reference is inaccessible, record that honestly and fall back to the bundled ui-design-guide.md mode; never fabricate a design source you could not access.`
       : `Build-stage role order: ui-designer first, then developer — the host adopts each through its native subagent facility with independent contexts. No design reference was supplied, so the ui-designer produces docs/ui-design.md following the bundled resource ui-design-guide.md (design tokens, type scale, spacing/radius, component states including empty/loading/error/success, per-screen layout, accessibility, light/dark). The developer must implement strictly in line with docs/architecture.md and docs/ui-design.md, recording which UI decision maps to which section of the design spec.`;
-    instruction = `Research plan: ${JSON.stringify(job.research)}\n${buildInstructions(job.spec)} ${uiDesignerFlow} Under autopilot the same holds: both roles run through the host's native subagents and never ask the user. Implement the entire requested product, accessibility and realistic empty/error states. Add genuine device/simulator acceptance workflows and real screenshots when requested; never fake screenshots or bypass tests. Do not add unrequested offline/backup/account features. Use the returned environment with your tools. Frozen verification and packaging: ${JSON.stringify({ verification: job.config.verification, packaging: job.config.packaging, packageTarget: job.config.packageTarget })}. Complete this turn without a result payload when source is ready; the Harness will then execute verification, not infer success.`;
+    instruction = `Research plan: ${JSON.stringify(job.research)}\n${buildInstructions(job.spec)} ${BUILD_PRINCIPLES} ${uiDesignerFlow} Under autopilot the same holds: both roles run through the host's native subagents and never ask the user. Implement the entire requested product, accessibility and realistic empty/error states. Add genuine device/simulator acceptance workflows and real screenshots when requested; never fake screenshots or bypass tests. Do not add unrequested offline/backup/account features. Use the returned environment with your tools. Frozen verification and packaging: ${JSON.stringify({ verification: job.config.verification, packaging: job.config.packaging, packageTarget: job.config.packageTarget })}. Complete this turn without a result payload when source is ready; the Harness will then execute verification, not infer success.`;
   } else {
     instruction = reviewInstructions(job);
   }
@@ -96,8 +98,20 @@ function hostAction(store: Store, job: Job): HostAction {
     environment.FLUTTER_ROOT = job.config.toolchain.flutterSdk;
     environment.PATH = `${join(job.config.toolchain.flutterSdk, 'bin')}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ''}`;
   }
-  const role = [...(job.config.roles?.[turn.stage] ?? DEFAULT_ROLES[turn.stage])];
-  const prompt = `${taskPrompt(job)}${instruction}\nTurn roles (adopt every role through your native delegation, with independent contexts where the skill requires them): ${JSON.stringify(role)}`;
+  const seats: RoleSeat[] = [...(job.config.roles?.[turn.stage] ?? DEFAULT_ROLES[turn.stage])];
+  const role = seats.map(seat => (typeof seat === 'string' ? seat : seat.name));
+  const pins = seats.map(seat => (typeof seat === 'string' ? { name: seat } : { name: seat.name, ...(seat.provider ? { provider: seat.provider } : {}), ...(seat.fresh ? { fresh: seat.fresh } : {}) }));
+  const pinnedSeats = seats.filter(seat => typeof seat !== 'string' && (seat.provider !== undefined || seat.fresh === true));
+  const implementationProviders = new Set((['research', 'build'] as const).flatMap(stage => (job.config.roles?.[stage] ?? []).flatMap(seat => (typeof seat === 'string' ? [] : seat.provider ? [seat.provider] : []))));
+  const reviewProviders = new Set((job.config.roles?.review ?? []).flatMap(seat => (typeof seat === 'string' ? [] : seat.provider ? [seat.provider] : [])));
+  const sameProviderFamily = [...implementationProviders].some(provider => reviewProviders.has(provider));
+  let roleLines = `Turn roles (adopt every role through your native delegation, with independent contexts where the skill requires them): ${JSON.stringify(role)}`;
+  if (pinnedSeats.length) {
+    roleLines += `\nSeat pins: ${JSON.stringify(pins)}`;
+    roleLines += `\nSeats with fresh=true must run in a brand-new fresh-context subagent that shares no prior context with the implementing seats.`;
+    if (sameProviderFamily) roleLines += `\nReview seats and implementation seats are pinned to the same provider family; if the host can select a different model family, the review judge must switch to another family, and if it cannot it must disclose that limitation honestly in the review result.`;
+  }
+  const prompt = `${taskPrompt(job)}${instruction}\n${roleLines}`;
   return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)), role } };
 }
 
