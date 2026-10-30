@@ -65,8 +65,11 @@ test('taskPrompt adds autopilot instructions only for autopilot jobs', async t =
   const autopilotTurn = await nextTurn(autopilotStore, autopilotJob.id);
   assert.equal(autopilotTurn.action, 'host');
   assert.match(autopilotTurn.turn.prompt, /AUTOPILOT MODE/);
+  assert.match(autopilotTurn.turn.prompt, /Stuck states are host work, never a user handback/);
+  assert.match(autopilotTurn.turn.prompt, /terminally failed task with no recovery path may be continued/);
 
   const plainTurn = await nextTurn(plainStore, plainJob.id);
   assert.equal(plainTurn.action, 'host');
   assert.doesNotMatch(plainTurn.turn.prompt, /AUTOPILOT MODE/);
+  assert.doesNotMatch(plainTurn.turn.prompt, /Stuck states are host work/);
 });
