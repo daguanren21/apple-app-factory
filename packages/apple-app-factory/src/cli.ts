@@ -23,6 +23,7 @@ import { validateMyGoCommand } from './mygo-build.js';
 import { invalidateVerification, verificationConfigChanged } from './proof.js';
 import { notifyJob, notifyBuiltJobs } from './notify.js';
 import { prepareIsolatedCommand, removeConfinedPath, type IsolatedCommand } from './isolation.js';
+import { reportJob } from './report.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2));
@@ -150,6 +151,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   step <id>                     Execute one obfuscation, verification or packaging stage
   status [id]                   Read durable task state as JSON
   events <id>                   Read task transitions and evidence
+  report <id>                   Write handoff deliverables (source copy, artifact, checklist, failures)
   retry <id>                    Resume stopped work; preserve budgets and proofs
   submit <spec.json|->           Write requirements to the configured inbox
   scan [--observe]              Validate or ingest inbox files; never start an agent
@@ -185,6 +187,8 @@ async function main(): Promise<void> {
       'package-target': { type: 'string' },
       observe: { type: 'boolean' },
       any: { type: 'boolean' },
+      out: { type: 'string' },
+      collect: { type: 'boolean', default: false },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -200,7 +204,7 @@ async function main(): Promise<void> {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
     init: ['config', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
     enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
-    step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], retry: ['config', 'build-only'],
+    step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], report: ['config', 'build-only', 'out', 'collect'], retry: ['config', 'build-only'],
     notify: ['config', 'build-only', 'any'],
     submit: ['config', 'build-only'], scan: ['config', 'build-only', 'observe'], inbox: ['config', 'build-only'],
     'reconcile-intake': ['config', 'build-only'],
@@ -347,6 +351,9 @@ async function main(): Promise<void> {
     } else if (command === 'events') {
       arity(args, 1, 1, 'events <id>');
       print(store.events(args[0]));
+    } else if (command === 'report') {
+      arity(args, 1, 1, 'report <id> [--out <dir>] [--collect] [--build-only] [--config <file>]');
+      print(reportJob(store, args[0], { out: values.out, collect: values.collect, buildOnly, config }));
     } else if (command === 'next') {
       if (values.any) {
         arity(args, 0, 0, 'next --any');
