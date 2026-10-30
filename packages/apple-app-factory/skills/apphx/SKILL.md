@@ -226,3 +226,29 @@ The distributed package contains `evals/`, `scripts/` and `examples/runtime/`; t
 `node scripts/runtime-smoke.mjs --help` describes installed-tool prerequisites and fresh-output arguments for actual Android Java APK/native UI and MyGo native/WKWebView `.app` workflows. Android owns a fresh AVD/private ADB server and ephemeral signing key; never target a user device. Its direct installed-SDK compilation path is explicit, not evidence of Gradle compatibility. MyGo uses existing pinned module/frontend caches without installing packages. Workflows retain original task ids across abandoned/reclaimed turns, assert UI/backend state and relaunch persistence, save screenshots, check signed native artifacts and clean only owned runtime processes. Do not treat a source fixture or help output as successful execution; iOS needs its own actual device/simulator surface.
 
 `node benchmarks/peer-context.mjs prepare FRESH_ROOT` freezes the production ten-project workload, then `baseline ROOT` and `compare ROOT CANDIDATE_DIST` collect paired measurements, exact output/stale-input correctness and separate profiles. Worker errors, signals, malformed reports or incomplete work fail the run; old sample output is never reused. Request-scoped comparison reuse does not cache across requests or weaken fresh completion/package validation. Timings cover the named Harness workload, not mobile compilation or store submission.
+
+## 9. 角色与席位（roles & seats）
+
+第 3 节的 `roles` 只支持字符串席位名。本机制在其上叠加可声明的席位对象，不改工具、不改阶段资格、预算或证据门槛：
+
+```json
+{
+  "roles": {
+    "build": [
+      { "name": "ui-designer", "fresh": true },
+      { "name": "developer", "provider": "grok" }
+    ],
+    "review": [
+      { "name": "architect-review", "provider": "grok", "fresh": true },
+      "qa-engineer",
+      "acceptance-reviewer"
+    ]
+  }
+}
+```
+
+- 席位两种形态：字符串（原有席位名，向后兼容）或 `{ name, provider?, fresh? }`。`provider` 钉扎该席位到某个模型/家族；`fresh` 默认 `false`，`fresh: true` 表示该席位必须在**全新上下文**子代理里运行，不与实现席位共享任何先前上下文。
+- 不写 `roles` 时使用内置席位：research `["product-analyst"]`；build `["ui-designer", "developer"]`；review `["architect-review", "qa-engineer", "acceptance-reviewer"]`。`roles` 逐阶段覆盖，未覆盖阶段仍回落内置席位。
+- 当任一席位带 `provider` 或 `fresh: true`，host turn 的 `prompt` 会追加 `Seat pins` 行逐席位说明，并附 fresh 席位全新上下文的强制要求。
+- 若实现席位（research/build）与 review 席位都钉扎到同一 provider 家族，`prompt` 会追加跨家族裁判披露：宿主能选不同家族模型时，评审裁判必须换另一个家族；不能换时必须在评审结果里如实披露该限制。
+- 席位约束只影响 prompt 内容；各席位的评审/决策理由不随 prompt 持久化，而是由完成会话经 `apphx complete` 写入任务状态与事件日志（`apphx events` 可读），`apphx report` 再把需求 checklist 与不通过项（含评审 findings）带出。
