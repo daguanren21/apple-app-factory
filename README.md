@@ -4,9 +4,7 @@
 
 ## 操作流程
 
-1. 安装 CLI（Node 22.18+）：`npm install -g apphx`
-2. 安装宿主工作流：`apphx install <host>`（各宿主用法见下表）
-3. 初始化控制配置：
+需要 Node.js **22.23.4+ / 24.22.1+ / 26.12.1+（安全补丁版本）**。先安装 CLI，再在控制项目中安装宿主工作流：
 
    ```sh
    apphx init --framework <stack> --platform <platform> --package-target <target> [--autopilot]
