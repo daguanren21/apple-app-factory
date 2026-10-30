@@ -11,6 +11,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const projectPaths = {
   codex: '.agents/skills', claude: '.claude/skills', cursor: '.cursor/skills',
   pi: '.pi/skills', gemini: '.gemini/skills', opencode: '.opencode/skills', deepseek: '.dsh/skills', hermes: '.hermes/skills',
+  qoder: '.qoder/skills', 'oh-my-pi': '.omp/skills', dimagent: '.dimcode/skills',
 };
 
 function fixture(t) {
@@ -98,8 +99,8 @@ test('default scope is the working project, never the home directory', t => {
 
 test('explicit global installs use documented home locations and leave the project untouched', t => {
   const root = fixture(t);
-  environment(t, { HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: undefined, GEMINI_CLI_HOME: undefined, PI_CODING_AGENT_DIR: undefined, DSH_HOME: undefined, HERMES_HOME: undefined, XDG_CONFIG_HOME: undefined });
-  const globalPaths = { ...projectPaths, pi: '.pi/agent/skills', opencode: '.config/opencode/skills' };
+  environment(t, { HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: undefined, GEMINI_CLI_HOME: undefined, PI_CODING_AGENT_DIR: undefined, OMP_PROFILE: undefined, PI_PROFILE: undefined, DSH_HOME: undefined, HERMES_HOME: undefined, XDG_CONFIG_HOME: undefined });
+  const globalPaths = { ...projectPaths, pi: '.pi/agent/skills', 'oh-my-pi': '.omp/agent/skills', dimagent: '.dimcode/v2/skills', opencode: '.config/opencode/skills' };
   for (const [host, directory] of Object.entries(globalPaths)) {
     const result = installIntegration(host, { global: true });
     assert.equal(result.scope, 'global');
@@ -117,7 +118,7 @@ test('documented host home overrides select the same global locations as the hos
   const defaultHome = join(root, 'default-home');
   mkdirSync(defaultHome);
   writeFileSync(join(defaultHome, 'keep.txt'), 'default profile remains untouched');
-  environment(t, { HOME: defaultHome, USERPROFILE: defaultHome, CLAUDE_CONFIG_DIR: join(root, 'claude-home'), GEMINI_CLI_HOME: join(root, 'gemini-home'), PI_CODING_AGENT_DIR: join(root, 'pi-home'), DSH_HOME: join(root, 'dsh-home'), HERMES_HOME: join(root, 'hermes-home'), XDG_CONFIG_HOME: join(root, 'xdg') });
+  environment(t, { HOME: defaultHome, USERPROFILE: defaultHome, CLAUDE_CONFIG_DIR: join(root, 'claude-home'), GEMINI_CLI_HOME: join(root, 'gemini-home'), PI_CODING_AGENT_DIR: join(root, 'pi-home'), OMP_PROFILE: undefined, PI_PROFILE: undefined, DSH_HOME: join(root, 'dsh-home'), HERMES_HOME: join(root, 'hermes-home'), XDG_CONFIG_HOME: join(root, 'xdg') });
   for (const [host, expected] of [['claude', 'claude-home/skills'], ['gemini', 'gemini-home/.gemini/skills'], ['pi', 'pi-home/skills'], ['deepseek', 'dsh-home/skills'], ['hermes', 'hermes-home/skills'], ['opencode', 'xdg/opencode/skills']]) {
     const installed = installIntegration(host, { global: true });
     assert.equal(installed.path, join(root, expected, 'apphx'));
@@ -127,6 +128,39 @@ test('documented host home overrides select the same global locations as the hos
   }
   assert.deepEqual(readdirSync(defaultHome), ['keep.txt']);
   assert.equal(readFileSync(join(defaultHome, 'keep.txt'), 'utf8'), 'default profile remains untouched');
+});
+
+test('Oh My Pi profile variables select the profile skill root the host reads', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: 'design', PI_PROFILE: undefined });
+  const installed = installIntegration('oh-my-pi', { global: true });
+  assert.equal(installed.path, join(root, '.omp', 'profiles', 'design', 'agent', 'skills', 'apphx'));
+  assert.ok(lstatSync(join(installed.path, 'SKILL.md')).isFile());
+  assert.equal(existsSync(join(root, '.omp', 'agent', 'skills')), false, 'the un-profiled root must not receive a profiled install');
+  assert.equal(inspectIntegration('oh-my-pi', { global: true }).installed, true);
+  assert.equal(uninstallIntegration('oh-my-pi', { global: true }).changed, true);
+  assert.equal(existsSync(join(root, '.omp', 'profiles', 'design', 'agent', 'skills', 'apphx')), false);
+});
+
+test('PI_PROFILE alone selects the same Oh My Pi profile skill root', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: undefined, PI_PROFILE: 'ship' });
+  assert.equal(installIntegration('oh-my-pi', { global: true }).path, join(root, '.omp', 'profiles', 'ship', 'agent', 'skills', 'apphx'));
+  assert.equal(uninstallIntegration('oh-my-pi', { global: true }).changed, true);
+});
+
+test('conflicting Oh My Pi profile variables reject before writing anything', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: 'a', PI_PROFILE: 'b' });
+  assert.throws(() => installIntegration('oh-my-pi', { global: true }), /different profiles/);
+  assert.equal(existsSync(join(root, '.omp')), false, 'rejected install must not create the root');
+});
+
+test('an unusable Oh My Pi profile name rejects before writing anything', t => {
+  const root = fixture(t);
+  environment(t, { HOME: root, USERPROFILE: root, OMP_PROFILE: '../escape', PI_PROFILE: undefined });
+  assert.throws(() => installIntegration('oh-my-pi', { global: true }), /not a usable profile name/);
+  assert.equal(existsSync(join(root, '.omp')), false, 'rejected install must not create the root');
 });
 
 test('DeepSeek local discovery uses the nearest Git root, unlike cwd-local Pi', t => {
