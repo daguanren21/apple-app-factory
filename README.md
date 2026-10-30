@@ -20,13 +20,15 @@ $apphx 接管我的 Java Android 项目，完成真实验收，只做本地构�
 
 其他宿主先用 `apphx hosts` 查看安装方式；通常为 `apphx install <host>`：
 
-| 宿主 | 启动工作流 |
-| --- | --- |
-| Codex | `$apphx <需求>` |
-| Claude Code / Cursor | `/apphx <需求>` |
-| Pi | `/skill:apphx <需求>` |
-| Gemini / OpenCode / DeepSeek | 请加载 apphx skill，随后描述需求 |
-| Hermes | `apphx install hermes --global` 后使用 `/apphx <需求>` |
+| 宿主 | 启动工作流 | 直接触发混淆 |
+| --- | --- | --- |
+| Codex | `$apphx <需求>` | `$apphx-obfuscator <需求>` |
+| Claude Code / Cursor | `/apphx <需求>` | `/apphx-obfuscator <需求>` |
+| Pi | `/skill:apphx <需求>` | `/skill:apphx-obfuscator <需求>` |
+| Gemini / OpenCode / DeepSeek | 请加载 apphx skill，随后描述需求 | 请加载 apphx-obfuscator skill |
+| Hermes | `apphx install hermes --global` 后使用 `/apphx <需求>` | 同上安装后使用 `/apphx-obfuscator <需求>` |
+
+`apphx install <host>` 会同时安装 `apphx` 与 `apphx-obfuscator` 两个 skill；后者让 agent 直接运行确定性混淆器：`apphx obfuscator <project> --config <rules.json> [--framework <stack>] [--seed <text>]`，规则结构与流水线 `obfuscation` 阶段一致，覆盖 ObjC/Swift 符号改名、XOR 字符串加密、Flutter 符号/资源混淆、DFA 敏感词过滤、垃圾代码与清理、工程身份改名和图片变换。
 
 项目本地安装 CLI 时，使用原包管理器的 `pnpm exec apphx`、`yarn exec apphx` 或 `npm exec --offline --package=apphx -- apphx`；Skill 不会替你下载 CLI。
 

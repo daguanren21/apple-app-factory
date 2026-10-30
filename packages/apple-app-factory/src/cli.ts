@@ -233,14 +233,17 @@ async function main(): Promise<void> {
   if (command === 'install' || command === 'update' || command === 'uninstall') {
     arity(args, 1, 1, `${command} <host> [--project <directory> | --global]`);
     const operation = command === 'install' ? installIntegration : command === 'update' ? updateIntegration : uninstallIntegration;
-    print(operation(args[0], scope));
+    operation(args[0], scope);
+    print(['apphx', 'apphx-obfuscator'].map(skill => inspectIntegration(args[0], scope, skill as 'apphx' | 'apphx-obfuscator')));
     return;
   }
   if (command === 'doctor' && values.host) {
     arity(args, 0, 0, 'doctor --host <host> [--project <directory> | --global]');
-    const result = inspectIntegration(values.host, scope);
-    print(result);
-    if (!result.installed) process.exitCode = 2;
+    const host = values.host;
+    const skills = ['apphx', 'apphx-obfuscator'] as const;
+    const results = skills.map(skill => inspectIntegration(host, scope, skill));
+    print(results);
+    if (!results[0]!.installed) process.exitCode = 2;
     return;
   }
   if (command === 'doctor' && (values.project || values.global)) throw new Error('--project and --global require doctor --host <host>');
