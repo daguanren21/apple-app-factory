@@ -1,5 +1,17 @@
 # apphx
 
+## 2.3.0
+
+### Minor Changes
+
+- 新增 `apphx report` 命令，在队列结束后把源码副本、打包产物、需求 checklist 和不通过项落盘为机器可读 JSON 与可读 Markdown，交付给 owner。
+
+### Patch Changes
+
+- 修复成功命令因子孙进程暂持管道被误判失败；swift verify 拆为 build-for-testing + test-without-building。
+
+- Raise the default per-stage attempt budget from 3 to 8: AI repair loops and flaky external services are expected, so three attempts terminate tasks too early.
+
 ## 2.2.0
 
 ### Minor Changes
