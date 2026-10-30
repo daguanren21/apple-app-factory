@@ -63,3 +63,9 @@ test('invalid state transitions cannot partially overwrite persisted budgets', t
   for (const patch of [{ attempts: { build: -1 } }, { hostTurns: -1 }, { nextAt: NaN }, { stage: 'skip-verification' }, { receipt: { upload: { status: 'approved' } } }]) assert.throws(() => store.update(job.id, patch));
   assert.deepEqual(store.get(job.id), job);
 });
+
+test('per-stage attempt budget defaults to 8, owner-tunable', () => {
+  const { maxAttempts: _omitted, ...base } = { ...example, stateDir: '/owned/state', workspaceRoot: '/owned/workspaces' };
+  assert.equal(ConfigSchema.parse(base).maxAttempts, 8);
+  assert.equal(ConfigSchema.parse({ ...base, maxAttempts: 20 }).maxAttempts, 20);
+});

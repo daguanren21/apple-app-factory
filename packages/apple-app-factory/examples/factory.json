@@ -6,7 +6,7 @@
   "packageTarget": "simulator",
   "executionEnv": ["IOS_DEVICE_ID"],
   "timeoutMs": 900000,
-  "maxAttempts": 3,
+  "maxAttempts": 8,
   "maxHostTurns": 16,
   "maxJobHours": 24,
   "retryDelayMs": 30000,

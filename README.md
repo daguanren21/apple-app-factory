@@ -42,6 +42,7 @@
 - **源码与产物**：控制配置、状态目录、导入源必须分离；产物必须新生成，拒绝符号链接别名与旧产物。
 - **渠道**：默认 `local`。商店上传、提交与审核都是人工工作，`built` 不等于上架或过审。
 - **升级旧数据**：先结束活跃任务并备份 `.factory`；1.0 用户升级 CLI 前用原 `app-factory uninstall` 卸载旧 Skill 再装新 `apphx`。
+- **预算**：每阶段尝试次数默认 8（`factory.json` 的 `maxAttempts` 可调）。AI 修复循环与外部服务波动是常态，预算按需调大，避免小波动耗尽尝试后任务终态。
 - **宿主与调度**：更新/卸载保持原 `--project`/`--global` 作用域；多任务在 agent 内循环 `apphx next --any`（`host` 回合 `complete`，`step` 回合 `apphx step`）直到 `idle`。定时任务应唤醒宿主续跑，不要只定时执行 `next`。
 - **子进程隔离**：可选 `isolation: { "mode": "macos-sandbox", "readOnlyPaths": [], "network": "deny" }` 约束 Harness 检查/打包子进程；后端不可用即阻塞，不回退降级。
 
