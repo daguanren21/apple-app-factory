@@ -78,15 +78,27 @@ export const ObfuscationConfigSchema = z.strictObject({
 export type ObfuscationConfig = z.infer<typeof ObfuscationConfigSchema>;
 
 /**
+ * One advisory role seat. Accepts the legacy plain-name form or a pinned seat
+ * object ({ name, provider?, fresh? }); provider pins the seat to a model
+ * family and fresh=true requires a brand-new context.
+ */
+export const RoleSeatSchema = z.union([
+  text,
+  z.strictObject({ name: text, provider: text.optional(), fresh: z.boolean().default(false) }),
+]);
+export type RoleSeat = z.infer<typeof RoleSeatSchema>;
+
+/**
  * Advisory role assignments per host stage. Role names are free-form so teams
  * can add any missing agent (e.g. security-review, performance-analyst); the
  * host adopts every returned role via its native delegation. Roles never
- * change stage eligibility, budgets or evidence gates.
+ * change stage eligibility, budgets or evidence gates. Each stage defaults so
+ * factories may override a single stage without re-declaring the others.
  */
 export const RolesConfigSchema = z.strictObject({
-  research: z.array(text).default(['product-analyst']),
-  build: z.array(text).default(['ui-designer', 'developer']),
-  review: z.array(text).default(['architect-review', 'qa-engineer', 'acceptance-reviewer']),
+  research: z.array(RoleSeatSchema).default(['product-analyst']),
+  build: z.array(RoleSeatSchema).default(['ui-designer', 'developer']),
+  review: z.array(RoleSeatSchema).default(['architect-review', 'qa-engineer', 'acceptance-reviewer']),
 });
 export type RolesConfig = z.infer<typeof RolesConfigSchema>;
 

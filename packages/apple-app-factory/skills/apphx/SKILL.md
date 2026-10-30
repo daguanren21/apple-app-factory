@@ -9,6 +9,8 @@ Use your current host's model, context, authentication, filesystem, browser and 
 
 This skill is advisory to the host. apphx code gates apphx-owned transitions, not arbitrary host edits or shell commands. It does not sandbox your host, enforce reviewer identity or guarantee store approval. Store submission and review are manual human work outside this tool. Preserve host permissions and the user's scope.
 
+**Unattended operation in one paragraph** (owner pre-authorizes with `apphx init --autopilot`): never ask the user anything — dispatch a decision-maker role for every non-trivial fork, dispatch a developer role with the failure evidence to fix and iterate, run independent review only in brand-new contexts that did not implement the change, and treat `wait`/`blocked`/`failed` states as host work (diagnose, repair within budgets, or wait out the due time) instead of a user handback. A terminally failed task with no recovery path continues by re-enqueueing the same product as a new version with `project.sourceDir` pointing at the verified source. Only safety red lines (leaking credentials, fabricating evidence, bypassing acceptance) may stop the run, reported as a verdict, never as a question.
+
 ## 1. Establish the control project
 
 1. Use the project where the user installed/invoked this skill as the control project. Keep `factory.json`, its SQLite state, requirement files and result JSON outside generated app workspaces. Keep the absolute config path for every command below, including commands issued while your working directory is an app workspace.
@@ -73,7 +75,7 @@ Read the JSON from `next`; do not guess stages from memory. Use `--build-only` t
 
 - **`action: "host"`**: preserve `turn.id`; read the full `turn.prompt`, `turn.stage`, `turn.cwd` and `turn.environment`. Perform that one native host phase as below. Work inside the returned cwd and merge the returned task/toolchain overrides into your host's existing command environment; do not replace it. Configured environment values are intentionally not printed in the response. This is not a host-wide security boundary; never copy store credentials into task commands. Only the CLI completion call advances the task. Repeated `next` resumes the same active turn without spending a second turn, unless its task deadline has expired.
 - **`action: "step"`**: run `apphx step JOB_ID --config /absolute/control/factory.json --build-only` once, inspect its exit status and returned job, then follow `next`. A returned build/research repair is actionable host work under the existing authorization, not a reason to ask the owner to fix code manually; respect its due time. Blocked/failed states remain stopped. Only deterministic verify/package stages should be needed here. `step` cannot perform research, build or review for you. Never label a host verdict as external verification.
-- **`action: "wait"`**: inspect the job's status, reason, error and due time. Report the exact blocker or scheduled time; do not busy-loop, automatically grant permission, or retry a failed command until it happens to pass. Resume with `next` after the prerequisite/due time is satisfied and the user intends to continue.
+- **`action: "wait"`**: inspect the job's status, reason, error and due time. Report the exact blocker or scheduled time; do not busy-loop, automatically grant permission, or retry a failed command until it happens to pass. Resume with `next` after the prerequisite/due time is satisfied. Under autopilot the host diagnoses the blocker and fixes it within budgets (or waits out the due time) instead of asking the user; see the autopilot section.
 - **`action: "done"`**: inspect the persisted outcome. `built` plus a recorded local artifact is successful local packaging. Blocked/failed/rejected outcomes are not success merely because no action remains. Report the artifact kind/path/digest and evidence, or the exact unmet requirement.
 
 ### Queue loop (single jobs and batches)
@@ -112,7 +114,7 @@ Every host turn payload carries `role` — the ordered list of agents to adopt f
 - **architect-review / qa-engineer / acceptance-reviewer (review)**: three fresh independent contexts that did not implement the change. The architect checks implementation against `docs/architecture.md` and module boundaries; the QA engineer checks empty/error states, accessibility, edge cases and quality; the acceptance reviewer covers every acceptance requirement with concrete observed evidence and issues the typed verdict. Exactly one session completes the token.
 - **PM (no host turn)**: project management is the deterministic control plane — `next --any` ordering (priority lane, due time, insertion), budgets, retries, repair loops, `notify --any` and the terminal audit. Work assignment is computed by the queue, never delegated to a model, so it stays auditable and replayable. Which model each role runs on is a host decision (see the shipped example `examples/multi-role-agents.md`); apphx only names roles. Per-stage attempt budgets default to 8 (`maxAttempts` in `factory.json`, owner-tunable): AI repair loops and flaky external services are expected, so keep the budget generous rather than tight.
 
-For a scheduled wake, the host scheduler owns timing and non-overlap; do not create an apphx daemon or a second schedule. Check `status` first: if it is `running` and the prior execution's completion is unconfirmed, stop and ask the owner rather than taking over its token. Respect the requested bound (for example one persisted action), then report state and exit. A `wait` or `done` result ends this wake; it does not authorize changing permissions, increasing budgets or polling indefinitely. A fresh scheduled session may review only if it did not implement the change and genuinely inspects the saved source/evidence. Missing independent review or human authorization pauses the work; never manufacture approval to keep a schedule moving.
+For a scheduled wake, the host scheduler owns timing and non-overlap; do not create an apphx daemon or a second schedule. Check `status` first: if it is `running` and the prior execution's completion is unconfirmed, stop and ask the owner rather than taking over its token. Autopilot's never-ask rule does not cover this token-theft guardrail: under autopilot, wait for the due time or abandon the stale token instead of asking the user. Respect the requested bound (for example one persisted action), then report state and exit. A `wait` or `done` result ends this wake; it does not authorize changing permissions, increasing budgets or polling indefinitely. A fresh scheduled session may review only if it did not implement the change and genuinely inspects the saved source/evidence. Missing independent review or human authorization pauses the work; never manufacture approval to keep a schedule moving.
 
 To stop an active host phase without completing it:
 
@@ -120,7 +122,7 @@ To stop an active host phase without completing it:
 apphx abandon JOB_ID TURN_ID --config /absolute/control/factory.json --build-only
 ```
 
-This explicitly abandons the current token; it does not refund the consumed turn. Resume later with `next`. Never reuse an abandoned, stale or already completed token. If a completion's outcome is uncertain, inspect `status`/`next` rather than replaying it blindly. Do not edit SQLite or increase budgets to bypass a rejection. Use `apphx retry --help` and the stopped task's reported recovery instructions only after fixing the actual cause with owner approval.
+This explicitly abandons the current token; it does not refund the consumed turn. Resume later with `next`. Never reuse an abandoned, stale or already completed token. If a completion's outcome is uncertain, inspect `status`/`next` rather than replaying it blindly. Do not edit SQLite or increase budgets to bypass a rejection. See `apphx --help` and the stopped task's reported recovery instructions only after fixing the actual cause with owner approval.
 
 ## 4. Native research
 
@@ -187,7 +189,7 @@ No result JSON is normally required for build. The optional `apple` metadata blo
 
 ## 6. External verification, then independent review
 
-The deterministic `step` executes configured prerequisite/static/runtime checks and records real results and source/dependency fingerprints for the selected profile. Read logs/evidence from the returned job or `apphx events JOB_ID --config /absolute/control/factory.json`. Compilation-only success is not runtime acceptance; web-only tests are not native acceptance for Expo/uni-app. Never synthesize receipts or claim unavailable iOS/Android execution passed. Fix actual failures through stopped-task/retry, not direct stage edits. Changing commands, execution environment, toolchain, packaging provider/commands/output, package target or obfuscation config invalidates prior proof and requires renewed verification/review; retry preserves budgets. Uncertain cloud packaging runs require reconciliation, not replay.
+The deterministic `step` executes configured prerequisite/static/runtime checks and records real results and source/dependency fingerprints for the selected profile. Read logs/evidence from the returned job or `apphx events JOB_ID --config /absolute/control/factory.json`. Deterministic commands such as `xcodebuild test` have multi-minute silent phases (simulator transfer/install) — silence is not a hang and the harness does not kill on idle output; each step runs under `timeoutMs` (default 15 minutes, owner-tunable in `factory.json`), so raise it for legitimately long acceptance runs instead of splitting or weakening commands. Compilation-only success is not runtime acceptance; web-only tests are not native acceptance for Expo/uni-app. Never synthesize receipts or claim unavailable iOS/Android execution passed. Fix actual failures through stopped-task/retry, not direct stage edits. Changing commands, execution environment, toolchain, packaging provider/commands/output, package target or obfuscation config invalidates prior proof and requires renewed verification/review; retry preserves budgets. Uncertain cloud packaging runs require reconciliation, not replay.
 
 ### Optional deterministic obfuscation (runs between build and verify)
 
@@ -203,7 +205,7 @@ Seed semantics: identical project + config + seed always produce byte-identical 
 
 Obfuscation must keep the app buildable: the ordinary verify/checks/review/package stages run unchanged afterward, and any breakage is a task failure repaired through the stopped-task/retry loop. Never weaken acceptance or verification to accommodate a failing obfuscation config.
 
-When `next` returns a **review** turn, use a **fresh native reviewer context** that did not implement the change. Give it the exact review prompt, requirement, workspace and external evidence. Have it independently inspect every acceptance scenario, code and real evidence, with **no source/dependency/screenshot edits**. Evidence-producing commands that mutate the verified source invalidate approval. An implementation agent's second self-review is not independent.
+When `next` returns a **review** turn, use a **fresh native reviewer context** that did not implement the change. Give it the exact review prompt, requirement, workspace and external evidence. Have it independently inspect every acceptance scenario, code and real evidence, with **no source/dependency/screenshot edits**. Reviewer contexts must not write ANY file into the workspace — including OCR outputs, exported test attachments, scratch files or logs; run recognition/export tools with output paths outside the workspace or not at all. Evidence-producing commands that mutate the verified source invalidate approval. An implementation agent's second self-review is not independent. After a passing verify, treat the source and the screenshots directory as frozen: modifying either invalidates the recorded digests and the review handoff is rejected; any change must go through a renewed verify.
 
 Use the host's native subagent/reviewer facility if present. If unavailable (including stock Pi), pause and ask the user to open a separate fresh host session for review, supply the job id/config/active turn, and return its JSON verdict. Do not launch another coding-agent process or claim independence that did not occur. The separate reviewer may complete the current token itself, or return the result to the controlling session; exactly one session completes it.
 
@@ -235,3 +237,29 @@ The distributed package contains `evals/`, `scripts/` and `examples/runtime/`; t
 `node scripts/runtime-smoke.mjs --help` describes installed-tool prerequisites and fresh-output arguments for actual Android Java APK/native UI and MyGo native/WKWebView `.app` workflows. Android owns a fresh AVD/private ADB server and ephemeral signing key; never target a user device. Its direct installed-SDK compilation path is explicit, not evidence of Gradle compatibility. MyGo uses existing pinned module/frontend caches without installing packages. Workflows retain original task ids across abandoned/reclaimed turns, assert UI/backend state and relaunch persistence, save screenshots, check signed native artifacts and clean only owned runtime processes. Do not treat a source fixture or help output as successful execution; iOS needs its own actual device/simulator surface.
 
 `node benchmarks/peer-context.mjs prepare FRESH_ROOT` freezes the production ten-project workload, then `baseline ROOT` and `compare ROOT CANDIDATE_DIST` collect paired measurements, exact output/stale-input correctness and separate profiles. Worker errors, signals, malformed reports or incomplete work fail the run; old sample output is never reused. Request-scoped comparison reuse does not cache across requests or weaken fresh completion/package validation. Timings cover the named Harness workload, not mobile compilation or store submission.
+
+## 9. 角色与席位（roles & seats）
+
+第 3 节的 `roles` 只支持字符串席位名。本机制在其上叠加可声明的席位对象，不改工具、不改阶段资格、预算或证据门槛：
+
+```json
+{
+  "roles": {
+    "build": [
+      { "name": "ui-designer", "fresh": true },
+      { "name": "developer", "provider": "grok" }
+    ],
+    "review": [
+      { "name": "architect-review", "provider": "grok", "fresh": true },
+      "qa-engineer",
+      "acceptance-reviewer"
+    ]
+  }
+}
+```
+
+- 席位两种形态：字符串（原有席位名，向后兼容）或 `{ name, provider?, fresh? }`。`provider` 钉扎该席位到某个模型/家族；`fresh` 默认 `false`，`fresh: true` 表示该席位必须在**全新上下文**子代理里运行，不与实现席位共享任何先前上下文。
+- 不写 `roles` 时使用内置席位：research `["product-analyst"]`；build `["ui-designer", "developer"]`；review `["architect-review", "qa-engineer", "acceptance-reviewer"]`。`roles` 逐阶段覆盖，未覆盖阶段仍回落内置席位。
+- 当任一席位带 `provider` 或 `fresh: true`，host turn 的 `prompt` 会追加 `Seat pins` 行逐席位说明，并附 fresh 席位全新上下文的强制要求。
+- 若实现席位（research/build）与 review 席位都钉扎到同一 provider 家族，`prompt` 会追加跨家族裁判披露：宿主能选不同家族模型时，评审裁判必须换另一个家族；不能换时必须在评审结果里如实披露该限制。
+- 席位约束只影响 prompt 内容；各席位的评审/决策理由不随 prompt 持久化，而是由完成会话经 `apphx complete` 写入任务状态与事件日志（`apphx events` 可读），`apphx report` 再把需求 checklist 与不通过项（含评审 findings）带出。

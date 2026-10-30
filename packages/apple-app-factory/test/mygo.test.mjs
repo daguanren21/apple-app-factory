@@ -95,7 +95,9 @@ test('failed actual desktop acceptance never grants review or dispatches the MyG
   source(job.workspace);
   store.update(job.id, { stage: 'verify' });
   const result = await runStep(store, config, job.id);
-  assert.equal(result.stage, 'build');
+  assert.equal(result.stage, 'verify');
+  assert.equal(result.status, 'waiting');
+  assert.equal(result.recoveryStage, 'verify');
   assert.equal(result.verifiedDigest, null);
   assert.equal(result.verifiedDependencyDigest, null);
   assert.equal(result.artifact ?? null, null);

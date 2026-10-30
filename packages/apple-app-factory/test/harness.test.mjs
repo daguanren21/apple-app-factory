@@ -128,21 +128,22 @@ test('host work is available without local-execution permission but external ver
   assert.equal(existsSync(f.marker), false);
 });
 
-test('failed runtime verification returns to host build and cannot retain approval evidence', async t => {
+test('failed runtime verification without a source change re-runs verify and retains no approval evidence', async t => {
   const f = fixture(t, { verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(19)']] } });
   const build = await buildTurn(f);
   completeTurn(f.store, f.job.id, build.turn.id);
   const failure = await runStep(f.store, f.config, f.job.id);
-  assert.equal(failure.stage, 'build');
+  assert.equal(failure.stage, 'verify');
   assert.equal(failure.status, 'waiting');
+  assert.equal(failure.recoveryStage, 'verify');
   assert.equal(failure.review, null);
   assert.equal(failure.verifiedDigest, null);
   assert.match(failure.feedback, /Verification failed/);
   f.store.update(f.job.id, { nextAt: 0 });
   const repair = await nextTurn(f.store, f.job.id);
-  assert.equal(repair.turn.stage, 'build');
-  assert.notEqual(repair.turn.id, build.turn.id);
-  assert.equal(repair.job.hostTurns, 3);
+  assert.equal(repair.action, 'step');
+  assert.equal(repair.job.stage, 'verify');
+  assert.equal(repair.job.hostTurns, 2);
 });
 
 test('configured obfuscation runs between build and verify before any verification evidence exists', async t => {

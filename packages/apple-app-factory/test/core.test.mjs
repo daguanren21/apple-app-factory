@@ -125,7 +125,8 @@ test('a failed external runtime scenario cannot be replaced by successful static
   const job = store.enqueue(product, f.config);
   const result = await executeStep(store, store.update(job.id, { stage: 'verify' }));
   assert.equal(result.status, 'waiting');
-  assert.equal(result.stage, 'build');
+  assert.equal(result.stage, 'verify');
+  assert.equal(result.recoveryStage, 'verify');
   assert.equal(result.verifiedDigest, null);
 });
 

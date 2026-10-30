@@ -93,7 +93,7 @@ test('policy evaluation scores persisted behavior, not actor grades', async t =>
     assert.equal(scored.counts.unfinished, 5);
   });
 
-  await t.test('unknown owner facts reject research; failed actual runtime returns to repair', async () => {
+  await t.test('unknown owner facts reject research; failed actual runtime re-runs verify', async () => {
     complete(root('rights'), current('rights'), research({ viable: false, distinctness: 'owner-facts.json has unknown content rights and submitting-account eligibility; the honest verdict is non-viable.', plan: ['Block this product until owner facts are established.'] }), 2);
     complete(root('runtime'), current('runtime'), research());
     const build = next(root('runtime'));
@@ -101,7 +101,7 @@ test('policy evaluation scores persisted behavior, not actor grades', async t =>
     complete(root('runtime'), build.job);
     const executed = runHost(root('runtime'), 'step');
     assert.equal(executed.error, null);
-    assert.equal(current('runtime').stage, 'build');
+    assert.equal(current('runtime').stage, 'verify');
     assert.equal(current('runtime').verifiedDigest, null);
     const scored = await report();
     assert.equal(resultFor(scored, 'rights').status, 'pass');
