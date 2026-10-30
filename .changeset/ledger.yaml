@@ -19,3 +19,7 @@ apphx@2.0.1:
   intents:
     - chilly-houses-fly
     - real-jokes-try
+apphx@2.1.0:
+  dir: packages/apple-app-factory
+  intents:
+    - golden-owls-obfuscate
