@@ -21,7 +21,7 @@ export const hosts = Object.freeze([
   { id: 'deepseek', name: 'DeepSeek Harness', invocation: 'Use the apphx skill', projectDirectory: '.dsh/skills (nearest Git root, otherwise selected project)', globalDirectory: '$DSH_HOME/skills (default ~/.dsh/skills)', source: 'https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/skills', instructions: 'Ask DeepSeek Harness to use apphx; its native skill({ name: "apphx" }) tool loads it. Requires the shipped filesystem skill provider and skill tool, with default roots enabled. Custom provider configurations are not modified.' },
   { id: 'hermes', name: 'Hermes Agent', invocation: '/apphx', projectDirectory: '.hermes/skills', globalDirectory: '$HERMES_HOME/skills (default ~/.hermes/skills)', source: 'https://hermes-agent.nousresearch.com/docs/user-guide/features/skills', instructions: 'Use /apphx. Project installation requires a Git root and a separate owner-approved hermes skills trust decision; this installer never grants trust. For non-Git projects or profile-wide cron use --global in the same HERMES_HOME as Hermes. Confirm discovery with hermes skills list; cron must attach the skill and an absolute workdir.' },
   { id: 'qoder', name: 'Qoder', invocation: '/apphx', projectDirectory: '.qoder/skills', globalDirectory: '~/.qoder/skills', source: 'https://docs.qoder.com/cli/Skills', instructions: 'Use /apphx manually or let the model auto-trigger the skill. Run /skills reload in a running session to refresh discovery. User-level skills override project-level skills with the same name.' },
-  { id: 'oh-my-pi', name: 'Oh My Pi', invocation: '/skill:apphx', projectDirectory: '.omp/skills', globalDirectory: '~/.omp/agent/skills', source: 'https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md', instructions: 'Use /skill:apphx. Skills are discovered one level under skills/ with SKILL.md; description frontmatter is required by the native .omp provider. Restart the session if discovery has not refreshed.' },
+  { id: 'oh-my-pi', name: 'Oh My Pi', invocation: '/skill:apphx', projectDirectory: '.omp/skills', globalDirectory: '~/.omp/profiles/<name>/agent/skills when OMP_PROFILE/PI_PROFILE selects a profile, else ~/.omp/agent/skills', source: 'https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md', instructions: 'Use /skill:apphx. Skills are discovered one level under skills/ with SKILL.md; description frontmatter is required by the native .omp provider. Restart the session if discovery has not refreshed.' },
   { id: 'dimagent', name: 'DimAgent', invocation: '/skill:apphx', projectDirectory: '.dimcode/skills', globalDirectory: '~/.dimcode/v2/skills', source: 'https://github.com/daguanren21/apple-app-factory', instructions: 'Use /skill:apphx or describe the requirement to trigger the apphx skill. Restart the session after installation so the skill is discovered.' },
 ].map(host => Object.freeze(host)));
 
@@ -144,11 +144,26 @@ function location(id: string, options: IntegrationOptions): Location {
       case 'claude': directory = join(environmentDirectory('CLAUDE_CONFIG_DIR', join(homedir(), '.claude')), 'skills'); break;
       case 'gemini': directory = join(environmentDirectory('GEMINI_CLI_HOME', homedir()), '.gemini', 'skills'); break;
       case 'pi': directory = join(environmentDirectory('PI_CODING_AGENT_DIR', join(homedir(), '.pi', 'agent')), 'skills'); break;
+      case 'oh-my-pi': {
+        // Oh My Pi resolves its global skill root from the selected profile and
+        // its agent directory; install where the host reads or reject loudly.
+        const omp = process.env.OMP_PROFILE?.trim();
+        const pi = process.env.PI_PROFILE?.trim();
+        const selected = new Set([omp, pi].filter((value): value is string => Boolean(value)));
+        if (selected.size > 1) throw new Error(`OMP_PROFILE (${JSON.stringify(omp)}) and PI_PROFILE (${JSON.stringify(pi)}) select different profiles; unset one before a global install`);
+        const profile = [...selected][0];
+        if (profile) {
+          if (!/^[a-zA-Z0-9._-]+$/.test(profile)) throw new Error(`Oh My Pi profile ${JSON.stringify(profile)} is not a usable profile name; use only letters, digits, '.', '_' or '-', or unset OMP_PROFILE/PI_PROFILE`);
+          directory = join(homedir(), '.omp', 'profiles', profile, 'agent', 'skills');
+        } else {
+          directory = join(homedir(), '.omp', 'agent', 'skills');
+        }
+        break;
+      }
       case 'opencode': directory = join(environmentDirectory('XDG_CONFIG_HOME', join(homedir(), '.config')), 'opencode', 'skills'); break;
       case 'deepseek': directory = join(environmentDirectory('DSH_HOME', join(homedir(), '.dsh')), 'skills'); break;
       case 'hermes': directory = join(environmentDirectory('HERMES_HOME', join(homedir(), '.hermes')), 'skills'); break;
       case 'qoder': directory = join(homedir(), '.qoder', 'skills'); break;
-      case 'oh-my-pi': directory = join(homedir(), '.omp', 'agent', 'skills'); break;
       case 'dimagent': directory = join(homedir(), '.dimcode', 'v2', 'skills'); break;
       default: directory = join(homedir(), host.projectDirectory);
     }
