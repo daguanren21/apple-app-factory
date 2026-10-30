@@ -202,7 +202,8 @@ for (const mutation of ['source', 'dependencies', 'screenshots']) {
     const rejected = completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job));
     assert.equal(rejected.stage, 'build');
     assert.equal(rejected.turn, null);
-    assert.equal(rejected.review, null);
+    assert.ok(rejected.review, 'the host review is preserved so the repair handoff keeps the submitted verdict');
+    assert.equal(rejected.review.approved, true);
     assert.equal(rejected.verifiedDigest, null);
     assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)), /Stale/);
   });
