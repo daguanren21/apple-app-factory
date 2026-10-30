@@ -102,6 +102,7 @@ export type NotifyEmail = z.infer<typeof NotifyEmailSchema>;
 export const ConfigSchema = z.strictObject({
   configPath: text.optional(), stateDir: text, workspaceRoot: text,
   allowLocalExecution: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
+  autopilot: z.boolean().optional(),
   executionEnv: z.array(text.regex(/^[A-Z][A-Z0-9_]*$/).refine(value => !/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value), 'Publisher credentials must not be passed to host or verification tools')).default([]),
   isolation: z.strictObject({ mode: z.literal('macos-sandbox'), readOnlyPaths: z.array(text).default([]), network: z.enum(['deny', 'allow']).default('deny') }).optional(),
   timeoutMs: positive.default(900000), maxAttempts: positive.int().default(3), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
@@ -120,6 +121,7 @@ export const ConfigSchema = z.strictObject({
 });
 export type Config = z.infer<typeof ConfigSchema>;
 export function validateJobConfig(spec: Spec, config: Config): void {
+  if (config.autopilot === true && !config.allowLocalExecution) throw new Error('autopilot requires allowLocalExecution=true: the owner must pre-authorize deterministic local execution before unattended mode');
   const targets: Record<Platform, readonly Config['packageTarget'][]> = { ios: ['simulator', 'ipa'], android: ['apk', 'aab'], macos: ['app', 'dmg'] };
   if (!targets[spec.platform].includes(config.packageTarget)) throw new Error(`packageTarget=${config.packageTarget} does not match platform=${spec.platform}`);
   if (spec.channel === 'google-play' && config.packageTarget !== 'aab') throw new Error('Google Play requires packageTarget=aab');

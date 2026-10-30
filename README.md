@@ -18,6 +18,8 @@ apphx init --framework android-java --platform android --package-target apk
 $apphx 接管我的 Java Android 项目，完成真实验收，只做本地构建，不上传。
 ```
 
+无人值守（owner 预授权）：`apphx init --autopilot --framework flutter --platform ios --package-target simulator` 会在 `factory.json` 写入 `"autopilot": true` 与 `"allowLocalExecution": true`，宿主 agent 在 owner 一次性授权下自动跑完 研究→构建→验证→评审→打包，全程不再提问；这不等于可伪造证据或绕过验收，诚实降级仍强制生效。
+
 其他宿主先用 `apphx hosts` 查看安装方式；通常为 `apphx install <host>`：
 
 | 宿主 | 启动工作流 | 直接触发混淆 |

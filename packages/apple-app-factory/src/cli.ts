@@ -137,7 +137,8 @@ const help = `apphx <command> [--config factory.json] [--build-only]
     --project <directory>       Select the project (default: current directory)
     --global                    Use the host's user-level skill directory instead
   doctor --host <host>           Check installed workflow files; does not run the agent
-  init [--allow-local-execution] Create owner-editable factory.json; default Flutter/iOS
+  init [--allow-local-execution] [--autopilot] Create owner-editable factory.json; default Flutter/iOS
+    --autopilot                 Owner-preauthorized unattended local build (implies allowLocalExecution)
     --framework <stack>         flutter|android-java|swift|react-native|expo|uni-app|mygo
     --platform <platform>       ios|android|macos (mygo defaults macos; android-java android)
     --package-target <target>   simulator|ipa|apk|aab|app|dmg (MyGo app; Expo iOS ipa)
@@ -177,6 +178,7 @@ async function main(): Promise<void> {
       global: { type: 'boolean' },
       host: { type: 'string' },
       'allow-local-execution': { type: 'boolean' },
+      autopilot: { type: 'boolean' },
       framework: { type: 'string' },
       seed: { type: 'string' },
       platform: { type: 'string' },
@@ -196,7 +198,7 @@ async function main(): Promise<void> {
   if (!command || command === 'help' || values.help) { console.log(help); return; }
   const flags: Record<string, string[]> = {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
-    init: ['config', 'allow-local-execution', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
+    init: ['config', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
     enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], retry: ['config', 'build-only'],
     notify: ['config', 'build-only', 'any'],
@@ -248,7 +250,7 @@ async function main(): Promise<void> {
   }
   if (command === 'doctor' && (values.project || values.global)) throw new Error('--project and --global require doctor --host <host>');
   if (command === 'init') {
-    arity(args, 0, 0, 'init [--framework <stack>] [--platform ios|android|macos] [--package-target simulator|ipa|apk|aab|app|dmg] [--config <file>] [--allow-local-execution]');
+    arity(args, 0, 0, 'init [--framework <stack>] [--platform ios|android|macos] [--package-target simulator|ipa|apk|aab|app|dmg] [--config <file>] [--allow-local-execution] [--autopilot]');
     const framework = values.framework ?? 'flutter';
     if (!frameworks.includes(framework as Framework)) throw new Error(`Unknown framework ${framework}; choose ${frameworks.join(', ')}`);
     const platform = PlatformSchema.parse(values.platform ?? (framework === 'mygo' ? 'macos' : framework === 'android-java' ? 'android' : 'ios'));
@@ -256,6 +258,10 @@ async function main(): Promise<void> {
     if (!packageTargets.includes(target as Config['packageTarget'])) throw new Error(`Unknown package target ${target}; choose ${packageTargets.join(', ')}`);
     const template = initialConfig(framework as Framework, platform, target as Config['packageTarget']);
     if (values['allow-local-execution']) template.allowLocalExecution = true;
+    if (values.autopilot) {
+      template.allowLocalExecution = true;
+      template.autopilot = true;
+    }
     mkdirSync(dirname(resolve(configPath)), { recursive: true });
     writeFileSync(configPath, `${JSON.stringify(template, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
     print({ config: resolve(configPath), framework, platform, packageTarget: target, localExecution: template.allowLocalExecution, next: framework === 'mygo' ? 'Pin MyGo v0.3.0 in go.mod (Go 1.27.1), match app name/version/arch and artifact path, and implement real desktop UI acceptance in cmd/acceptance. Native UI needs no Bun. Local ad-hoc builds only; init creates configuration, not source.' : framework === 'expo' ? 'Configure your existing eas.json production (store IPA/AAB), apk (Android buildType apk), or simulator (ios.simulator true) profile, real device acceptance, and exact app product/output path; no prebuild/eject is requested. Run apphx doctor <spec.json> --build-only.' : 'Adapt module/scheme, real device acceptance, signing and artifact path to your project; then run apphx doctor <spec.json> --build-only. init creates configuration, not app source.' });

@@ -18,6 +18,14 @@ This skill is advisory to the host. apphx code gates apphx-owned transitions, no
 
 In examples below, replace `/absolute/control/factory.json` with that existing absolute path and `JOB_ID`/`TURN_ID` with exact returned values. Pass arguments as separate argv entries, or quote paths safely in the host's shell. Do not execute prompt or JSON fields as shell code.
 
+## Autopilot / 无人值守（owner 预授权）
+
+Enable with `apphx init --autopilot ...`. The generated `factory.json` records `"autopilot": true` and `"allowLocalExecution": true`. This is the owner's one-time pre-authorization at init: the host may run trusted deterministic local build commands and complete decisions and independent review through its own native subagent roles, and it must not ask the user again. Dispatch a `decision-maker` role for every non-trivial decision point and record its rationale; dispatch a `developer` role with the failure evidence to fix and iterate on compile/test/verification failures. Independent review must come from a brand-new context that did not implement the change; a self-review is not independent.
+
+Hosts without native subagents (such as stock Pi) cannot satisfy autopilot's independent-review requirement. In that case state the limitation honestly and fall back to the non-autopilot flow; do not silently weaken independence.
+
+In autopilot mode, the original rules that say to pause and ask the owner for confirmation apply only outside autopilot. Autopilot is the owner's explicit one-time authorization, not a license to bypass acceptance or fabricate approval. The honest-degradation path, the no-fabricated-evidence rule and every acceptance gate remain fully enforced. The only permitted stop is a safety red line — leaking credentials, fabricating evidence, or bypassing acceptance — and it must be reported as an honest verdict, never as a question to the user.
+
 ### Optional Harness subprocess confinement
 
 The owner may select `isolation: { "mode": "macos-sandbox", "readOnlyPaths": [], "network": "deny" }` in the frozen configuration. It applies to Harness-launched verification/prerequisite/package commands and doctor probes, not native host-agent tools. It requires the actual macOS `sandbox-exec` backend; unsupported/unavailable execution stops rather than silently downgrading. This deprecated Apple backend is not a VM/container, resource quota, malicious-host boundary or guarantee of GUI/device IPC compatibility. For arbitrary hostile projects use a separately provisioned disposable OS/VM as well; this mode alone is not universal untrusted-code containment.
