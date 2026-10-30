@@ -52,6 +52,7 @@ export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optiona
 export const ConfigSchema = z.strictObject({
   configPath: text.optional(), stateDir: text, workspaceRoot: text,
   allowLocalExecution: z.boolean().default(false), allowSubmit: z.boolean().default(false), allowRelease: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
+  autopilot: z.boolean().optional(),
   executionEnv: z.array(text.regex(/^[A-Z][A-Z0-9_]*$/).refine(value => !/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value), 'Publisher credentials must not be passed to host or verification tools')).default([]),
   timeoutMs: positive.default(900000), maxAttempts: positive.int().default(3), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
   retryDelayMs: positive.default(30000), pollMs: positive.default(300000),
@@ -68,6 +69,7 @@ export const ConfigSchema = z.strictObject({
 });
 export type Config = z.infer<typeof ConfigSchema>;
 export function validateJobConfig(spec: Spec, config: Config): void {
+  if (config.autopilot === true && !config.allowLocalExecution) throw new Error('autopilot requires allowLocalExecution=true: the owner must pre-authorize deterministic local execution before unattended mode');
   const iosTarget = config.packageTarget === 'simulator' || config.packageTarget === 'ipa';
   if ((spec.platform === 'ios') !== iosTarget) throw new Error(`packageTarget=${config.packageTarget} does not match platform=${spec.platform}`);
   if (spec.channel === 'google-play' && config.packageTarget !== 'aab') throw new Error('Google Play requires packageTarget=aab');
