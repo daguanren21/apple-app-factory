@@ -1,5 +1,11 @@
 # apphx
 
+## 2.1.0
+
+### Minor Changes
+
+- Add an installable `apphx-obfuscator` skill alongside `apphx`: every host gains a direct trigger (`/apphx-obfuscator`, `$apphx-obfuscator`, `/skill:apphx-obfuscator`) for the bundled deterministic obfuscator without enqueuing a job. `apphx install/update/uninstall <host>` and `doctor --host` now manage and report both skills.
+
 ## 2.0.1
 
 ### Patch Changes
