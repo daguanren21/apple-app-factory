@@ -93,6 +93,10 @@ test('a killed worker restarts without replay until its orphan group is retired'
     store.close();
   `);
   await until(() => existsSync(ready));
+  await until(() => {
+    const pending = store.get(job.id);
+    return pending.groups.length > 0 && pending.commands[pending.groups[0]] !== undefined;
+  });
   const saved = store.get(job.id);
   const [pid] = saved.groups;
   const metadata = saved.commands[pid];

@@ -216,6 +216,10 @@ test('a restarted step drains a distant-deadline TERM-resistant orphan before un
     });
   `);
   await until(() => existsSync(ready));
+  await until(() => {
+    const pending = store.get(job.id);
+    return pending.groups.length > 0 && pending.commands[pending.groups[0]] !== undefined;
+  });
   const owned = store.get(job.id), [pid] = owned.groups;
   f.groups.set(pid, owned.commands[pid].identity);
   previous.child.kill('SIGKILL');
