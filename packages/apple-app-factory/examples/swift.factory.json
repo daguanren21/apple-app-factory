@@ -4,15 +4,70 @@
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "simulator",
-  "executionEnv": ["IOS_DEVICE_ID"],
+  "obfuscation": {
+    "options": {
+      "code": {
+        "removeComments": true
+      }
+    }
+  },
+  "executionEnv": [
+    "IOS_DEVICE_ID"
+  ],
   "verification": {
-    "prerequisites": [["xcodebuild", "-version"]],
-    "checks": [["xcodebuild", "-project", "App.xcodeproj", "-scheme", "App", "build-for-testing", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", "build/DerivedData"]],
-    "runtime": [["xcodebuild", "-project", "App.xcodeproj", "-scheme", "App", "test", "-destination", "id=${IOS_DEVICE_ID}", "-derivedDataPath", "build/DerivedData"]]
+    "prerequisites": [
+      [
+        "xcodebuild",
+        "-version"
+      ]
+    ],
+    "checks": [
+      [
+        "xcodebuild",
+        "-project",
+        "App.xcodeproj",
+        "-scheme",
+        "App",
+        "build-for-testing",
+        "-destination",
+        "generic/platform=iOS Simulator",
+        "-derivedDataPath",
+        "build/DerivedData"
+      ]
+    ],
+    "runtime": [
+      [
+        "xcodebuild",
+        "-project",
+        "App.xcodeproj",
+        "-scheme",
+        "App",
+        "test",
+        "-destination",
+        "id=${IOS_DEVICE_ID}",
+        "-derivedDataPath",
+        "build/DerivedData"
+      ]
+    ]
   },
   "packaging": {
     "provider": "local",
-    "commands": [["xcodebuild", "-project", "App.xcodeproj", "-scheme", "App", "build", "-configuration", "Debug", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", "build/DerivedData"]],
+    "commands": [
+      [
+        "xcodebuild",
+        "-project",
+        "App.xcodeproj",
+        "-scheme",
+        "App",
+        "build",
+        "-configuration",
+        "Debug",
+        "-destination",
+        "generic/platform=iOS Simulator",
+        "-derivedDataPath",
+        "build/DerivedData"
+      ]
+    ],
     "artifactPath": "build/DerivedData/Build/Products/Debug-iphonesimulator/App.app"
   }
 }

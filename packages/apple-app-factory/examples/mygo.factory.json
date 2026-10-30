@@ -4,15 +4,65 @@
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "app",
+  "obfuscation": {
+    "options": {
+      "code": {
+        "removeComments": true
+      }
+    }
+  },
   "executionEnv": [],
   "verification": {
-    "prerequisites": [["go", "version"], ["go", "tool", "mygo", "version"]],
-    "checks": [["go", "vet", "./..."], ["go", "test", "./..."]],
-    "runtime": [["go", "run", "./cmd/acceptance"]]
+    "prerequisites": [
+      [
+        "go",
+        "version"
+      ],
+      [
+        "go",
+        "tool",
+        "mygo",
+        "version"
+      ]
+    ],
+    "checks": [
+      [
+        "go",
+        "vet",
+        "./..."
+      ],
+      [
+        "go",
+        "test",
+        "./..."
+      ]
+    ],
+    "runtime": [
+      [
+        "go",
+        "run",
+        "./cmd/acceptance"
+      ]
+    ]
   },
   "packaging": {
     "provider": "local",
-    "commands": [["go", "tool", "mygo", "build", "-platform", "darwin/arm64", "-sign", "-", "-skip-notarize", "-skip-dmg", "-o", "build"]],
+    "commands": [
+      [
+        "go",
+        "tool",
+        "mygo",
+        "build",
+        "-platform",
+        "darwin/arm64",
+        "-sign",
+        "-",
+        "-skip-notarize",
+        "-skip-dmg",
+        "-o",
+        "build"
+      ]
+    ],
     "artifactPath": "build/darwin-arm64/MyGo App.app"
   }
 }

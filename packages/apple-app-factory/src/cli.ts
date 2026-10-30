@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { run, executionEnvironment } from './process.js';
 
 import { runStep } from './scheduler.js';
-import { nextTurn, completeTurn, abandonTurn } from './runner.js';
+import { nextTurn, nextQueueTurn, completeTurn, abandonTurn } from './runner.js';
 import { hosts, installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from './integrations.js';
 import { submitRequirement, scanInbox } from './inbox.js';
 import { MAX_INPUT_BYTES, parseRequirement, readInputFile } from './requirements.js';
@@ -21,11 +21,12 @@ import { assertProject, doctorCommands } from './project-profiles.js';
 import { closestOwnedGoWorkspace } from './go-dependencies.js';
 import { validateMyGoCommand } from './mygo-build.js';
 import { invalidateVerification, verificationConfigChanged } from './proof.js';
+import { notifyJob, notifyBuiltJobs } from './notify.js';
 import { prepareIsolatedCommand, removeConfinedPath, type IsolatedCommand } from './isolation.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2));
-const view = (job: Job) => ({ id: job.id, product: job.spec.id, framework: job.spec.framework, platform: job.spec.platform, channel: job.spec.channel, version: job.spec.version, stage: job.stage, status: job.status, hostTurns: job.hostTurns, attempts: job.attempts, workspace: job.workspace, artifact: job.artifact ?? null, error: job.error ?? null });
+const view = (job: Job) => ({ id: job.id, product: job.spec.id, framework: job.spec.framework, platform: job.spec.platform, channel: job.spec.channel, version: job.spec.version, priority: job.spec.priority, stage: job.stage, status: job.status, hostTurns: job.hostTurns, attempts: job.attempts, workspace: job.workspace, artifact: job.artifact ?? null, error: job.error ?? null });
 
 function inputJSON(path: string): unknown {
   const bytes = path === '-' ? readFileSync(0) : readInputFile(path);
@@ -142,7 +143,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
     --package-target <target>   simulator|ipa|apk|aab|app|dmg (MyGo app; Expo iOS ipa)
   doctor [spec.json]            Check configured prerequisites and optional stack tools
   enqueue <spec.json|->          Persist requirements and return a task ID
-  next <id>                     Resume a host turn or show the next deterministic action
+  next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
   step <id>                     Execute one obfuscation, verification or packaging stage
@@ -153,6 +154,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   scan [--observe]              Validate or ingest inbox files; never start an agent
   inbox                         Read durable intake results
   reconcile-intake <id> <json|-> Restore a legacy request identity from original input
+  notify [<id>|--any]          Email the author for built, gate-passed tasks (--any sweeps all unnotified)
   remote <command>              Call an installed Mac CLI over SSH (build-only)
   obfuscator <project>          Run the bundled deterministic obfuscator on a project copy
     --config <file>             Obfuscator options as JSON (required)
@@ -180,6 +182,7 @@ async function main(): Promise<void> {
       platform: { type: 'string' },
       'package-target': { type: 'string' },
       observe: { type: 'boolean' },
+      any: { type: 'boolean' },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -194,8 +197,9 @@ async function main(): Promise<void> {
   const flags: Record<string, string[]> = {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
     init: ['config', 'allow-local-execution', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
-    enqueue: ['config', 'build-only'], next: ['config', 'build-only'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
+    enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], retry: ['config', 'build-only'],
+    notify: ['config', 'build-only', 'any'],
     submit: ['config', 'build-only'], scan: ['config', 'build-only', 'observe'], inbox: ['config', 'build-only'],
     'reconcile-intake': ['config', 'build-only'],
     remote: ['config', 'observe'],
@@ -229,14 +233,17 @@ async function main(): Promise<void> {
   if (command === 'install' || command === 'update' || command === 'uninstall') {
     arity(args, 1, 1, `${command} <host> [--project <directory> | --global]`);
     const operation = command === 'install' ? installIntegration : command === 'update' ? updateIntegration : uninstallIntegration;
-    print(operation(args[0], scope));
+    operation(args[0], scope);
+    print(['apphx', 'apphx-obfuscator'].map(skill => inspectIntegration(args[0], scope, skill as 'apphx' | 'apphx-obfuscator')));
     return;
   }
   if (command === 'doctor' && values.host) {
     arity(args, 0, 0, 'doctor --host <host> [--project <directory> | --global]');
-    const result = inspectIntegration(values.host, scope);
-    print(result);
-    if (!result.installed) process.exitCode = 2;
+    const host = values.host;
+    const skills = ['apphx', 'apphx-obfuscator'] as const;
+    const results = skills.map(skill => inspectIntegration(host, scope, skill));
+    print(results);
+    if (!results[0]!.installed) process.exitCode = 2;
     return;
   }
   if (command === 'doctor' && (values.project || values.global)) throw new Error('--project and --global require doctor --host <host>');
@@ -335,10 +342,15 @@ async function main(): Promise<void> {
       arity(args, 1, 1, 'events <id>');
       print(store.events(args[0]));
     } else if (command === 'next') {
-      arity(args, 1, 1, 'next <id>');
-      const result = await nextTurn(store, args[0], { buildOnly });
-      print(result);
-      if (result.job.status === 'blocked' || result.job.status === 'failed') process.exitCode = 2;
+      if (values.any) {
+        arity(args, 0, 0, 'next --any');
+        print(await nextQueueTurn(store, { buildOnly }));
+      } else {
+        arity(args, 1, 1, 'next <id>');
+        const result = await nextTurn(store, args[0], { buildOnly });
+        print(result);
+        if (result.job.status === 'blocked' || result.job.status === 'failed') process.exitCode = 2;
+      }
     } else if (command === 'complete') {
       arity(args, 2, 3, 'complete <id> <turn-id> [result.json|-]');
       outcome(await completeTurn(store, args[0], args[1], args[2] ? inputJSON(args[2]) : undefined, { buildOnly }));
@@ -357,6 +369,16 @@ async function main(): Promise<void> {
       arity(args, 2, 2, 'reconcile-intake <id> <original-spec.json|->');
       const { spec, baseJobId } = parseRequirement(inputJSON(args[1]));
       print(view(store.reconcileIntake(args[0], spec, baseJobId)));
+    } else if (command === 'notify') {
+      if (values.any) {
+        arity(args, 0, 0, 'notify --any');
+        const outcomes = await notifyBuiltJobs(store, config);
+        print(outcomes);
+        if (outcomes.some(outcome => outcome.error)) process.exitCode = 2;
+      } else {
+        arity(args, 1, 1, 'notify <id>');
+        print(await notifyJob(store, config, args[0]));
+      }
     } else if (command === 'retry') {
       arity(args, 1, 1, 'retry <id>');
       print(view(store.transition(args[0], job => {

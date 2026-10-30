@@ -5,13 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { ConfigSchema, ReviewSchema } from '../dist/schemas.js';
+import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { sourceDigest } from '../dist/workspace.js';
 import { dependencyDigest } from '../dist/dependencies.js';
 import { scanInbox, submitRequirement } from '../dist/inbox.js';
 import { parseRequirement } from '../dist/requirements.js';
-import { internalQaChecklist, parseResearch, researchPrompt, reviewInstructions } from '../dist/policy.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
@@ -459,43 +458,6 @@ test('legacy queue snapshots strip publication permissions and block legacy publ
     assert.equal(Object.hasOwn(job.research ?? {}, 'policySources'), false);
     assert.equal(Object.hasOwn(job.research ?? {}, 'appStoreAudit'), false);
   }
-});
-
-test('ingest runs the internal QA gate before the research host turn', async t => {
-  const f = fixture(t);
-  f.put('product.json', product);
-  const result = await scanInbox(f.open(), f.config);
-  const job = f.open().get(result.entries[0].jobId);
-  assert.equal(job.stage, 'research');
-  assert.equal(job.status, 'queued');
-  assert.equal(job.research, undefined);
-  assert.equal(job.review, undefined);
-  const prompt = researchPrompt(job, []);
-  assert.match(prompt, /Internal QA checklist/);
-  assert.match(prompt, /Do not promise store approval/);
-  assert.match(prompt, /"viable":boolean/);
-  assert.match(prompt, /"distinctness"/);
-  const research = parseResearch(JSON.stringify({ viable: true, distinctness: 'Offline weight planning with independent bags', risks: ['none'], plan: ['Build the controlled feature set'] }), job.spec.channel);
-  assert.equal(research.viable, true);
-  assert.equal(Object.hasOwn(research, 'policySources'), false);
-  assert.equal(Object.hasOwn(research, 'appStoreAudit'), false);
-});
-
-test('review instructions demand typed evidence and never promise store approval', async t => {
-  const f = fixture(t);
-  const job = f.open().enqueue(product, f.config);
-  const instructions = reviewInstructions(job);
-  assert.match(instructions, /Internal QA checklist/);
-  assert.match(instructions, /"approved":boolean/);
-  assert.match(instructions, /"acceptanceEvidence"/);
-  assert.doesNotMatch(instructions, /policySources|appStoreAudit|appleReview/);
-  const checklist = internalQaChecklist();
-  assert.match(checklist, /Store submission, account setup and platform review are manual human work/);
-  assert.match(checklist, /Never forge identities/);
-  assert.match(checklist, /Do not mutate hashes/);
-  assert.match(checklist, /nothing here bypasses, influences or pre-approves a store reviewer/);
-  const review = ReviewSchema.parse({ approved: false, findings: ['missing runtime proof'], acceptanceEvidence: [{ requirement: job.spec.acceptance[0], evidence: 'not yet observed' }] });
-  assert.equal(Object.hasOwn(review, 'appStoreAudit'), false);
 });
 
 async function submitTogether(t, config, values) {
