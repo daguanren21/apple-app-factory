@@ -33,3 +33,4 @@ dist/
 # local verification skill is maintained in-repo; installed workflow copies are host state
 .dimcode/skills/apphx
 .dimcode/skills/apphx-obfuscator
+.dimcode/skills/verify-apphx

@@ -14,12 +14,12 @@ Each verification run gets its own control project. Never drive the real control
 ```sh
 export RUN_ROOT=$(mktemp -d /tmp/verify-apphx-XXXX)
 export APPHX_CONFIG="$RUN_ROOT/factory.json"
-cd /Users/liyanchao/code/open-source/apple-app-factory   # repo checkout; CLI comes from the repo build
+cd /path/to/apple-app-factory                      # this repo checkout; CLI comes from the repo build
 corepack pnpm --filter apphx build                       # dist used by tests; CLI may be run via node dist/cli.js
 apphx init --framework swift --platform ios --package-target simulator --autopilot --config "$APPHX_CONFIG"
 ```
 
-- Ready means: `apphx --version` prints 2.3.0+, `apphx doctor --host dimagent` reports every skill `installed`, and `node -v` satisfies `^22.23.4 || ^24.22.1 || >=26.12.1`.
+- Ready means: `apphx --version` prints 2.3.0+, `apphx doctor --host <your-host>` (host name from `apphx hosts`, e.g. dimagent) reports every skill `installed`, and `node -v` satisfies `^22.23.4 || ^24.22.1 || >=26.12.1`.
 - Teardown: `rm -rf "$RUN_ROOT"` plus any job dirs it created. Evidence (a `PROOF.md` and JSON outputs) must be copied out of `$RUN_ROOT` to `results/verify-apphx-<timestamp>/` **before** teardown; cleanup must not delete evidence.
 
 ## Doctor
@@ -28,7 +28,7 @@ One read-only check before driving anything:
 
 ```sh
 apphx --version
-apphx doctor --host dimagent            # all skills: installed
+apphx doctor --host <your-host>         # all skills: installed
 node -v                                 # engines range above
 apphx status                            # lists task IDs; verify no active task is claimed by this run
 ```
