@@ -1,5 +1,13 @@
 # apphx
 
+## 2.2.0
+
+### Minor Changes
+
+- Add `apphx init --autopilot`: owner-preauthorized unattended local builds. The generated factory records `autopilot: true` plus `allowLocalExecution: true`, and every host turn prompt instructs the host to never ask the user — non-trivial decisions go to a decision-maker sub-context, failures go to a developer sub-context that fixes and iterates, and independent review must run in a brand-new sub-context. Honest-degradation and no-fabricated-evidence rules stay enforced; the only permitted stop is a safety red line, reported as a verdict instead of a question.
+
+- Add a built-in `ui-designer` build role: with no design reference it produces `docs/ui-design.md` from a bundled design guide, and with a `designRef` URL it reproduces the referenced design faithfully; the `developer` role then implements against the design spec and `docs/architecture.md`, and review checks the implementation against `docs/ui-design.md`.
+
 ## 2.1.0
 
 ### Minor Changes
