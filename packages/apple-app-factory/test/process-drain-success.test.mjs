@@ -46,14 +46,13 @@ test('a successful command resolves within the success drain grace when a detach
 test('a successful command still resolves success when the detached descendant exhausts the success drain grace', { ...posix, timeout: 45000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-drain-success-'));
   const command = successDrainCommand(root, { keepAlive: true });
-  let grandchild;
   t.after(() => {
-    if (grandchild) { try { process.kill(grandchild, 'SIGKILL'); } catch {} }
+    const pid = command.grandchildPid();
+    if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
     rmSync(root, { recursive: true, force: true });
   });
   const started = Date.now();
   const result = await run(command.argv, { timeoutMs: 60000 });
-  grandchild = command.grandchildPid();
   assert.equal(result.code, 0);
   assert.match(result.stdout, /leader-complete/);
   assert.ok(Date.now() - started >= 30000, 'the success drain grace must have been exhausted before resolving');

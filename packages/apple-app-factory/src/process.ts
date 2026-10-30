@@ -199,7 +199,13 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
         finish();
       });
     };
-    const onAbort = (): void => { failure ??= new Error('Command interrupted; its task remains resumable'); cleanup(); };
+    const onAbort = (): void => {
+      failure ??= new Error('Command interrupted; its task remains resumable');
+      cleanup();
+      if (cleanupComplete && !closed && !cleanupFailed && !drainResolved) {
+        onDrainExpired(child.pid ?? 0);
+      }
+    };
     let timer: NodeJS.Timeout | undefined, drainTimer: NodeJS.Timeout | undefined;
     const onDeadline = (): void => {
       const remaining = deadline - Date.now();
