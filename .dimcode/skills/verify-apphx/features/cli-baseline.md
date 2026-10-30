@@ -12,13 +12,13 @@
 
 ```sh
 apphx --version                          # 输出 2.3.0 及以上
-apphx --help                             # 必须包含 init/enqueue/next/complete/step/report/obfuscator 与 --autopilot、--collect
-apphx doctor --host dimagent             # 每个 skill 行 status 为 installed
-node -v                                  # 属于 ^22.23.4 || ^24.22.1 || >=26.12.1
+apphx --help                             # 必须包含 init/enqueue/next/complete/step/report/obfuscator 与 --autopilot（注意：--collect/--out 是 report 旗标，目前不出现在 --help 文本里，以 `apphx report` 实际行为为准）
+apphx doctor --host dimagent             # 输出 apphx 与 apphx-obfuscator 两行；单次只查一个作用域（默认 project，加 --global 查全局），以每行 status 为准
+node -v                                  # 属于 ^22.23.4 || ^24.22.1 || >=26.12.1（24.x 不含 25.x）
 ```
 
 ## Gotchas
 
-- `doctor --host dimagent` 会检查 project 与 global 两个作用域；只装 global 时会报 project 作用域 missing，需在项目里补 `apphx install dimagent`（产生 `.dimcode/skills/`，本地状态，不应进版本库）。
+- `doctor --host dimagent` 单次只查一个作用域（默认 project；`--global` 查全局）。只装 global 时默认作用域会报 project missing，需在项目里补 `apphx install dimagent`（产生 `.dimcode/skills/`，本地状态，不应进版本库）；退出码只由第一个 skill（apphx）的 installed 决定。
 - 非交互 shell 里 nvm 可能不在 PATH；先 `source ~/.nvm/nvm.sh`。
 - Node 老版本（如 24.14.0）低于安全补丁线，engines 收紧后部分工具会拒绝；用 `nvm use 24.22.1`（或 22.23.4 / 26.12.1）。

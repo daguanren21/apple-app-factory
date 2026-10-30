@@ -23,6 +23,6 @@ apphx complete "$JOB_ID" "$TURN_ID" --config factory.json --build-only
 ## Gotchas
 
 - `init` 拒绝覆盖已有 factory.json；`--autopilot` 会同时写入 `allowLocalExecution: true` 与 `autopilot: true`。
-- 同一产品 id+平台+渠道+版本重复入队会被拒（“submit a new version”）；终态作业续跑 = 版本 +1 + `project.sourceDir` 导入已验证源码。
+- 同一产品 id+平台+渠道+版本重复入队会被拒：需求未改时是 “is already queued; retry its task or use a new product version”，需求被改写时是 “submit a new version instead of editing its task”。终态作业续跑有两条互斥路径：`baseJobId`（从前任作业工作区导入已验证源码，iOS App Store 场景可自动选最近完成前任）或 `project.sourceDir`（从外部目录导入），二者不能同时用；版本号由 owner 提交（身份字段，不自动递增）。
 - `next` 返回 `wait` 表示有到期时间或阻塞，按 status 的 nextAt 等，不要在循环里忙轮询。
 - `complete` 的 verdict 必须逐字覆盖全部冻结验收；评审证据变了会拒绝交接。

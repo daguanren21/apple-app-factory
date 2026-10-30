@@ -2,7 +2,7 @@
 
 ## Sub-features
 
-`--autopilot` 一次预授权、AUTOPILOT 轮次指令（不提问/决策者/失败派工/全新上下文评审/卡点自愈/终态重入队）、本地执行授权由 agent 决策者拍板（不向用户弹确认）、ui-designer 双模式（designRef 忠实还原 / 无稿按内置指南产 ui-design.md）。
+`--autopilot` 一次预授权（init 时写入 autopilot:true + allowLocalExecution:true，授权主体是 owner 而非运行时 decision-maker）、AUTOPILOT 轮次指令（不提问/决策者/失败派工/全新上下文评审/卡点自愈/终态重入队）、ui-designer 双模式（designRef 忠实还原 / 无稿按内置指南产 ui-design.md）。
 
 ## How to get to it (user POV)
 
