@@ -78,6 +78,18 @@ test('decide appends single and array entries, keeps existing timestamps and doe
   assert.equal(all.turn, before.turn);
 });
 
+test('concurrent decide processes never lose entries (read+merge inside the write transaction)', async t => {
+  const f = fixture(t);
+  const a = decideCLI(f, f.job.id, { stage: 'build', role: 'decision-maker', rationale: 'first concurrent entry' });
+  const b = decideCLI(f, f.job.id, { stage: 'review', role: 'architect-review', rationale: 'second concurrent entry' });
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.equal(ra.code, 0, ra.stderr);
+  assert.equal(rb.code, 0, rb.stderr);
+  const all = f.store.get(f.job.id);
+  assert.equal(all.decisions.length, 2, `both entries must survive: ${JSON.stringify(all.decisions)}`);
+  assert.deepEqual(all.decisions.map(entry => entry.rationale).sort(), ['first concurrent entry', 'second concurrent entry']);
+});
+
 test('decide rejects an unknown task like status', async t => {
   const f = fixture(t);
   const result = await decideCLI(f, 'missing-id', { role: 'decision-maker', rationale: 'controlled' });

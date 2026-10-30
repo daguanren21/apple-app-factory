@@ -391,9 +391,8 @@ async function main(): Promise<void> {
     } else if (command === 'decide') {
       arity(args, 2, 2, 'decide <id> <json-file|->');
       if (buildOnly) assertDecideBuildOnly(config);
-      const current = store.get(args[0]);
-      const merged = [...current.decisions, ...decisionEntries(inputJSON(args[1]))];
-      print(view(store.update(args[0], { decisions: merged })));
+      const entries = decisionEntries(inputJSON(args[1]));
+      print(view(store.transition(args[0], current => ({ decisions: [...current.decisions, ...entries] }))));
     } else if (command === 'step') {
       arity(args, 1, 1, 'step <id>');
       const controller = new AbortController();
