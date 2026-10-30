@@ -15,7 +15,7 @@ import { hosts, installIntegration, updateIntegration, inspectIntegration, unins
 import { submitRequirement, scanInbox } from './inbox.js';
 import { MAX_INPUT_BYTES, parseRequirement, readInputFile } from './requirements.js';
 import { dispatchRemote } from './remote.js';
-import { FrameworkSchema, PlatformSchema, PackageTargetSchema, toError, validateJobConfig } from './schemas.js';
+import { FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './schemas.js';
 import type { Config, Framework, Job, Platform } from './schemas.js';
 import { assertProject, doctorCommands } from './project-profiles.js';
 import { closestOwnedGoWorkspace } from './go-dependencies.js';
@@ -42,6 +42,22 @@ function arity(args: string[], minimum: number, maximum: number, usage: string):
 function outcome(job: Job): void {
   print(view(job));
   if (job.status === 'blocked' || job.status === 'failed') process.exitCode = 2;
+}
+
+function assertDecideBuildOnly(config: Config): void {
+  const forbidden = ['allowSubmit', 'allowRelease'].filter(key => key in (config as unknown as Record<string, unknown>));
+  if (forbidden.length) {
+    throw Object.assign(new Error(`--build-only cannot decide on a configuration with publication permission (${forbidden.join(', ')}); remove it from the control configuration`), { code: 'SETUP_REQUIRED' });
+  }
+}
+
+function decisionEntries(input: unknown): Array<{ at: number; stage: string; role: string; rationale: string }> {
+  const items = Array.isArray(input) ? input : [input];
+  if (items.length === 0) throw new Error('decide requires at least one decision-log entry');
+  return items.map(item => {
+    const entry = DecisionInputSchema.parse(item);
+    return { at: Date.now(), stage: entry.stage, role: entry.role, rationale: entry.rationale };
+  });
 }
 
 async function probe(argv: string[], config: Config, context?: { cwd: string; env: NodeJS.ProcessEnv; sourceRoot?: string }) {
@@ -148,6 +164,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
+  decide <id> <json-file|->       Append decision-log entries (role, rationale) to a task
   step <id>                     Execute one obfuscation, verification or packaging stage
   status [id]                   Read durable task state as JSON
   events <id>                   Read task transitions and evidence
@@ -204,6 +221,7 @@ async function main(): Promise<void> {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
     init: ['config', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
     enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
+    decide: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], report: ['config', 'build-only', 'out', 'collect'], retry: ['config', 'build-only'],
     notify: ['config', 'build-only', 'any'],
     submit: ['config', 'build-only'], scan: ['config', 'build-only', 'observe'], inbox: ['config', 'build-only'],
@@ -370,6 +388,11 @@ async function main(): Promise<void> {
     } else if (command === 'abandon') {
       arity(args, 2, 2, 'abandon <id> <turn-id>');
       outcome(abandonTurn(store, args[0], args[1], { buildOnly }));
+    } else if (command === 'decide') {
+      arity(args, 2, 2, 'decide <id> <json-file|->');
+      if (buildOnly) assertDecideBuildOnly(config);
+      const entries = decisionEntries(inputJSON(args[1]));
+      print(view(store.transition(args[0], current => ({ decisions: [...current.decisions, ...entries] }))));
     } else if (command === 'step') {
       arity(args, 1, 1, 'step <id>');
       const controller = new AbortController();
