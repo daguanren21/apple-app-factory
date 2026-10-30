@@ -5,31 +5,35 @@ import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
-const skill = 'apphx';
+const skills = ['apphx', 'apphx-obfuscator'] as const;
+type SkillName = (typeof skills)[number];
 const marker = '.apphx-install.json';
 const owner = 'apphx';
-const bundledDirectory = fileURLToPath(new URL('../skills/apphx/', import.meta.url));
+const bundledDirectories: Record<SkillName, string> = {
+  apphx: fileURLToPath(new URL('../skills/apphx/', import.meta.url)),
+  'apphx-obfuscator': fileURLToPath(new URL('../skills/apphx-obfuscator/', import.meta.url)),
+};
 const packageFile = fileURLToPath(new URL('../package.json', import.meta.url));
 
 export const hosts = Object.freeze([
-{ id: 'codex', name: 'Codex', invocation: '$apphx', projectDirectory: '.agents/skills', globalDirectory: '~/.agents/skills', source: 'https://developers.openai.com/codex/skills', instructions: 'Use $apphx in Codex CLI or the IDE extension; /skills lists skills. Restart if discovery has not refreshed.' , delegation: 'Native subagents/agents exist: run design and review roles as parallel or serial fresh contexts. Verify against your installed host version.' },
-  { id: 'claude', name: 'Claude Code', invocation: '/apphx', projectDirectory: '.claude/skills', globalDirectory: '$CLAUDE_CONFIG_DIR/skills (default ~/.claude/skills)', source: 'https://code.claude.com/docs/en/skills', instructions: 'Use /apphx in a local Claude Code session. Start a new session if the skill is not listed. Cloud sessions do not inherit local user skills.' , delegation: 'Native subagents exist: run design and review roles as parallel or serial fresh contexts. Verify against your installed host version.' },
-  { id: 'cursor', name: 'Cursor', invocation: '/apphx', projectDirectory: '.cursor/skills', globalDirectory: '~/.cursor/skills', source: 'https://cursor.com/docs/skills', instructions: 'In Agent chat, type / and select apphx. Restart or reopen the project if necessary. Global installation is local, not a Cloud Agent sync.' , delegation: 'Multi-agent support varies by version: fall back to separate fresh sessions per role when subagents are unavailable.' },
-  { id: 'pi', name: 'Pi', invocation: '/skill:apphx', projectDirectory: '.pi/skills', globalDirectory: '$PI_CODING_AGENT_DIR/skills (default ~/.pi/agent/skills)', source: 'https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md', instructions: 'Grant project trust before using project skills, then /reload and /skill:apphx. Stock Pi has no native subagents: use a separate human-started reviewer session, not a spawned coding-agent CLI.' , delegation: 'Stock Pi has no native subagents: run each role in its own human-started fresh session.' },
-  { id: 'gemini', name: 'Gemini CLI', invocation: 'Use the apphx skill', projectDirectory: '.gemini/skills', globalDirectory: '$GEMINI_CLI_HOME/.gemini/skills (default ~/.gemini/skills)', source: 'https://geminicli.com/docs/cli/skills/', instructions: 'Run /skills reload and /skills list, then ask: Use the apphx skill. Gemini calls activate_skill; approve its consent prompt. This is not a /apphx command.' , delegation: 'No native subagent delegation documented: run roles sequentially in fresh sessions.' },
-  { id: 'opencode', name: 'OpenCode', invocation: 'Use the apphx skill', projectDirectory: '.opencode/skills', globalDirectory: '$XDG_CONFIG_HOME/opencode/skills (default ~/.config/opencode/skills)', source: 'https://opencode.ai/docs/skills/', instructions: 'Ask OpenCode to use apphx; the agent loads it with its native skill({ name: "apphx" }) tool. Skill permissions must permit loading. Restart if necessary; no custom slash command is installed.' , delegation: 'Subagent support varies by version: fall back to separate fresh sessions per role when subagents are unavailable.' },
-  { id: 'deepseek', name: 'DeepSeek Harness', invocation: 'Use the apphx skill', projectDirectory: '.dsh/skills (nearest Git root, otherwise selected project)', globalDirectory: '$DSH_HOME/skills (default ~/.dsh/skills)', source: 'https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/skills', instructions: 'Ask DeepSeek Harness to use apphx; its native skill({ name: "apphx" }) tool loads it. Requires the shipped filesystem skill provider and skill tool, with default roots enabled. Custom provider configurations are not modified.' , delegation: 'The harness supports delegated agents; verify your provider exposes them, else use fresh sessions per role.' },
-  { id: 'hermes', name: 'Hermes Agent', invocation: '/apphx', projectDirectory: '.hermes/skills', globalDirectory: '$HERMES_HOME/skills (default ~/.hermes/skills)', source: 'https://hermes-agent.nousresearch.com/docs/user-guide/features/skills', instructions: 'Use /apphx. Project installation requires a Git root and a separate owner-approved hermes skills trust decision; this installer never grants trust. For non-Git projects or profile-wide cron use --global in the same HERMES_HOME as Hermes. Confirm discovery with hermes skills list; cron must attach the skill and an absolute workdir.' , delegation: 'Native subagents and cron exist: run design and review roles as parallel or serial fresh contexts; the scheduler handles unattended wakes. Verify against your installed host version.' },
-  { id: 'qoder', name: 'Qoder', invocation: '/apphx', projectDirectory: '.qoder/skills', globalDirectory: '~/.qoder/skills', source: 'https://docs.qoder.com/cli/Skills', instructions: 'Use /apphx manually or let the model auto-trigger the skill. Run /skills reload in a running session to refresh discovery. User-level skills override project-level skills with the same name.' , delegation: 'No native subagent delegation documented: run roles sequentially in fresh sessions.' },
-  { id: 'oh-my-pi', name: 'Oh My Pi', invocation: '/skill:apphx', projectDirectory: '.omp/skills', globalDirectory: '~/.omp/agent/skills', source: 'https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md', instructions: 'Use /skill:apphx. Skills are discovered one level under skills/ with SKILL.md; description frontmatter is required by the native .omp provider. Restart the session if discovery has not refreshed.' , delegation: 'IDE-wired agent with extension tools; run roles in separate fresh sessions when subagents are unavailable.' },
-  { id: 'dimagent', name: 'DimAgent', invocation: '/skill:apphx', projectDirectory: '.dimcode/skills', globalDirectory: '~/.dimcode/v2/skills', source: 'https://github.com/daguanren21/apple-app-factory', instructions: 'Use /skill:apphx or describe the requirement to trigger the apphx skill. Restart the session after installation so the skill is discovered.' , delegation: 'Native subagent delegation exists: run design and review roles as parallel or serial fresh contexts. Verify against your installed host version.' },
+{ id: 'codex', name: 'Codex', invocation: '$apphx', projectDirectory: '.agents/skills', globalDirectory: '~/.agents/skills', source: 'https://developers.openai.com/codex/skills', instructions: 'Use $apphx in Codex CLI or the IDE extension; /skills lists skills. Restart if discovery has not refreshed.' , delegation: 'Native subagents/agents exist: run design and review roles as parallel or serial fresh contexts. Verify against your installed host version.' , obfuscatorInvocation: '$apphx-obfuscator' },
+  { id: 'claude', name: 'Claude Code', invocation: '/apphx', projectDirectory: '.claude/skills', globalDirectory: '$CLAUDE_CONFIG_DIR/skills (default ~/.claude/skills)', source: 'https://code.claude.com/docs/en/skills', instructions: 'Use /apphx in a local Claude Code session. Start a new session if the skill is not listed. Cloud sessions do not inherit local user skills.' , delegation: 'Native subagents exist: run design and review roles as parallel or serial fresh contexts. Verify against your installed host version.' , obfuscatorInvocation: '/apphx-obfuscator' },
+  { id: 'cursor', name: 'Cursor', invocation: '/apphx', projectDirectory: '.cursor/skills', globalDirectory: '~/.cursor/skills', source: 'https://cursor.com/docs/skills', instructions: 'In Agent chat, type / and select apphx. Restart or reopen the project if necessary. Global installation is local, not a Cloud Agent sync.' , delegation: 'Multi-agent support varies by version: fall back to separate fresh sessions per role when subagents are unavailable.' , obfuscatorInvocation: '/apphx-obfuscator' },
+  { id: 'pi', name: 'Pi', invocation: '/skill:apphx', projectDirectory: '.pi/skills', globalDirectory: '$PI_CODING_AGENT_DIR/skills (default ~/.pi/agent/skills)', source: 'https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md', instructions: 'Grant project trust before using project skills, then /reload and /skill:apphx. Stock Pi has no native subagents: use a separate human-started reviewer session, not a spawned coding-agent CLI.' , delegation: 'Stock Pi has no native subagents: run each role in its own human-started fresh session.' , obfuscatorInvocation: '/skill:apphx-obfuscator' },
+  { id: 'gemini', name: 'Gemini CLI', invocation: 'Use the apphx skill', projectDirectory: '.gemini/skills', globalDirectory: '$GEMINI_CLI_HOME/.gemini/skills (default ~/.gemini/skills)', source: 'https://geminicli.com/docs/cli/skills/', instructions: 'Run /skills reload and /skills list, then ask: Use the apphx skill. Gemini calls activate_skill; approve its consent prompt. This is not a /apphx command.' , delegation: 'No native subagent delegation documented: run roles sequentially in fresh sessions.' , obfuscatorInvocation: 'Use the apphx-obfuscator skill' },
+  { id: 'opencode', name: 'OpenCode', invocation: 'Use the apphx skill', projectDirectory: '.opencode/skills', globalDirectory: '$XDG_CONFIG_HOME/opencode/skills (default ~/.config/opencode/skills)', source: 'https://opencode.ai/docs/skills/', instructions: 'Ask OpenCode to use apphx; the agent loads it with its native skill({ name: "apphx" }) tool. Skill permissions must permit loading. Restart if necessary; no custom slash command is installed.' , delegation: 'Subagent support varies by version: fall back to separate fresh sessions per role when subagents are unavailable.' , obfuscatorInvocation: 'Use the apphx-obfuscator skill' },
+  { id: 'deepseek', name: 'DeepSeek Harness', invocation: 'Use the apphx skill', projectDirectory: '.dsh/skills (nearest Git root, otherwise selected project)', globalDirectory: '$DSH_HOME/skills (default ~/.dsh/skills)', source: 'https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/skills', instructions: 'Ask DeepSeek Harness to use apphx; its native skill({ name: "apphx" }) tool loads it. Requires the shipped filesystem skill provider and skill tool, with default roots enabled. Custom provider configurations are not modified.' , delegation: 'The harness supports delegated agents; verify your provider exposes them, else use fresh sessions per role.' , obfuscatorInvocation: 'Use the apphx-obfuscator skill' },
+  { id: 'hermes', name: 'Hermes Agent', invocation: '/apphx', projectDirectory: '.hermes/skills', globalDirectory: '$HERMES_HOME/skills (default ~/.hermes/skills)', source: 'https://hermes-agent.nousresearch.com/docs/user-guide/features/skills', instructions: 'Use /apphx. Project installation requires a Git root and a separate owner-approved hermes skills trust decision; this installer never grants trust. For non-Git projects or profile-wide cron use --global in the same HERMES_HOME as Hermes. Confirm discovery with hermes skills list; cron must attach the skill and an absolute workdir.' , delegation: 'Native subagents and cron exist: run design and review roles as parallel or serial fresh contexts; the scheduler handles unattended wakes. Verify against your installed host version.' , obfuscatorInvocation: '/apphx-obfuscator' },
+  { id: 'qoder', name: 'Qoder', invocation: '/apphx', projectDirectory: '.qoder/skills', globalDirectory: '~/.qoder/skills', source: 'https://docs.qoder.com/cli/Skills', instructions: 'Use /apphx manually or let the model auto-trigger the skill. Run /skills reload in a running session to refresh discovery. User-level skills override project-level skills with the same name.' , delegation: 'No native subagent delegation documented: run roles sequentially in fresh sessions.' , obfuscatorInvocation: '/apphx-obfuscator' },
+  { id: 'oh-my-pi', name: 'Oh My Pi', invocation: '/skill:apphx', projectDirectory: '.omp/skills', globalDirectory: '~/.omp/agent/skills', source: 'https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md', instructions: 'Use /skill:apphx. Skills are discovered one level under skills/ with SKILL.md; description frontmatter is required by the native .omp provider. Restart the session if discovery has not refreshed.' , delegation: 'IDE-wired agent with extension tools; run roles in separate fresh sessions when subagents are unavailable.' , obfuscatorInvocation: '/skill:apphx-obfuscator' },
+  { id: 'dimagent', name: 'DimAgent', invocation: '/skill:apphx', projectDirectory: '.dimcode/skills', globalDirectory: '~/.dimcode/v2/skills', source: 'https://github.com/daguanren21/apple-app-factory', instructions: 'Use /skill:apphx or describe the requirement to trigger the apphx skill. Restart the session after installation so the skill is discovered.' , delegation: 'Native subagent delegation exists: run design and review roles as parallel or serial fresh contexts. Verify against your installed host version.' , obfuscatorInvocation: '/skill:apphx-obfuscator' },
 ].map(host => Object.freeze(host)));
 
 export type IntegrationOptions = { project?: string; global?: boolean };
 type Host = (typeof hosts)[number];
-type Location = { host: Host; scope: 'project' | 'global'; path: string };
+type Location = { host: Host; scope: 'project' | 'global'; path: string; skill: SkillName };
 export type IntegrationInspection = {
-  host: string; name: string; scope: 'project' | 'global'; path: string;
+  host: string; name: string; skill: SkillName; scope: 'project' | 'global'; path: string;
   invocation: string; instructions: string; source: string;
   installed: boolean; status: 'missing' | 'installed' | 'conflict';
   version?: string; current?: boolean; reason?: string;
@@ -40,7 +44,7 @@ const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).di
 const safeRelative = (path: string) => /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(path) && path.split('/').every(part => part !== '.' && part !== '..' && part.length > 0) && path !== marker;
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const manifestSchema = z.strictObject({
-  format: z.literal(1), owner: z.literal(owner), skill: z.literal(skill), host: z.string(),
+  format: z.literal(1), owner: z.literal(owner), skill: z.enum(['apphx', 'apphx-obfuscator']), host: z.string(),
   version: z.string().regex(/^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/),
   files: z.record(z.string().refine(safeRelative), digestSchema), metadataDigest: digestSchema,
 });
@@ -135,7 +139,7 @@ function environmentDirectory(name: string, fallback: string): string {
   return resolve(expanded);
 }
 
-function location(id: string, options: IntegrationOptions): Location {
+function location(id: string, options: IntegrationOptions, name: SkillName = 'apphx'): Location {
   const host = selectedHost(id);
   if (options.global && options.project !== undefined) throw new Error('Choose either project or global installation, not both');
   if (options.global) {
@@ -149,7 +153,7 @@ function location(id: string, options: IntegrationOptions): Location {
       case 'hermes': directory = join(environmentDirectory('HERMES_HOME', join(homedir(), '.hermes')), 'skills'); break;
       default: directory = join(homedir(), host.projectDirectory);
     }
-    return { host, scope: 'global', path: join(directory, skill) };
+    return { host, scope: 'global', skill: name, path: join(directory, name) };
   }
   if (options.project !== undefined && !options.project.trim()) throw new Error('Project directory must not be empty');
   let project = resolve(options.project ?? process.cwd());
@@ -163,34 +167,34 @@ function location(id: string, options: IntegrationOptions): Location {
     }
     if (id === 'hermes' && !found) throw new Error('Hermes project skills require a Git root; use --global for a profile-level installation instead');
   }
-  return { host, scope: 'project', path: join(project, id === 'deepseek' ? '.dsh/skills' : host.projectDirectory, skill) };
+  return { host, scope: 'project', skill: name, path: join(project, id === 'deepseek' ? '.dsh/skills' : host.projectDirectory, name) };
 }
 
 function details(target: Location) {
-  return { host: target.host.id, name: target.host.name, scope: target.scope, path: target.path, invocation: target.host.invocation, instructions: target.host.instructions, source: target.host.source };
+  return { host: target.host.id, name: target.host.name, skill: target.skill, scope: target.scope, path: target.path, invocation: target.skill === 'apphx' ? target.host.invocation : target.host.obfuscatorInvocation, instructions: target.host.instructions, source: target.host.source };
 }
 
-function bundle(host: string): { tree: Tree; manifest: Manifest } {
+function bundle(host: string, name: SkillName): { tree: Tree; manifest: Manifest } {
   // Package stores may hard-link read-only resources; owned installation targets may not.
-  const tree = readTree(bundledDirectory, true);
-  if (!tree.files['SKILL.md'] || tree.files[marker]) throw new Error('Invalid bundled apphx skill');
+  const tree = readTree(bundledDirectories[name], true);
+  if (!tree.files['SKILL.md'] || tree.files[marker]) throw new Error(`Invalid bundled ${name} skill`);
   const files = fileDigests(tree);
   if (!Object.keys(files).every(safeRelative) || JSON.stringify(tree.directories.sort()) !== JSON.stringify(directoriesFor(files))) throw new Error('Invalid bundled skill resource paths');
   const version = JSON.parse(readRegular(packageFile, true).toString('utf8')).version;
-  const value: Omit<Manifest, 'metadataDigest'> = { format: 1, owner, skill, host, version, files };
+  const value: Omit<Manifest, 'metadataDigest'> = { format: 1, owner, skill: name, host, version, files };
   const manifest = manifestSchema.parse({ ...value, metadataDigest: metadataDigest(value) });
   tree.files[marker] = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   return { tree, manifest };
 }
 
-export function inspectIntegration(host: string, options: IntegrationOptions = {}): IntegrationInspection {
-  const target = location(host, options);
+export function inspectIntegration(host: string, options: IntegrationOptions = {}, name: SkillName = 'apphx'): IntegrationInspection {
+  const target = location(host, options, name);
   const result = details(target);
   try {
     assertPath(target.path);
     if (!lstatSync(target.path, { throwIfNoEntry: false })) return { ...result, installed: false, status: 'missing' };
     const manifest = readOwned(target.path, host);
-    const current = bundle(host).manifest.metadataDigest === manifest.metadataDigest;
+    const current = bundle(host, name).manifest.metadataDigest === manifest.metadataDigest;
     return { ...result, installed: true, status: 'installed', version: manifest.version, current };
   } catch (error) {
     return { ...result, installed: false, status: 'conflict', reason: error instanceof Error ? error.message : String(error) };
@@ -210,45 +214,60 @@ function withLock<T>(target: Location, action: () => T): T {
   finally { closeSync(descriptor); unlinkSync(lock); }
 }
 
-function applyIntegration(host: string, options: IntegrationOptions, operation: 'install' | 'update'): IntegrationInspection & { changed: boolean } {
-  const target = location(host, options);
-  const next = bundle(host);
+/** Stage and swap one owned skill directory; `previous` is the validated installed manifest or undefined. */
+function replaceSkill(target: Location, host: string, next: { tree: Tree; manifest: Manifest }, previous: Manifest | undefined): void {
   assertPath(target.path);
-  if (operation === 'update' && !lstatSync(target.path, { throwIfNoEntry: false })) throw new Error(`No installation at ${target.path}; run apphx install ${host} first with the same scope`);
-  return withLock(target, () => {
-    assertPath(target.path);
-    const previous = lstatSync(target.path, { throwIfNoEntry: false }) ? readOwned(target.path, host) : undefined;
-    if (operation === 'update' && !previous) throw new Error(`No installation at ${target.path}; run apphx install ${host} first with the same scope`);
-    const result = { ...details(target), installed: true, status: 'installed' as const, version: next.manifest.version, current: true };
-    if (previous?.metadataDigest === next.manifest.metadataDigest) return { ...result, changed: false };
-    if (operation === 'install' && previous) throw new Error(`An older or different workflow is installed at ${target.path}; use apphx update ${host} with the same scope`);
-    const parent = dirname(target.path);
-    mkdirSync(parent, { recursive: true });
-    const staging = mkdtempSync(join(dirname(parent), '.apphx-stage-'));
-    const replacement = join(staging, skill);
-    const backup = join(staging, 'previous');
-    let moved = false;
-    try {
-      mkdirSync(replacement);
-      for (const [file, bytes] of Object.entries(next.tree.files)) {
-        const path = join(replacement, file);
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, bytes, { flag: 'wx', mode: 0o644 });
-      }
-      assertPath(target.path);
-      if (previous) {
-        if (readOwned(target.path, host).metadataDigest !== previous.metadataDigest) throw new Error('Installation changed during upgrade');
-        renameSync(target.path, backup);
-        moved = true;
-      } else if (lstatSync(target.path, { throwIfNoEntry: false })) throw new Error('Skill appeared during installation; refusing overwrite');
-      try { renameSync(replacement, target.path); }
-      catch (error) { if (moved) { renameSync(backup, target.path); moved = false; } throw error; }
-      if (moved) { readOwned(backup, host); rmSync(backup, { recursive: true }); moved = false; }
-      return { ...result, changed: true };
-    } finally {
-      // Keep a displaced install intact if rollback or cleanup was interrupted.
-      if (!moved) rmSync(staging, { recursive: true, force: true });
+  const parent = dirname(target.path);
+  mkdirSync(parent, { recursive: true });
+  const staging = mkdtempSync(join(dirname(parent), '.apphx-stage-'));
+  const replacement = join(staging, target.skill);
+  const backup = join(staging, 'previous');
+  let moved = false;
+  try {
+    mkdirSync(replacement);
+    for (const [file, bytes] of Object.entries(next.tree.files)) {
+      const path = join(replacement, file);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, bytes, { flag: 'wx', mode: 0o644 });
     }
+    assertPath(target.path);
+    if (previous) {
+      if (readOwned(target.path, host).metadataDigest !== previous.metadataDigest) throw new Error('Installation changed during upgrade');
+      renameSync(target.path, backup);
+      moved = true;
+    } else if (lstatSync(target.path, { throwIfNoEntry: false })) throw new Error('Skill appeared during installation; refusing overwrite');
+    try { renameSync(replacement, target.path); }
+    catch (error) { if (moved) { renameSync(backup, target.path); moved = false; } throw error; }
+    if (moved) { readOwned(backup, host); rmSync(backup, { recursive: true }); moved = false; }
+  } finally {
+    // Keep a displaced install intact if rollback or cleanup was interrupted.
+    if (!moved) rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+function applyIntegration(host: string, options: IntegrationOptions, operation: 'install' | 'update'): IntegrationInspection & { changed: boolean } {
+  // Both bundled skills install together so every host gains the /$ apphx workflow and the
+  // /$ apphx-obfuscator trigger. The apphx skill is the primary result; its absence gates update.
+  const targets = skills.map(name => location(host, options, name));
+  const bundles = Object.fromEntries(skills.map(name => [name, bundle(host, name)])) as Record<SkillName, { tree: Tree; manifest: Manifest }>;
+  const primary = targets[0]!;
+  for (const target of targets) assertPath(target.path);
+  if (operation === 'update' && !lstatSync(primary.path, { throwIfNoEntry: false })) throw new Error(`No installation at ${primary.path}; run apphx install ${host} first with the same scope`);
+  return withLock(primary, () => {
+    for (const target of targets) assertPath(target.path);
+    // Validate every existing owned dir up front so foreign content is never adopted or displaced.
+    const previous = targets.map(target => lstatSync(target.path, { throwIfNoEntry: false }) ? readOwned(target.path, host) : undefined);
+    if (operation === 'update' && !previous[0]) throw new Error(`No installation at ${primary.path}; run apphx install ${host} first with the same scope`);
+    const result = { ...details(primary), installed: true, status: 'installed' as const, version: bundles.apphx.manifest.version, current: true };
+    const changedAny = targets.some((target, index) => previous[index]?.metadataDigest !== bundles[target.skill].manifest.metadataDigest);
+    if (!changedAny) return { ...result, changed: false };
+    if (operation === 'install' && previous[0]) throw new Error(`An older or different workflow is installed at ${primary.path}; use apphx update ${host} with the same scope`);
+    for (let index = 0; index < targets.length; index++) {
+      const target = targets[index]!;
+      if (previous[index]?.metadataDigest === bundles[target.skill].manifest.metadataDigest) continue;
+      replaceSkill(target, host, bundles[target.skill], previous[index]);
+    }
+    return { ...result, changed: true };
   });
 }
 
@@ -261,15 +280,24 @@ export function updateIntegration(host: string, options: IntegrationOptions = {}
 }
 
 export function uninstallIntegration(host: string, options: IntegrationOptions = {}): IntegrationInspection & { changed: boolean } {
-  const target = location(host, options);
-  assertPath(target.path);
-  const result = { ...details(target), installed: false, status: 'missing' as const };
-  if (!lstatSync(target.path, { throwIfNoEntry: false })) return { ...result, changed: false };
-  return withLock(target, () => {
-    assertPath(target.path);
-    if (!lstatSync(target.path, { throwIfNoEntry: false })) return { ...result, changed: false };
-    readOwned(target.path, host);
-    rmSync(target.path, { recursive: true });
-    return { ...result, changed: true };
+  const targets = skills.map(name => location(host, options, name));
+  const primary = targets[0]!;
+  for (const target of targets) assertPath(target.path);
+  const result = { ...details(primary), installed: false, status: 'missing' as const };
+  if (!targets.some(target => lstatSync(target.path, { throwIfNoEntry: false }))) return { ...result, changed: false };
+  return withLock(primary, () => {
+    for (const target of targets) assertPath(target.path);
+    // Validate ownership before deleting anything so a foreign sibling never breaks uninstall halfway.
+    for (const target of targets) {
+      if (lstatSync(target.path, { throwIfNoEntry: false })) readOwned(target.path, host);
+    }
+    let changed = false;
+    for (const target of targets) {
+      if (!lstatSync(target.path, { throwIfNoEntry: false })) continue;
+      readOwned(target.path, host);
+      rmSync(target.path, { recursive: true });
+      changed = true;
+    }
+    return { ...result, changed };
   });
 }
