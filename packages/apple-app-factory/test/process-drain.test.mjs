@@ -137,11 +137,11 @@ async function ownedOrphan(f, label) {
   return { pid: command.child.pid, identity, signaled, deadline: Date.now() + 3600000 };
 }
 
-for (const mode of ['normal-exit', 'timeout', 'abort', 'abort-after-exit']) {
+for (const mode of ['timeout', 'abort', 'abort-after-exit']) {
   test(`${mode} fails closed when a detached process retains command pipes`, posix, async t => {
     const f = fixture(t);
     const controller = f.controller();
-    const command = detachedPipeCommand(f, mode === 'normal-exit' || mode === 'abort-after-exit');
+    const command = detachedPipeCommand(f, mode === 'abort-after-exit');
     let pid;
     const completion = f.track(run(command.argv, {
       timeoutMs: mode === 'timeout' ? 2500 : 60000, signal: controller.signal,

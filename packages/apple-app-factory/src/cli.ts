@@ -112,7 +112,7 @@ function initialConfig(framework: Framework, platform: Platform, target: Config[
     template.verification = {
       prerequisites: [['xcodebuild', '-version'], ...(framework === 'swift' ? [] : [['node', '--version'], ['npm', '--version']])],
       checks: framework === 'swift' ? [[...base, 'build-for-testing', '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'lint'], ['npm', 'test', '--', '--runInBand']],
-      runtime: framework === 'swift' ? [[...base, 'test', '-destination', 'id=${IOS_DEVICE_ID}', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'test:e2e', '--', '--platform', 'ios', '--device', '${IOS_DEVICE_ID}']],
+      runtime: framework === 'swift' ? [[...base, 'test-without-building', '-destination', 'id=${IOS_DEVICE_ID}', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'test:e2e', '--', '--platform', 'ios', '--device', '${IOS_DEVICE_ID}']],
     };
     template.packaging = target === 'simulator' ? {
       commands: [[...base, 'build', '-configuration', 'Debug', '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', 'build/DerivedData']],

@@ -26,6 +26,8 @@ export type Run = (argv: string[], options?: RunOptions) => Promise<RunResult>;
 const OUTPUT_LIMIT = 262144;
 const COMMAND_TOKEN = 'APPLE_APP_FACTORY_COMMAND_TOKEN';
 export const TERMINATION_GRACE_MS = 1000;
+export const SUCCESS_DRAIN_GRACE_MS = 30000;
+const DRAIN_FAILURE_DETAIL = 'left stdout or stderr open after its verified process group exited; processes outside that group were not signaled';
 
 function groupMembers(pid: number): number[] | null {
   if (!Number.isSafeInteger(pid) || pid <= 1) return [];
@@ -146,9 +148,9 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
     const child = spawn(executable, argv.slice(1), { cwd, env: { ...env, [COMMAND_TOKEN]: identity.token }, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], shell: false });
     let stdout = '', stderr = '';
     let failure: unknown, exitCode: number | null | undefined;
-    let exited = false, closed = false, cleanupStarted = false, cleanupComplete = false, cleanupFailed = false, settled = false;
+    let exited = false, closed = false, cleanupStarted = false, cleanupComplete = false, cleanupFailed = false, drainResolved = false, settled = false;
     const finish = (): void => {
-      if (settled || !cleanupComplete || (!closed && !cleanupFailed)) return;
+      if (settled || !cleanupComplete || (!closed && !cleanupFailed && !drainResolved)) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(drainTimer);
@@ -156,14 +158,32 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
       if (failure) reject(failure);
       else resolve({ code: exitCode ?? 1, stdout, stderr });
     };
-    const failCleanup = (error: unknown): void => {
-      failure = error;
-      cleanupFailed = true;
+    const destroyStreams = (): void => {
       child.unref();
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
+    };
+    const failCleanup = (error: unknown): void => {
+      failure = error;
+      cleanupFailed = true;
+      destroyStreams();
       finish();
+    };
+    const resolveCleanup = (): void => {
+      drainResolved = true;
+      destroyStreams();
+      finish();
+    };
+    const onDrainExpired = (pid: number): void => {
+      if (closed || cleanupFailed || drainResolved) return;
+      if (failure || exitCode !== 0) failCleanup(cleanupError(pid, DRAIN_FAILURE_DETAIL));
+      else resolveCleanup();
+    };
+    const onDrainGrace = (pid: number): void => {
+      if (closed || cleanupFailed || drainResolved) return;
+      if (failure || exitCode !== 0) { onDrainExpired(pid); return; }
+      drainTimer = setTimeout(() => onDrainExpired(pid), SUCCESS_DRAIN_GRACE_MS);
     };
     const cleanup = (): void => {
       if (cleanupStarted) return;
@@ -174,7 +194,7 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
         cleanupComplete = true;
         const pid = child.pid;
         if (pid && !closed && !cleanupFailed) {
-          drainTimer = setTimeout(() => failCleanup(cleanupError(pid, 'left stdout or stderr open after its verified process group exited; processes outside that group were not signaled')), TERMINATION_GRACE_MS);
+          drainTimer = setTimeout(() => onDrainGrace(pid), TERMINATION_GRACE_MS);
         }
         finish();
       });

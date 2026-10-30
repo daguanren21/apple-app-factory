@@ -42,7 +42,7 @@
         "App.xcodeproj",
         "-scheme",
         "App",
-        "test",
+        "test-without-building",
         "-destination",
         "id=${IOS_DEVICE_ID}",
         "-derivedDataPath",
