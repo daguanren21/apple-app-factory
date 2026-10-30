@@ -164,7 +164,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
-  decide <id> <json|->         Append decision-log entries (role, rationale) to a task
+  decide <id> <json-file|->       Append decision-log entries (role, rationale) to a task
   step <id>                     Execute one obfuscation, verification or packaging stage
   status [id]                   Read durable task state as JSON
   events <id>                   Read task transitions and evidence
@@ -389,7 +389,7 @@ async function main(): Promise<void> {
       arity(args, 2, 2, 'abandon <id> <turn-id>');
       outcome(abandonTurn(store, args[0], args[1], { buildOnly }));
     } else if (command === 'decide') {
-      arity(args, 2, 2, 'decide <id> <json|->');
+      arity(args, 2, 2, 'decide <id> <json-file|->');
       if (buildOnly) assertDecideBuildOnly(config);
       const current = store.get(args[0]);
       const merged = [...current.decisions, ...decisionEntries(inputJSON(args[1]))];
