@@ -22,7 +22,7 @@ export const hosts = Object.freeze([
   { id: 'hermes', name: 'Hermes Agent', invocation: '/apphx', projectDirectory: '.hermes/skills', globalDirectory: '$HERMES_HOME/skills (default ~/.hermes/skills)', source: 'https://hermes-agent.nousresearch.com/docs/user-guide/features/skills', instructions: 'Use /apphx. Project installation requires a Git root and a separate owner-approved hermes skills trust decision; this installer never grants trust. For non-Git projects or profile-wide cron use --global in the same HERMES_HOME as Hermes. Confirm discovery with hermes skills list; cron must attach the skill and an absolute workdir.' },
   { id: 'qoder', name: 'Qoder', invocation: '/apphx', projectDirectory: '.qoder/skills', globalDirectory: '~/.qoder/skills', source: 'https://docs.qoder.com/cli/Skills', instructions: 'Use /apphx manually or let the model auto-trigger the skill. Run /skills reload in a running session to refresh discovery. User-level skills override project-level skills with the same name.' },
   { id: 'oh-my-pi', name: 'Oh My Pi', invocation: '/skill:apphx', projectDirectory: '.omp/skills', globalDirectory: '~/.omp/agent/skills', source: 'https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md', instructions: 'Use /skill:apphx. Skills are discovered one level under skills/ with SKILL.md; description frontmatter is required by the native .omp provider. Restart the session if discovery has not refreshed.' },
-  { id: 'dimagent', name: 'DimAgent', invocation: '/skill:apphx', projectDirectory: '.dimcode/skills', globalDirectory: '~/.dimcode/skills', source: 'https://github.com/daguanren21/apple-app-factory', instructions: 'Use /skill:apphx or describe the requirement to trigger the apphx skill. Restart the session after installation so the skill is discovered.' },
+  { id: 'dimagent', name: 'DimAgent', invocation: '/skill:apphx', projectDirectory: '.dimcode/skills', globalDirectory: '~/.dimcode/v2/skills', source: 'https://github.com/daguanren21/apple-app-factory', instructions: 'Use /skill:apphx or describe the requirement to trigger the apphx skill. Restart the session after installation so the skill is discovered.' },
 ].map(host => Object.freeze(host)));
 
 export type IntegrationOptions = { project?: string; global?: boolean };
@@ -147,6 +147,9 @@ function location(id: string, options: IntegrationOptions): Location {
       case 'opencode': directory = join(environmentDirectory('XDG_CONFIG_HOME', join(homedir(), '.config')), 'opencode', 'skills'); break;
       case 'deepseek': directory = join(environmentDirectory('DSH_HOME', join(homedir(), '.dsh')), 'skills'); break;
       case 'hermes': directory = join(environmentDirectory('HERMES_HOME', join(homedir(), '.hermes')), 'skills'); break;
+      case 'qoder': directory = join(homedir(), '.qoder', 'skills'); break;
+      case 'oh-my-pi': directory = join(homedir(), '.omp', 'agent', 'skills'); break;
+      case 'dimagent': directory = join(homedir(), '.dimcode', 'v2', 'skills'); break;
       default: directory = join(homedir(), host.projectDirectory);
     }
     return { host, scope: 'global', path: join(directory, skill) };
