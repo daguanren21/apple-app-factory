@@ -23,3 +23,8 @@ apphx@2.1.0:
   dir: packages/apple-app-factory
   intents:
     - golden-owls-obfuscate
+apphx@2.2.0:
+  dir: packages/apple-app-factory
+  intents:
+    - autopilot-mode
+    - ui-designer-role
