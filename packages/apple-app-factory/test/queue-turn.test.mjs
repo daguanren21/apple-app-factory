@@ -154,6 +154,32 @@ test('needs-owner jobs are terminal for the loop and retryable after owner input
   assert.equal(JSON.parse(retried.stdout).status, 'queued');
 });
 
+test('idle summary re-reads the queue so scan mutations are reflected', async t => {
+  const f = fixture(t);
+  const job = f.enqueue('expired', 'research', 0);
+  f.store.update(job.id, { createdAt: Date.now() - 25 * 3600000 });
+  const result = await nextQueueTurn(f.store);
+  assert.equal(result.action, 'idle');
+  assert.deepEqual(result.summary, { total: 1, built: 0, failed: 0, needsOwner: 1, blocked: 0, waiting: 0, queued: 0, running: 0 });
+});
+
+test('retry refuses an exhausted budget and queues after the owner raises it', async t => {
+  const f = fixture(t);
+  const job = f.store.update(f.enqueue('owner-deferred', 'build', 0).id, { status: 'needs-owner', attempts: { build: 8 }, error: 'Attempt budget exhausted; owner input is required to proceed: review rejected' });
+  const configPath = join(f.root, 'factory.json');
+  const base = { stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true, pollMs: 25, verification: { prerequisites: [], checks: [success], runtime: [success] } };
+  writeFileSync(configPath, JSON.stringify(base));
+  const refused = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
+  assert.equal(refused.status, 0, refused.stderr);
+  const parsed = JSON.parse(refused.stdout);
+  assert.equal(parsed.status, 'needs-owner');
+  assert.match(parsed.error, /maxAttempts \(8\) at build is exhausted/);
+  writeFileSync(configPath, JSON.stringify({ ...base, maxAttempts: 20 }));
+  const resumed = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.equal(JSON.parse(resumed.stdout).status, 'queued');
+});
+
 test('idle summary separates finished jobs from blocked ones for the terminal audit', async t => {
   const f = fixture(t);
   f.store.update(f.enqueue('built', 'package', 0).id, { status: 'built' });

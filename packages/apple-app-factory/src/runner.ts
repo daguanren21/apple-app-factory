@@ -244,13 +244,16 @@ async function pickQueueTurn(store: Store, options: TurnOptions = {}): Promise<Q
       pendingErrors.push({ id: job.id, error: toError(cause).message });
     }
   }
-  const summary: QueueSummary = { total: jobs.length, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 0, queued: 0, running: 0 };
-  for (const job of jobs) {
+  // Re-read the queue so status counts reflect mutations made during the scan
+  // (deadline expirations, budget deferrals); the pre-scan snapshot is stale.
+  const current = store.list();
+  const summary: QueueSummary = { total: current.length, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 0, queued: 0, running: 0 };
+  for (const job of current) {
     const status = job.status;
     if (status === 'needs-owner') { summary.needsOwner += 1; continue; }
     if (status === 'built' || status === 'failed' || status === 'blocked' || status === 'waiting' || status === 'queued' || status === 'running') summary[status] += 1;
   }
-  const due = jobs.map(job => job.nextAt).filter(nextAt => nextAt > Date.now());
+  const due = current.map(job => job.nextAt).filter(nextAt => nextAt > Date.now());
   return { action: 'idle', nextAt: due.length ? Math.min(...due) : null, pendingErrors, summary };
 }
 

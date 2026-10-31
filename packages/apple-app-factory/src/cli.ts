@@ -436,6 +436,16 @@ async function main(): Promise<void> {
         const proofChanged = verificationConfigChanged(job, resumedConfig);
         const patch: Partial<Job> = proofChanged ? { ...invalidateVerification(), stage: ['verify', 'review', 'package'].includes(job.stage) ? 'verify' : job.stage } : {};
         validateJobConfig(job.spec, resumedConfig);
+        // Report the same limits `next` enforces instead of queuing a job that
+        // will immediately defer again: the owner must raise the budget in
+        // factory.json or provide input before a retry can actually proceed.
+        const deadlineExpired = Date.now() - job.createdAt > resumedConfig.maxJobHours * 3600000;
+        const hostLimit = job.hostTurns >= resumedConfig.maxHostTurns;
+        const stageLimit = (job.attempts[job.stage] ?? 0) >= resumedConfig.maxAttempts;
+        if (deadlineExpired || hostLimit || stageLimit) {
+          const exceeded = deadlineExpired ? `maxJobHours (${resumedConfig.maxJobHours})` : hostLimit ? `maxHostTurns (${resumedConfig.maxHostTurns})` : `maxAttempts (${resumedConfig.maxAttempts}) at ${job.stage}`;
+          return { ...patch, config: resumedConfig, status: 'needs-owner', manualRecovery: null, nextAt: Date.now(), error: `${exceeded} is exhausted under the resumed configuration; raise the budget in factory.json or provide owner input before retrying` };
+        }
         return { ...patch, config: resumedConfig, status: 'queued', manualRecovery: null, nextAt: Date.now(), error: null };
       })));
     } else throw new Error(`Unknown command ${command}; use --help`);
