@@ -113,7 +113,7 @@ test('abandonment releases only its matching claim and never refunds turn budget
   abandonTurn(f.store, f.job.id, next.turn.id);
   const exhausted = await nextTurn(f.store, f.job.id);
   assert.equal(exhausted.action, 'done');
-  assert.equal(exhausted.job.status, 'failed');
+  assert.equal(exhausted.job.status, 'needs-owner');
   assert.equal(exhausted.job.hostTurns, 2);
 });
 
@@ -379,10 +379,10 @@ for (const operation of ['resume', 'complete']) {
       assert.equal(result.action, 'done');
       assert.equal(result.turn, undefined);
     } else {
-      assert.equal(completeTurn(f.store, f.job.id, first.turn.id, researchFor()).status, 'failed');
+      assert.equal(completeTurn(f.store, f.job.id, first.turn.id, researchFor()).status, 'needs-owner');
     }
     const stopped = f.store.get(f.job.id);
-    assert.equal(stopped.status, 'failed');
+    assert.equal(stopped.status, 'needs-owner');
     assert.equal(stopped.stage, 'research');
     assert.equal(stopped.turn, null);
     assert.equal(stopped.hostTurns, 1);
@@ -401,7 +401,7 @@ test('ten pending packages gate their own verdicts and reviews, repair automatic
     if (index === 1) verdict.viable = false;
     const researched = completeTurn(f.store, job.id, first.turn.id, verdict);
     if (index === 1) {
-      assert.equal(researched.status, 'failed');
+      assert.equal(researched.status, 'needs-owner');
       assert.equal(researched.research.viable, false);
       assert.equal((await nextTurn(f.store, job.id)).action, 'done');
       assert.equal(researched.artifact, undefined);
@@ -443,7 +443,7 @@ test('ten pending packages gate their own verdicts and reviews, repair automatic
     assert.equal(approved.review.findings.length, 0);
   }
   assert.deepEqual(jobs.map(job => f.store.get(job.id).stage), ['package', 'research', ...Array(8).fill('package')]);
-  assert.equal(f.store.get(jobs[1].id).status, 'failed');
+  assert.equal(f.store.get(jobs[1].id).status, 'needs-owner');
   assert.equal(f.store.list().every(job => !job.artifact && !Object.keys(job.receipt).length), true);
 });
 

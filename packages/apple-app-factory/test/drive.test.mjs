@@ -187,7 +187,7 @@ test('drive reports persisted terminal failures on every return', async t => {
   assert.equal(doomTurn.action, 'host');
   assert.equal(doomTurn.job.id, doomed.id);
   const rejected = completeTurn(f.store, doomed.id, doomTurn.turn.id, { viable: false, distinctness: 'Dead on arrival', risks: ['Infeasible'], plan: ['Do not proceed'] });
-  assert.equal(rejected.status, 'failed');
+  assert.equal(rejected.status, 'needs-owner');
   // a fresh due job's host return must carry the persisted failure
   f.store.enqueue({ ...spec, id: 'drive-fresh', version: '0.9.1' }, f.config);
   const host = await driveQueue(f.store, f.config, { once: true });

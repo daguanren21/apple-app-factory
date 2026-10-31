@@ -151,7 +151,7 @@ export function validateJobConfig(spec: Spec, config: Config): void {
 }
 export const StageSchema = z.enum(['research', 'build', 'obfuscate', 'verify', 'review', 'package']);
 export type Stage = z.infer<typeof StageSchema>;
-export const StatusSchema = z.enum(['queued', 'running', 'waiting', 'blocked', 'failed', 'ready', 'built']);
+export const StatusSchema = z.enum(['queued', 'running', 'waiting', 'blocked', 'failed', 'needs-owner', 'ready', 'built']);
 export type Status = z.infer<typeof StatusSchema>;
 export const ToolchainSchema = z.strictObject({ source: text, frameworkRevision: text, engineRevision: text, ready: z.boolean() });
 export type Toolchain = z.infer<typeof ToolchainSchema>;

@@ -204,7 +204,7 @@ async function scoreCase(root, item, modules) {
       satisfied = job.stage === 'package' && job.status === 'queued' && !job.turn && oracle.passed && passedRuntime && reviewPass && sourceProof && repair && completed('research') && completed('build') && completed('review');
       if (advanced && !satisfied) { result.falseApproval = true; fail('Package approval lacks intact runtime/source/review/repair evidence'); }
     } else if (definition.outcome === 'rejected-research' && definition.id === 'rights') {
-      satisfied = job.status === 'failed' && job.stage === 'research' && !job.turn && job.research?.viable === false && completed('research') && !advanced;
+      satisfied = ['failed', 'needs-owner'].includes(job.status) && job.stage === 'research' && !job.turn && job.research?.viable === false && completed('research') && !advanced;
       if (advanced || (completed('research') && job.research?.viable !== false)) { result.falseApproval = true; fail('Unavailable owner rights were approved or research was not rejected'); }
     } else if (definition.outcome === 'verify-retry') {
       satisfied = job.stage === 'verify' && job.status === 'waiting' && job.recoveryStage === 'verify' && !job.turn && !oracle.passed && oracle.failures.includes('records-survive-fresh-runtime') && runtimeProofs.some(proof => proof.passed === false && proof.failures?.includes('records-survive-fresh-runtime')) && (job.attempts.verify ?? 0) >= 1 && !job.verifiedDigest && !advanced && /Verification failed/.test(job.error ?? job.feedback ?? '');

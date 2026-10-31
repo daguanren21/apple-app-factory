@@ -41,7 +41,7 @@ function arity(args: string[], minimum: number, maximum: number, usage: string):
 
 function outcome(job: Job): void {
   print(view(job));
-  if (job.status === 'blocked' || job.status === 'failed') process.exitCode = 2;
+  if (job.status === 'blocked' || job.status === 'failed' || job.status === 'needs-owner') process.exitCode = 2;
 }
 
 function assertDecideBuildOnly(config: Config): void {
@@ -384,7 +384,7 @@ async function main(): Promise<void> {
         arity(args, 1, 1, 'next <id>');
         const result = await nextTurn(store, args[0], { buildOnly });
         print(result);
-        if (result.job.status === 'blocked' || result.job.status === 'failed') process.exitCode = 2;
+        if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
     } else if (command === 'drive') {
       arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--build-only] [--config <file>]');
@@ -429,13 +429,23 @@ async function main(): Promise<void> {
     } else if (command === 'retry') {
       arity(args, 1, 1, 'retry <id>');
       print(view(store.transition(args[0], job => {
-        if (!['blocked', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
+        if (!['blocked', 'needs-owner', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
         if (job.turn) throw new Error('Abandon the active host turn before changing task configuration');
         if (job.cloudBuildPending) throw new Error('Cloud packaging outcome is uncertain; reconcile the existing provider run rather than replaying it with retry');
         const resumedConfig = { ...config, packageTarget: config.packageTarget };
         const proofChanged = verificationConfigChanged(job, resumedConfig);
         const patch: Partial<Job> = proofChanged ? { ...invalidateVerification(), stage: ['verify', 'review', 'package'].includes(job.stage) ? 'verify' : job.stage } : {};
         validateJobConfig(job.spec, resumedConfig);
+        // Report the same limits `next` enforces instead of queuing a job that
+        // will immediately defer again: the owner must raise the budget in
+        // factory.json or provide input before a retry can actually proceed.
+        const deadlineExpired = Date.now() - job.createdAt > resumedConfig.maxJobHours * 3600000;
+        const hostLimit = job.hostTurns >= resumedConfig.maxHostTurns;
+        const stageLimit = (job.attempts[job.stage] ?? 0) >= resumedConfig.maxAttempts;
+        if (deadlineExpired || hostLimit || stageLimit) {
+          const exceeded = deadlineExpired ? `maxJobHours (${resumedConfig.maxJobHours})` : hostLimit ? `maxHostTurns (${resumedConfig.maxHostTurns})` : `maxAttempts (${resumedConfig.maxAttempts}) at ${job.stage}`;
+          return { ...patch, config: resumedConfig, status: 'needs-owner', manualRecovery: null, nextAt: Date.now(), error: `${exceeded} is exhausted under the resumed configuration; raise the budget in factory.json or provide owner input before retrying` };
+        }
         return { ...patch, config: resumedConfig, status: 'queued', manualRecovery: null, nextAt: Date.now(), error: null };
       })));
     } else throw new Error(`Unknown command ${command}; use --help`);
