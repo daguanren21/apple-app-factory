@@ -52,6 +52,27 @@ async function reviewTurn(f) {
   return nextTurn(f.store, f.job.id);
 }
 
+test('review seat receipts gate the review verdict when roles.receipt is enabled', async t => {
+  const f = fixture(t, { roles: { receipt: true } });
+  const review = await reviewTurn(f);
+  assert.equal(review.turn.stage, 'review');
+  const claimedAt = f.store.get(f.job.id).turn.createdAt;
+  // No receipts recorded yet: every default review seat is missing.
+  assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)),
+    /Review seat receipts missing for: architect-review, qa-engineer, acceptance-reviewer/);
+  // A receipt recorded before this turn was claimed is stale and does not count.
+  f.store.update(f.job.id, { decisions: [{ at: claimedAt - 1, stage: 'review', role: 'architect-review', rationale: 'stale receipt from an earlier turn' }] });
+  assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)),
+    /Review seat receipts missing for: architect-review, qa-engineer, acceptance-reviewer/);
+  // Fresh receipts for every review seat unlock the verdict; the turn stays claimable throughout.
+  const seats = ['architect-review', 'qa-engineer', 'acceptance-reviewer'];
+  const current = f.store.get(f.job.id);
+  f.store.update(f.job.id, { decisions: [...current.decisions, ...seats.map(role => ({ at: claimedAt, stage: 'review', role, rationale: `${role} ran in a fresh non-implementer context and observed the acceptance evidence` }))] });
+  const approved = completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job));
+  assert.equal(approved.stage, 'package');
+  assert.equal(approved.status, 'queued');
+});
+
 test('host-native research/build/review persist while actual deterministic commands gate progress', async t => {
   const f = fixture(t);
   const first = await nextTurn(f.store, f.job.id);

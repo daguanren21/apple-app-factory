@@ -380,6 +380,18 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
     } else {
       const review = ReviewSchema.parse(result);
       if (!job.spec.acceptance.every(requirement => review.acceptanceEvidence.some(item => item.requirement === requirement))) throw new Error('Review verdict must cover each acceptance requirement with concrete evidence');
+      // Seat receipts (owner opt-in via roles.receipt): every review seat must
+      // have a decision-log entry recorded after this turn was claimed, so seat
+      // execution is evidenced instead of advisory. Missing seats reject the
+      // completion; the turn stays active and the host records them with decide.
+      if (job.config.roles?.receipt) {
+        const roles = job.config.roles;
+        const seats = roles.review.map(seat => typeof seat === 'string' ? seat : seat.name);
+        const claimedAt = job.turn?.createdAt ?? 0;
+        const recorded = new Set(job.decisions.filter(entry => entry.at >= claimedAt).map(entry => entry.role));
+        const missing = seats.filter(seat => !recorded.has(seat));
+        if (missing.length) throw new Error(`Review seat receipts missing for: ${missing.join(', ')}; run each missing seat in its declared context, record it with apphx decide (role plus rationale), then complete this turn again`);
+      }
       try { requireReviewProof(job); }
       catch (cause) { return { ...repair(job, toError(cause).message), review }; }
       if (!review.approved || review.findings.length) return { ...repair(job, `Independent review rejected the artifact: ${JSON.stringify(review)}`), review };

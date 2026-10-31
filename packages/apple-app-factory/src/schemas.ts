@@ -99,6 +99,8 @@ export const RolesConfigSchema = z.strictObject({
   research: z.array(RoleSeatSchema).default(['product-analyst']),
   build: z.array(RoleSeatSchema).default(['ui-designer', 'developer']),
   review: z.array(RoleSeatSchema).default(['architect-review', 'qa-engineer', 'acceptance-reviewer']),
+  /** Owner opt-in: review completion requires a fresh decision-log receipt for every review seat. */
+  receipt: z.boolean().default(false),
 });
 export type RolesConfig = z.infer<typeof RolesConfigSchema>;
 
