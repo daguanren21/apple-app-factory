@@ -116,9 +116,16 @@ function hostAction(store: Store, job: Job): HostAction {
 }
 
 function repair(job: Job, message: string): Partial<Job> {
+  const exhausted = (job.attempts[job.stage] ?? 0) >= job.config.maxAttempts;
   return {
-    stage: 'build', status: (job.attempts[job.stage] ?? 0) >= job.config.maxAttempts ? 'failed' : 'waiting',
-    ...invalidateVerification(), turn: null, feedback: message, error: message,
+    // Deferred-to-owner is the terminal state for exhausted budgets: the run
+    // must not stop, so owner input is requested in the report, never in a
+    // blocking question.
+    stage: exhausted ? job.stage : 'build',
+    status: exhausted ? 'needs-owner' : 'waiting',
+    ...invalidateVerification(), turn: null,
+    feedback: exhausted ? `Attempt budget exhausted; owner input is required to proceed: ${message}` : message,
+    error: exhausted ? `Attempt budget exhausted; owner input is required to proceed: ${message}` : message,
     nextAt: Date.now() + job.config.retryDelayMs,
   };
 }
@@ -135,21 +142,21 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
         job = store.transition(id, current => {
           assertTurnPermission(current, options);
           if (current.turn?.id !== claimed.id || contextDigest(current) !== claimed.contextDigest) throw new Error('Host turn changed while checking its deadline; inspect the current task');
-          return { turn: null, status: 'failed', error: 'Task wall-clock limit reached; the expired host turn cannot resume' };
+          return { turn: null, status: 'needs-owner', error: 'Task wall-clock limit reached; the expired host turn cannot resume without owner intervention' };
         });
         return { job, action: 'done' };
       }
       return hostAction(store, job);
     }
     if (job.groups.length && !job.manualRecovery) return { job, action: 'step' };
-    if (['failed', 'ready', 'built'].includes(job.status)) return { job, action: 'done' };
+    if (['failed', 'needs-owner', 'ready', 'built'].includes(job.status)) return { job, action: 'done' };
     const eligible = ['queued', 'waiting'].includes(job.status) || (job.status === 'blocked' && job.blockedReason?.kind === 'prerequisite');
     if (!eligible || job.nextAt > Date.now() || job.manualRecovery) return { job, action: 'wait' };
     if (!['research', 'build', 'review'].includes(job.stage)) return { job, action: 'step' };
     if (deadlineExpired(job) || job.hostTurns >= job.config.maxHostTurns || (job.attempts[job.stage] ?? 0) >= job.config.maxAttempts) {
       job = store.transition(id, current => {
         assertTurnPermission(current, options);
-        return { status: 'failed', error: 'Host turn, stage attempt or task wall-clock limit reached; no further host work will start' };
+        return { status: 'needs-owner', error: 'Host turn, stage attempt or task wall-clock limit reached; owner input is required to proceed' };
       });
       return { job, action: 'done' };
     }
@@ -168,7 +175,7 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
       assertTurnPermission(current, options);
       const eligible = ['queued', 'waiting'].includes(current.status) || (current.status === 'blocked' && current.blockedReason?.kind === 'prerequisite');
       if (current.turn || contextDigest(current) !== contextDigest(job) || current.nextAt > Date.now() || !eligible || current.groups.length || current.manualRecovery) throw new Error('Task changed before the host turn could be claimed');
-      if (deadlineExpired(current) || current.hostTurns >= current.config.maxHostTurns || (current.attempts[current.stage] ?? 0) >= current.config.maxAttempts) return { status: 'failed', error: 'Host turn, stage attempt or task wall-clock limit reached; no further host work will start' };
+      if (deadlineExpired(current) || current.hostTurns >= current.config.maxHostTurns || (current.attempts[current.stage] ?? 0) >= current.config.maxAttempts) return { status: 'needs-owner', error: 'Host turn, stage attempt or task wall-clock limit reached; owner input is required to proceed' };
       if (current.stage === 'review') requireReviewProof(current);
       const turn = { id: randomUUID(), stage: current.stage as HostStage, createdAt: Date.now(), contextDigest: contextDigest(current) };
       return { turn, hostTurns: current.hostTurns + 1, attempts: { ...current.attempts, [current.stage]: (current.attempts[current.stage] ?? 0) + 1 }, status: 'running', blockedReason: null, error: null };
@@ -181,7 +188,7 @@ export type QueueTurn =
   | HostAction
   | { action: 'idle'; nextAt: number | null; pendingErrors: Array<{ id: string; error: string }>; summary: QueueSummary };
 
-export type QueueSummary = { total: number; built: number; failed: number; blocked: number; waiting: number; queued: number; running: number };
+export type QueueSummary = { total: number; built: number; failed: number; needsOwner: number; blocked: number; waiting: number; queued: number; running: number };
 
 /**
  * Pick the earliest-due actionable task in the whole queue for a host loop:
@@ -209,9 +216,10 @@ export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Pr
       pendingErrors.push({ id: job.id, error: toError(cause).message });
     }
   }
-  const summary: QueueSummary = { total: jobs.length, built: 0, failed: 0, blocked: 0, waiting: 0, queued: 0, running: 0 };
+  const summary: QueueSummary = { total: jobs.length, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 0, queued: 0, running: 0 };
   for (const job of jobs) {
     const status = job.status;
+    if (status === 'needs-owner') { summary.needsOwner += 1; continue; }
     if (status === 'built' || status === 'failed' || status === 'blocked' || status === 'waiting' || status === 'queued' || status === 'running') summary[status] += 1;
   }
   const due = jobs.map(job => job.nextAt).filter(nextAt => nextAt > Date.now());
@@ -224,11 +232,11 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
     if (!job.turn || job.turn.id !== turnId || job.turn.stage !== job.stage || job.status !== 'running') throw new Error('Stale, replayed or wrong-phase host turn; use next to inspect the active token');
     if (contextDigest(job) !== job.turn.contextDigest) throw new Error('Host turn context changed; abandon this stale token before continuing');
     if (job.groups.length || job.manualRecovery) throw new Error('Command recovery must finish before completing a host turn');
-    if (deadlineExpired(job)) return { turn: null, status: 'failed', error: 'Task wall-clock limit reached; the expired host result was not accepted' };
+    if (deadlineExpired(job)) return { turn: null, status: 'needs-owner', error: 'Task wall-clock limit reached; the expired host result was not accepted without owner intervention' };
     let patch: Partial<Job>;
     if (job.stage === 'research') {
       const research = parseResearch(JSON.stringify(result), job.spec.channel);
-      patch = research.viable ? { stage: 'build', research } : { status: 'failed', research, error: 'Research rejected this product; no replacement product will be attempted' };
+      patch = research.viable ? { stage: 'build', research } : { status: 'needs-owner', research, error: 'Research rejected this product; owner input is required to revise the requirement or provide missing facts' };
     } else if (job.stage === 'build') {
       if (result !== undefined) throw new Error('Build completion accepts no result payload; actual deterministic verification is required');
       assertProject(projectDirectory(job), job.spec);
@@ -267,7 +275,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
   if (['research', 'build', 'review'].includes(job.stage) || job.turn) throw new Error(`Stage ${job.stage} belongs to a native host turn; use next and complete`);
   if (signal?.aborted) return store.update(job.id, { status: 'waiting', nextAt: Date.now(), error: 'Worker was interrupted before this stage started' });
   if (!config.allowLocalExecution) return store.update(job.id, { status: 'blocked', error: config.executionWarning ?? 'Local execution is disabled. Explicitly enable allowLocalExecution only for trusted deterministic commands in a dedicated account or VM.' });
-  if (deadlineExpired(job)) return store.update(job.id, { status: 'failed', error: 'Task wall-clock limit reached; no further work will start' });
+  if (deadlineExpired(job)) return store.update(job.id, { status: 'needs-owner', error: 'Task wall-clock limit reached; owner input is required to proceed' });
   const attemptNumber = (job.attempts[job.stage] ?? 0) + 1;
   let attempts = { ...job.attempts };
   let attemptCharged = false;
@@ -359,7 +367,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     if (job.stage === 'verify' || job.stage === 'package') {
       await checkPrerequisites(config.verification.prerequisites ?? [], { cwd: projectDirectory(job), env: environment, run: exec, signal });
     }
-    if ((job.attempts[job.stage] ?? 0) >= config.maxAttempts) return store.update(job.id, { status: 'failed', error: `Attempt limit reached at ${job.stage}` });
+    if ((job.attempts[job.stage] ?? 0) >= config.maxAttempts) return store.update(job.id, { status: 'needs-owner', error: `Attempt limit reached at ${job.stage}; owner input is required to proceed` });
     if (job.spec.framework === 'flutter' && config.toolchain && ['verify', 'package'].includes(job.stage)) {
       const toolchain = await prepareFlutter(job, { run: exec, env: developerEnv, signal });
       if (toolchain) store.update(job.id, { toolchain });
@@ -531,11 +539,11 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
         } catch { changed = true; }
       }
       if (!changed) {
-        return store.update(job.id, { stage: 'verify', status: exhausted ? 'failed' : 'waiting', recoveryStage: 'verify', ...invalidateVerification(), turn: null, feedback: error.message, error: error.message, nextAt: Date.now() + config.retryDelayMs * charged });
+        return store.update(job.id, { stage: 'verify', status: exhausted ? 'needs-owner' : 'waiting', recoveryStage: 'verify', ...invalidateVerification(), turn: null, feedback: error.message, error: error.message, nextAt: Date.now() + config.retryDelayMs * charged });
       }
-      return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'failed' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
+      return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'needs-owner' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
     }
-    if (job.stage === 'package' && error.code === 'EVIDENCE_CHANGED') return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'failed' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
-    return store.update(job.id, { status: exhausted ? 'failed' : 'waiting', error: error.message, feedback: error.message, nextAt: Date.now() + config.retryDelayMs * charged });
+    if (job.stage === 'package' && error.code === 'EVIDENCE_CHANGED') return store.update(job.id, { ...repair({ ...job, attempts }, error.message), status: exhausted ? 'needs-owner' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
+    return store.update(job.id, { status: exhausted ? 'needs-owner' : 'waiting', error: error.message, feedback: error.message, nextAt: Date.now() + config.retryDelayMs * charged });
   }
 }

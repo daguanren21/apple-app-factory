@@ -91,7 +91,7 @@ test('wall-clock exhaustion terminates work without another host turn', async t 
   store.update(job.id, { createdAt: Date.now() - 25 * 3600000 });
   const { job: result, action } = await nextTurn(store, job.id);
   assert.equal(action, 'done');
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'needs-owner');
   assert.equal(result.hostTurns, 0);
   assert.equal(existsSync(result.workspace), false);
 });

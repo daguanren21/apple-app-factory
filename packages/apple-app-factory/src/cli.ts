@@ -41,7 +41,7 @@ function arity(args: string[], minimum: number, maximum: number, usage: string):
 
 function outcome(job: Job): void {
   print(view(job));
-  if (job.status === 'blocked' || job.status === 'failed') process.exitCode = 2;
+  if (job.status === 'blocked' || job.status === 'failed' || job.status === 'needs-owner') process.exitCode = 2;
 }
 
 function assertDecideBuildOnly(config: Config): void {
@@ -380,7 +380,7 @@ async function main(): Promise<void> {
         arity(args, 1, 1, 'next <id>');
         const result = await nextTurn(store, args[0], { buildOnly });
         print(result);
-        if (result.job.status === 'blocked' || result.job.status === 'failed') process.exitCode = 2;
+        if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
     } else if (command === 'complete') {
       arity(args, 2, 3, 'complete <id> <turn-id> [result.json|-]');
@@ -418,7 +418,7 @@ async function main(): Promise<void> {
     } else if (command === 'retry') {
       arity(args, 1, 1, 'retry <id>');
       print(view(store.transition(args[0], job => {
-        if (!['blocked', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
+        if (!['blocked', 'needs-owner', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
         if (job.turn) throw new Error('Abandon the active host turn before changing task configuration');
         if (job.cloudBuildPending) throw new Error('Cloud packaging outcome is uncertain; reconcile the existing provider run rather than replaying it with retry');
         const resumedConfig = { ...config, packageTarget: config.packageTarget };

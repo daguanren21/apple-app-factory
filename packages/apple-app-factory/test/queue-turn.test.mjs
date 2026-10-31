@@ -123,7 +123,7 @@ test('nextQueueTurn reports stale turn context and keeps scanning the queue', as
   assert.equal(result.pendingErrors.length, 1);
   assert.equal(result.pendingErrors[0].id, stale.id);
   assert.match(result.pendingErrors[0].error, /context changed|changed/);
-  assert.deepEqual(result.summary, { total: 2, built: 0, failed: 0, blocked: 0, waiting: 0, queued: 1, running: 1 });
+  assert.deepEqual(result.summary, { total: 2, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 0, queued: 1, running: 1 });
 });
 
 test('nextQueueTurn idles with the earliest future due time when nothing is actionable', async t => {
@@ -134,7 +134,24 @@ test('nextQueueTurn idles with the earliest future due time when nothing is acti
   assert.equal(result.action, 'idle');
   assert.equal(result.nextAt, soon.nextAt);
   assert.deepEqual(result.pendingErrors, []);
-  assert.deepEqual(result.summary, { total: 2, built: 0, failed: 0, blocked: 0, waiting: 0, queued: 2, running: 0 });
+  assert.deepEqual(result.summary, { total: 2, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 0, queued: 2, running: 0 });
+});
+
+test('needs-owner jobs are terminal for the loop and retryable after owner input', async t => {
+  const f = fixture(t);
+  const job = f.store.update(f.enqueue('owner-deferred', 'build', 0).id, { status: 'needs-owner', error: 'Attempt budget exhausted; owner input is required to proceed: review rejected' });
+  const result = await nextQueueTurn(f.store);
+  assert.equal(result.action, 'idle');
+  assert.deepEqual(result.summary, { total: 1, built: 0, failed: 0, needsOwner: 1, blocked: 0, waiting: 0, queued: 0, running: 0 });
+  const configPath = join(f.root, 'factory.json');
+  writeFileSync(configPath, JSON.stringify({
+    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
+    allowLocalExecution: true, pollMs: 25,
+    verification: { prerequisites: [], checks: [success], runtime: [success] },
+  }));
+  const retried = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
+  assert.equal(retried.status, 0, retried.stderr);
+  assert.equal(JSON.parse(retried.stdout).status, 'queued');
 });
 
 test('idle summary separates finished jobs from blocked ones for the terminal audit', async t => {
@@ -145,7 +162,7 @@ test('idle summary separates finished jobs from blocked ones for the terminal au
   const result = await nextQueueTurn(f.store);
   assert.equal(result.action, 'idle');
   assert.equal(result.nextAt, null);
-  assert.deepEqual(result.summary, { total: 3, built: 1, failed: 1, blocked: 1, waiting: 0, queued: 0, running: 0 });
+  assert.deepEqual(result.summary, { total: 3, built: 1, failed: 1, needsOwner: 0, blocked: 1, waiting: 0, queued: 0, running: 0 });
 });
 
 test('obfuscate stage persists base digest, transformed digest and the typed report', async t => {
