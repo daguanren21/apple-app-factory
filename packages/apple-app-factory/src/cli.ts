@@ -86,8 +86,16 @@ async function probe(argv: string[], config: Config, context?: { cwd: string; en
 const frameworks = FrameworkSchema.options;
 const packageTargets = PackageTargetSchema.options;
 
+const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const xmlText = (value: string): string => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;').replaceAll('\r', '&#13;');
+const systemdSpecifiers = (value: string): string => value.replaceAll('%', '%%');
+const systemdArgument = (value: string): string => JSON.stringify(systemdSpecifiers(value).replaceAll('$', '$$$$'));
+// cron strips escaped percent signs before invoking the shell, regardless of shell quotes.
+// Separate quoted chunks also handle a literal backslash immediately before a percent sign.
+const cronShellQuote = (value: string): string => value.split('%').map(shellQuote).join('\\%');
+
 const reentryInstruction = (configPath: string): string =>
-  `Drive the apphx loop: run apphx drive --once --config ${configPath} --build-only. On action host perform the turn roles exactly as the apphx skill directs without asking the user, then complete the turn with apphx complete and run drive --once again. On action step run drive --once again. On action wait exit this session; the scheduler will wake you at nextDueAt. On action done run apphx report for every built job, run apphx notify --any, report the queue summary including needs-owner items, then exit.`;
+  `Drive the apphx loop: run apphx drive --once --config ${shellQuote(configPath)} --build-only. On action host perform the turn roles exactly as the apphx skill directs without asking the user, then complete the turn with apphx complete and run drive --once again. On action step run drive --once again. On action wait exit this session; the scheduler will wake you at nextDueAt. On action done run apphx report for every built job, run apphx notify --any, report the queue summary including needs-owner items, then exit.`;
 
 /** OS-level wake templates for unattended loops. The owner fills in the host's headless launch command; apphx never installs system services itself. */
 function scheduleTemplate(host: { id: string }, options: { configPath: string; stateDir: string; format: string }) {
@@ -105,15 +113,15 @@ function scheduleTemplate(host: { id: string }, options: { configPath: string; s
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>apphx.${host.id}.loop</string>
+    <string>${xmlText(`apphx.${host.id}.loop`)}</string>
     <key>ProgramArguments</key>
     <array>
-        <!-- TODO(owner): replace with your ${host.id} headless launch command; the second argument is the re-entry prompt -->
-        <string>${headless}</string>
-        <string>${reentry}</string>
+        <!-- TODO(owner): replace with your ${xmlText(host.id)} headless launch command; the second argument is the re-entry prompt -->
+        <string>${xmlText(headless)}</string>
+        <string>${xmlText(reentry)}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${controlDir}</string>
+    <string>${xmlText(controlDir)}</string>
     <!-- revive a crashed session; normal exits wait for the next interval -->
     <key>KeepAlive</key>
     <dict>
@@ -123,25 +131,26 @@ function scheduleTemplate(host: { id: string }, options: { configPath: string; s
     <key>StartInterval</key>
     <integer>300</integer>
     <key>StandardOutPath</key>
-    <string>${log}</string>
+    <string>${xmlText(log)}</string>
     <key>StandardErrorPath</key>
-    <string>${log}</string>
+    <string>${xmlText(log)}</string>
 </dict>
 </plist>
 `;
     install = `Save as ~/Library/LaunchAgents/apphx.${host.id}.loop.plist, then: launchctl load ~/Library/LaunchAgents/apphx.${host.id}.loop.plist. Tune StartInterval to your wake cadence; host turns still need the ${host.id} process, so fill in the headless command first. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
   } else if (options.format === 'systemd') {
+    // These path directives consume raw paths, not quoted/C-escaped ExecStart arguments.
     content = `# /etc/systemd/system/apphx-${host.id}-loop.service
 [Unit]
 Description=apphx ${host.id} loop wake
 
 [Service]
 Type=oneshot
-WorkingDirectory=${controlDir}
+WorkingDirectory=${systemdSpecifiers(`${controlDir}/`)}
 # TODO(owner): replace with your ${host.id} headless launch command; the quoted argument is the re-entry prompt
-ExecStart=${headless} "${reentry}"
-StandardOutput=append:${log}
-StandardError=append:${log}
+ExecStart=${headless} ${systemdArgument(reentry)}
+StandardOutput=append:${systemdSpecifiers(log)}
+StandardError=append:${systemdSpecifiers(log)}
 Restart=on-failure
 
 # /etc/systemd/system/apphx-${host.id}-loop.timer
@@ -157,11 +166,12 @@ WantedBy=timers.target
 `;
     install = `Install both units, then: systemctl daemon-reload && systemctl enable --now apphx-${host.id}-loop.timer. Tune OnCalendar to your wake cadence. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
   } else {
+    const lock = join(options.stateDir, `schedule-${host.id}.lock`);
     content = `# crontab -e
 # TODO(owner): replace ${headless} with your ${host.id} headless launch command
-*/5 * * * * cd ${controlDir} && ${headless} "${reentry}" >> ${log} 2>&1
+*/5 * * * * cd ${cronShellQuote(controlDir)} && flock -n ${cronShellQuote(lock)} ${headless} ${cronShellQuote(reentry)} >> ${cronShellQuote(log)} 2>&1
 `;
-    install = `Add the line above to your crontab. cron has no crash revival; consider the launchd or systemd format for KeepAlive/Restart behaviour. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
+    install = `Requires a util-linux-compatible flock executable in cron's PATH (flock -n <file> <command>); ensure the state directory exists and keep the headless command in the foreground so its instance lock spans the whole session. Add the line above to your crontab. cron has no crash revival; consider the launchd or systemd format for KeepAlive/Restart behaviour. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
   }
   return { host: host.id, format: options.format, content, reentry, install };
 }
@@ -242,7 +252,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   doctor [spec.json]            Check configured prerequisites and optional stack tools
   enqueue <spec.json|->          Persist requirements and return a task ID
   next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
-  drive [--once] [--max-rounds n] [--strict]   Drive the queue loop: execute due deterministic stages, claim host turns
+  drive [--once] [--max-rounds n] [--strict]   Drive the loop: sweep inbox, run due stages, claim host turns; wait/done carry nextDueAt and the queue summary; --strict exits 2 on failed/needs-owner
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
   decide <id> <json-file|->       Append decision-log entries (role, rationale) to a task
@@ -462,10 +472,10 @@ async function main(): Promise<void> {
     } else if (command === 'next') {
       if (values.any) {
         arity(args, 0, 0, 'next --any');
-        print(await nextQueueTurn(store, { buildOnly }));
+        print(await nextQueueTurn(store, { buildOnly, ownerPid: process.ppid }));
       } else {
         arity(args, 1, 1, 'next <id>');
-        const result = await nextTurn(store, args[0], { buildOnly });
+        const result = await nextTurn(store, args[0], { buildOnly, ownerPid: process.ppid });
         print(result);
         if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
@@ -473,7 +483,7 @@ async function main(): Promise<void> {
       arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--build-only] [--config <file>]');
       const maxRounds = values['max-rounds'] === undefined ? undefined : Number(values['max-rounds']);
       if (maxRounds !== undefined && (!Number.isSafeInteger(maxRounds) || maxRounds <= 0)) throw new Error('--max-rounds must be a positive integer');
-      const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly });
+      const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid: process.ppid });
       print(result);
       if (values.strict && result.failed?.length) process.exitCode = 2;
     } else if (command === 'complete') {

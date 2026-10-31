@@ -19,6 +19,7 @@ import { closestOwnedGoWorkspace } from './go-dependencies.js';
 import { validateMacOSArtifact } from './macos.js';
 import { validateMyGoPackaging, validateMyGoCommand } from './mygo-build.js';
 import { invalidateVerification } from './proof.js';
+import { scanInbox } from './inbox.js';
 import { prepareIsolatedCommand, type IsolatedCommand, type IsolationCapabilities } from './isolation.js';
 
 function requireDependencyProof(job: Job): void {
@@ -34,14 +35,14 @@ function taskPrompt(job: Job): string {
   return `${autopilot}You are the native host of an embedded multi-stack app Harness. Use your own context, tools and native delegation in ${projectDirectory(job)}; never launch another coding-agent CLI. Preserve the requested framework and existing architecture. Implement only this product. Never hide functionality from users or reviewers. Do not upload, submit, push, read publisher credentials or change factory state. Remote build commands belong only to the explicitly authorized Harness packaging profile, not host turns. The workspace is not a security sandbox. Complete real implementations, not placeholders.\nImmutable product requirements:\n${JSON.stringify(job.spec, null, 2)}\nPrevious verification/review failure (repair the mechanism, never weaken acceptance):\n${job.feedback ?? job.error ?? 'none'}\nPersisted execution logs:\n${JSON.stringify(job.logs.slice(-3))}\nContinue existing work. Only actual deterministic checks performed by the Harness establish verification; host claims do not.\n`;
 }
 
-export interface TurnOptions { buildOnly?: boolean }
+export interface TurnOptions { buildOnly?: boolean; ownerPid?: number; resumeActive?: boolean }
 export interface HostAction {
   job: Job;
   action: 'host' | 'step' | 'wait' | 'done';
   turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string>; role: string[] };
 }
 
-export interface DriveOptions { once?: boolean; maxRounds?: number; strict?: boolean; buildOnly?: boolean }
+export interface DriveOptions { once?: boolean; maxRounds?: number; strict?: boolean; buildOnly?: boolean; ownerPid?: number }
 export type JobView = {
   id: string; product: string; framework: string; platform: string; channel: string; version: string;
   priority: Job['spec']['priority']; stage: Job['stage']; status: Job['status']; hostTurns: number;
@@ -56,6 +57,10 @@ export interface DriveResult {
   rounds: number;
   failed?: Array<{ id: string; error: string | null }>;
   pendingErrors?: Array<{ id: string; error: string }>;
+  /** Idle audit for `wait`/`done` returns so a scheduler can decide without another status call. */
+  summary?: QueueSummary;
+  /** Inbox intake performed at the start of this drive (only when an inbox is configured). */
+  intake?: { accepted: number; errors?: Array<{ source: string; error: string }> };
 }
 
 function jobView(job: Job): JobView {
@@ -89,6 +94,34 @@ function contextDigest(job: Job): string {
 
 function deadlineExpired(job: Job): boolean {
   return Date.now() - job.createdAt > job.config.maxJobHours * 3600000;
+}
+
+function processIsLive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return toError(cause).code !== 'ESRCH';
+  }
+}
+
+
+function liveHostTurn(turn: NonNullable<Job['turn']>): boolean {
+  return turn.ownerPid !== undefined && processIsLive(turn.ownerPid);
+}
+
+/** Adopt a dead/legacy host claim without incrementing host-turn or attempt budgets. */
+function adoptHostTurn(store: Store, job: Job, ownerPid: number): Job {
+  const turnId = job.turn?.id;
+  if (!turnId) return job;
+  return store.transition(job.id, current => {
+    if (!current.turn || current.turn.id !== turnId) return {};
+    if (current.status !== 'running' || current.stage !== current.turn.stage || contextDigest(current) !== current.turn.contextDigest) {
+      throw new Error('Active host turn context changed; abandon its token before requesting another turn');
+    }
+    if (liveHostTurn(current.turn)) return {};
+    return { turn: { ...current.turn, ownerPid } };
+  });
 }
 
 function requireReviewProof(job: Job): void {
@@ -169,7 +202,16 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
     let job = store.get(id);
     assertTurnPermission(job, options);
     if (job.turn) {
-      if (job.status !== 'running' || job.stage !== job.turn.stage || contextDigest(job) !== job.turn.contextDigest) throw new Error('Active host turn context changed; abandon its token before requesting another turn');
+      const ownerLive = liveHostTurn(job.turn);
+      if (options.resumeActive === false) {
+        if (ownerLive) return { job, action: 'wait' };
+        const ownerPid = options.ownerPid ?? process.pid;
+        job = adoptHostTurn(store, job, ownerPid);
+        if (!job.turn || job.turn.ownerPid !== ownerPid) return { job, action: 'wait' };
+      } else if (!ownerLive) {
+        job = adoptHostTurn(store, job, options.ownerPid ?? process.pid);
+      }
+      if (!job.turn || job.status !== 'running' || job.stage !== job.turn.stage || contextDigest(job) !== job.turn.contextDigest) throw new Error('Active host turn context changed; abandon its token before requesting another turn');
       if (deadlineExpired(job)) {
         const claimed = job.turn;
         job = store.transition(id, current => {
@@ -210,7 +252,10 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
       if (current.turn || contextDigest(current) !== contextDigest(job) || current.nextAt > Date.now() || !eligible || current.groups.length || current.manualRecovery) throw new Error('Task changed before the host turn could be claimed');
       if (deadlineExpired(current) || current.hostTurns >= current.config.maxHostTurns || (current.attempts[current.stage] ?? 0) >= current.config.maxAttempts) return { status: 'needs-owner', error: 'Host turn, stage attempt or task wall-clock limit reached; owner input is required to proceed' };
       if (current.stage === 'review') requireReviewProof(current);
-      const turn = { id: randomUUID(), stage: current.stage as HostStage, createdAt: Date.now(), contextDigest: contextDigest(current) };
+      const turn = {
+        id: randomUUID(), stage: current.stage as HostStage, createdAt: Date.now(), contextDigest: contextDigest(current),
+        decisionsLengthAtClaim: current.decisions.length, ownerPid: options.ownerPid ?? process.pid,
+      };
       return { turn, hostTurns: current.hostTurns + 1, attempts: { ...current.attempts, [current.stage]: (current.attempts[current.stage] ?? 0) + 1 }, status: 'running', blockedReason: null, error: null };
     });
     return job.turn ? hostAction(store, job) : { job, action: 'done' };
@@ -230,6 +275,7 @@ type QueuePick =
 
 async function pickQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueuePick> {
   const pendingErrors: Array<{ id: string; error: string }> = [];
+  const queueOptions = { ...options, resumeActive: false };
   // Priority lanes order the scan (P0 > P1 > P2); within a lane, earliest due
   // time wins, then insertion order. Priority never overrides eligibility:
   // a deferred P0 job is skipped and the scan continues to the next safe action.
@@ -237,7 +283,9 @@ async function pickQueueTurn(store: Store, options: TurnOptions = {}): Promise<Q
   const jobs = [...store.list()].sort((left, right) => rank(left) - rank(right) || left.nextAt - right.nextAt);
   for (const job of jobs) {
     try {
-      const action = await nextTurn(store, job.id, options);
+      // The queue-only mode performs the live-owner check after acquiring the
+      // short worker lock, so a concurrent initial claim cannot be replayed.
+      const action = await nextTurn(store, job.id, queueOptions);
       if (action.action === 'host' && action.turn) return { action: 'host', job: action.job, turn: action.turn };
       if (action.action === 'step') return { action: 'step', job: action.job };
     } catch (cause) {
@@ -324,10 +372,20 @@ function queueFailures(store: Store, failed: Array<{ id: string; error: string |
 export async function driveQueue(store: Store, config: Config, options: DriveOptions = {}): Promise<DriveResult> {
   const maxRounds = options.once ? 1 : options.maxRounds;
   const failed: Array<{ id: string; error: string | null }> = [];
+  // Intake belongs to the loop (loopx-style frontier ingestion): every drive
+  // sweeps the configured inbox first so submitted requirements join the
+  // queue without the host remembering a separate scan command. Per-entry
+  // intake errors are reported, never fatal to the loop itself.
+  let intake: DriveResult['intake'];
+  if (config.inbox) {
+    const scan = await scanInbox(store, config);
+    const errors = scan.entries.filter(entry => entry.status === 'error').map(entry => ({ source: entry.source, error: entry.error ?? 'requirement rejected' }));
+    intake = { accepted: scan.entries.filter(entry => entry.status === 'accepted').length, ...(errors.length ? { errors } : {}) };
+  }
   let rounds = 0;
   let lastResult: Job | undefined;
   while (maxRounds === undefined || rounds < maxRounds) {
-    const pick = await pickQueueTurn(store, { buildOnly: options.buildOnly });
+    const pick = await pickQueueTurn(store, { buildOnly: options.buildOnly, ownerPid: options.ownerPid });
     if (pick.action === 'idle') {
       const jobs = store.list();
       const pending = jobs.filter(job => !['built', 'failed', 'needs-owner'].includes(job.status)).length;
@@ -338,11 +396,13 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
         rounds,
         ...(allFailed.length ? { failed: allFailed } : {}),
         ...(pick.pendingErrors.length ? { pendingErrors: pick.pendingErrors } : {}),
+        summary: pick.summary,
+        ...(intake ? { intake } : {}),
       };
     }
     if (pick.action === 'host') {
       const allFailed = queueFailures(store, failed);
-      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
+      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
     }
     let result: Job;
     store.acquire();
@@ -359,7 +419,27 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
     if (result.status === 'failed' || result.status === 'needs-owner') failed.push({ id: result.id, error: result.error ?? null });
   }
   const allFailed = queueFailures(store, failed);
-  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
+  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
+}
+
+function missingReviewReceipts(job: Job): string[] {
+  const boundary = job.turn?.decisionsLengthAtClaim;
+  if (boundary === undefined || boundary > job.decisions.length) {
+    throw new Error('Decision receipt boundary is unavailable for this persisted host turn; abandon this turn and reclaim it before recording receipts');
+  }
+  const available = new Map<string, number>();
+  for (let index = boundary; index < job.decisions.length; index += 1) {
+    const role = job.decisions[index].role;
+    available.set(role, (available.get(role) ?? 0) + 1);
+  }
+  const missing: string[] = [];
+  for (const seat of job.config.roles?.review ?? []) {
+    const name = typeof seat === 'string' ? seat : seat.name;
+    const count = available.get(name) ?? 0;
+    if (count === 0) missing.push(name);
+    else available.set(name, count - 1);
+  }
+  return missing;
 }
 
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {
@@ -385,11 +465,7 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
       // execution is evidenced instead of advisory. Missing seats reject the
       // completion; the turn stays active and the host records them with decide.
       if (job.config.roles?.receipt) {
-        const roles = job.config.roles;
-        const seats = roles.review.map(seat => typeof seat === 'string' ? seat : seat.name);
-        const claimedAt = job.turn?.createdAt ?? 0;
-        const recorded = new Set(job.decisions.filter(entry => entry.at >= claimedAt).map(entry => entry.role));
-        const missing = seats.filter(seat => !recorded.has(seat));
+        const missing = missingReviewReceipts(job);
         if (missing.length) throw new Error(`Review seat receipts missing for: ${missing.join(', ')}; run each missing seat in its declared context, record it with apphx decide (role plus rationale), then complete this turn again`);
       }
       try { requireReviewProof(job); }

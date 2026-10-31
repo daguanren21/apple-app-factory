@@ -120,6 +120,11 @@ step → apphx step <id> 一次；built → apphx notify --any；
 idle 时读 summary：全部 built/failed 才是队列结束，存在 blocked/waiting 只是暂停；
 按 nextAt 安排下次唤醒，汇报状态后退出。一个唤醒内不超过所有者设定的动作上限。
 ```
+可用 `apphx schedule --host <id> --format launchd|systemd|cron --config /absolute/control/factory.json`
+生成模板和固定 re-entry 提示词。替换宿主的 headless 启动命令后由所有者安装；CLI 不安装或启动系统服务。
+cron 模板要求其 `PATH` 中有支持 `flock -n <file> <command>` 的可执行文件，并保持 headless 命令前台运行；
+同一状态目录、同一宿主共用锁，执行结束或进程退出后释放。路径及提示词按各格式语法转义，勿手工删掉转义或引号。
+
 
 `factory.json` 中的邮件配置（密码只在发送时从环境变量读取，不落盘、不打日志）：
 
@@ -141,6 +146,7 @@ idle 时读 summary：全部 built/failed 才是队列结束，存在 blocked/wa
 
 ## 6. 边界
 
-- 一个 session 同一时间只应拥有一个队列；worker 锁和 turn token 防确定性阶段重叠。
-- `next --any` 每轮重读持久化状态，任何一轮的结论都不能靠"记得上一轮"。
+- `drive`/`next --any` 在领取锁内跳过活跃宿主进程持有的回合，继续扫描其他作业；原宿主退出后续领原 token，不重复扣回合和尝试预算。
+- CLI 以父进程 PID 标识会话；应由持续存活的宿主进程调用，而非会立刻退出的中间包装进程。库调用默认使用当前进程，也可传入 `ownerPid`。PID 存活检查是保守的本机并发保护，不是身份认证。
+- `next <id>` 保留显式检查/恢复活跃 token 的能力；它不是第二个无人值守队列驾驶员。`next --any` 每轮重读持久化状态，任何结论都不能靠“记得上一轮”。
 - 商店上传、提交、审核不在本工具内；`built` ≠ 上架/过审。

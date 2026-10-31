@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { driveQueue, completeTurn } from '../dist/runner.js';
@@ -157,6 +157,85 @@ test('--once processes exactly one due deterministic task per drive', async t =>
   assert.equal(second.result.stage, 'review');
 });
 
+test('drive sweeps the configured inbox before advancing the loop', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-drive-intake-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const inbox = join(root, 'inbox');
+  mkdirSync(inbox);
+  const config = baseConfig(root, { inbox: { directory: inbox } });
+  const store = new Store(config.stateDir);
+  t.after(() => store.close());
+  writeFileSync(join(inbox, 'new-requirement.json'), JSON.stringify({ ...spec, id: 'drive-intake', version: '2.0.0' }));
+  const result = await driveQueue(store, config, { once: true });
+  assert.equal(result.action, 'host');
+  assert.equal(result.intake.accepted, 1);
+  assert.equal(result.intake.errors, undefined);
+  const jobs = store.list();
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].spec.id, 'drive-intake');
+});
+
+test('drive reports intake errors without stopping the loop', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-drive-intake-errors-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const inbox = join(root, 'inbox');
+  mkdirSync(inbox);
+  const config = baseConfig(root, { inbox: { directory: inbox } });
+  const store = new Store(config.stateDir);
+  t.after(() => store.close());
+  writeFileSync(join(inbox, 'a-broken.json'), '{');
+  writeFileSync(join(inbox, 'b-valid.json'), JSON.stringify({ ...spec, id: 'drive-intake', version: '2.0.0' }));
+  const result = await driveQueue(store, config, { once: true });
+  assert.equal(result.action, 'host');
+  assert.equal(result.intake.accepted, 1);
+  assert.equal(result.intake.errors.length, 1);
+  assert.match(result.intake.errors[0].source, /a-broken\.json/);
+  assert.match(result.intake.errors[0].error, /Cannot accept requirement/);
+});
+
+test('drive wait and done returns carry the queue summary', async t => {
+  const f = fixture(t);
+  f.store.update(f.job.id, { status: 'waiting', nextAt: Date.now() + 3_600_000 });
+  const waiting = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(waiting.action, 'wait');
+  assert.deepEqual(waiting.summary, { total: 1, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 1, queued: 0, running: 0 });
+  f.store.update(f.job.id, { status: 'built' });
+  const done = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(done.action, 'done');
+  assert.equal(done.summary.built, 1);
+  assert.equal(done.summary.needsOwner, 0);
+});
+
+test('drive skips a live session turn and recovers it after the owner exits', async t => {
+  const f = fixture(t);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => { if (!holder.killed) holder.kill('SIGTERM'); });
+  await new Promise((resolve, reject) => {
+    holder.once('spawn', resolve);
+    holder.once('error', reject);
+  });
+  assert.ok(holder.pid);
+  const owned = f.job;
+  const sibling = f.store.enqueue({ ...spec, id: 'drive-live-sibling', version: '0.9.0' }, f.config);
+  const claimed = await driveQueue(f.store, f.config, { once: true, ownerPid: holder.pid });
+  assert.equal(claimed.action, 'host');
+  assert.equal(claimed.job.id, owned.id);
+  const hostTurns = claimed.job.hostTurns;
+  const skipped = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(skipped.action, 'host');
+  assert.equal(skipped.job.id, sibling.id);
+  assert.equal(f.store.get(owned.id).turn.ownerPid, holder.pid);
+
+  holder.kill('SIGTERM');
+  await new Promise(resolve => holder.once('exit', resolve));
+  const recovered = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(recovered.action, 'host');
+  assert.equal(recovered.job.id, owned.id);
+  assert.equal(recovered.turn.id, claimed.turn.id);
+  assert.equal(recovered.job.hostTurns, hostTurns);
+  assert.equal(f.store.get(owned.id).turn.ownerPid, process.pid);
+});
+
 test('--strict reports terminal failed tasks with exit code 2', async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-drive-strict-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -198,7 +277,8 @@ test('drive reports persisted terminal failures on every return', async t => {
 
 test('drive surfaces pendingErrors when a persisted host turn context no longer matches', async t => {
   const f = fixture(t);
-  const first = await driveQueue(f.store, f.config, { once: true });
+  const deadOwner = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
+  const first = await driveQueue(f.store, f.config, { once: true, ownerPid: deadOwner });
   assert.equal(first.action, 'host');
   const job = f.store.get(f.job.id);
   // corrupt the persisted claim so the scan cannot complete it and must surface a reason

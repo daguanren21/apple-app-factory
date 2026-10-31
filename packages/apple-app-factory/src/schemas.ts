@@ -89,11 +89,11 @@ export const RoleSeatSchema = z.union([
 export type RoleSeat = z.infer<typeof RoleSeatSchema>;
 
 /**
- * Advisory role assignments per host stage. Role names are free-form so teams
- * can add any missing agent (e.g. security-review, performance-analyst); the
- * host adopts every returned role via its native delegation. Roles never
- * change stage eligibility, budgets or evidence gates. Each stage defaults so
- * factories may override a single stage without re-declaring the others.
+ * Role assignments per host stage. Names are free-form so teams can add agents
+ * (e.g. security-review, performance-analyst); the host adopts every returned
+ * role via native delegation. Assignments do not change eligibility or budgets;
+ * receipt separately opts into a review evidence gate. Each stage defaults so
+ * factories may override one stage without re-declaring the others.
  */
 export const RolesConfigSchema = z.strictObject({
   research: z.array(RoleSeatSchema).default(['product-analyst']),
@@ -180,6 +180,10 @@ export const HostStageSchema = z.enum(['research', 'build', 'review']);
 export type HostStage = z.infer<typeof HostStageSchema>;
 export const HostTurnSchema = z.strictObject({
   id: z.uuid(), stage: HostStageSchema, createdAt: z.number().finite(), contextDigest: text.regex(/^[a-f0-9]{64}$/),
+  /** Number of decision entries present when this host turn was claimed. */
+  decisionsLengthAtClaim: count.optional(),
+  /** Stable owner process for the host session; absent on legacy turns. */
+  ownerPid: count.positive().optional(),
 });
 export type HostTurn = z.infer<typeof HostTurnSchema>;
 export const JobSchema = z.object({
