@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { RequirementSchema, type Spec } from './schemas.js';
 
-export const MAX_INPUT_BYTES = 1024 * 1024;
+import { MAX_INPUT_BYTES } from './input-limits.js';
 export type Requirement = { spec: Spec; baseJobId?: string };
 
 export function parseRequirement(value: unknown): Requirement {

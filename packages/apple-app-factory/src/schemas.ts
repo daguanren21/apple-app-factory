@@ -3,6 +3,7 @@ import { dirname, isAbsolute, resolve, win32 } from 'node:path';
 import { lstatSync } from 'node:fs';
 import { AppleReceiptSchema } from './apple-types.js';
 import { validateMyGoPackaging } from './mygo-build.js';
+import { MAX_INPUT_BYTES, minimumNodeResultBytes, minimumReviewBytes } from './input-limits.js';
 
 const text = z.string().min(1).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
 const count = z.number().int().nonnegative().safe();
@@ -92,13 +93,13 @@ export type RoleSeat = z.infer<typeof RoleSeatSchema>;
  * Role assignments per host stage. Names are free-form so teams can add agents
  * (e.g. security-review, performance-analyst); the host adopts every returned
  * role via native delegation. Assignments do not change eligibility or budgets;
- * receipt separately opts into a review evidence gate. Each stage defaults so
- * factories may override one stage without re-declaring the others.
+ * receipt separately opts into a review evidence gate. Missing assignments stay
+ * absent for model planning; legacy host packets supply their own default team.
  */
 export const RolesConfigSchema = z.strictObject({
-  research: z.array(RoleSeatSchema).default(['product-analyst']),
-  build: z.array(RoleSeatSchema).default(['ui-designer', 'developer']),
-  review: z.array(RoleSeatSchema).default(['architect-review', 'qa-engineer', 'acceptance-reviewer']),
+  research: z.array(RoleSeatSchema).optional(),
+  build: z.array(RoleSeatSchema).optional(),
+  review: z.array(RoleSeatSchema).optional(),
   /** Owner opt-in: review completion requires a fresh decision-log receipt for every review seat. */
   receipt: z.boolean().default(false),
 });
@@ -119,6 +120,14 @@ export const NotifyEmailSchema = z.strictObject({
 });
 export type NotifyEmail = z.infer<typeof NotifyEmailSchema>;
 
+/** Presence opts a factory into model-planned, durable host work graphs. */
+export const WorkflowConfigSchema = z.strictObject({
+  maxNodes: count.min(1).max(256).default(64),
+  maxParallel: count.min(1).max(32).default(4),
+  maxReplans: count.max(32).default(4),
+});
+export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
+
 export const ConfigSchema = z.strictObject({
   configPath: text.optional(), stateDir: text, workspaceRoot: text,
   allowLocalExecution: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
@@ -135,13 +144,26 @@ export const ConfigSchema = z.strictObject({
   obfuscation: ObfuscationConfigSchema.optional(),
   notify: z.strictObject({ email: NotifyEmailSchema }).optional(),
   roles: RolesConfigSchema.optional(),
+  workflow: WorkflowConfigSchema.optional(),
   packaging: z.strictObject({ commands: z.array(command).min(1), artifactPath: text.refine(value => relativeProjectPath(value), 'artifactPath must be an exact project-relative file or directory without traversal or wildcards'), provider: z.enum(['local', 'cloud']).default('local') }).optional(),
 }).superRefine((value, context) => {
   if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) context.addIssue({ code: 'custom', path: ['allowCloudBuild'], message: 'Cloud packaging requires explicit allowCloudBuild=true' });
+  if (value.workflow) for (const stage of ['research', 'build', 'review'] as const) {
+    const seats = value.roles?.[stage] ?? [];
+    if (seats.length > value.workflow.maxNodes) context.addIssue({ code: 'custom', path: ['roles', stage], message: `Required seats exceed workflow.maxNodes (${value.workflow.maxNodes})` });
+    for (const [index, seat] of seats.entries()) {
+      if ((typeof seat === 'string' ? seat : seat.name).length > 200 || typeof seat !== 'string' && (seat.provider?.length ?? 0) > 200) context.addIssue({ code: 'custom', path: ['roles', stage, index], message: 'Dynamic role and provider names must fit the 200-character workflow node bound' });
+    }
+  }
 });
 export type Config = z.infer<typeof ConfigSchema>;
 export function validateJobConfig(spec: Spec, config: Config): void {
   if (config.autopilot === true && !config.allowLocalExecution) throw new Error('autopilot requires allowLocalExecution=true: the owner must pre-authorize deterministic local execution before unattended mode');
+  // Admission must not freeze requirements whose smallest valid verdict cannot
+  // cross the same bounded JSON transport used to submit the requirement.
+  const reviewBytes = minimumReviewBytes(spec.acceptance);
+  const minimumResultBytes = config.workflow ? minimumNodeResultBytes(['x'], reviewBytes) : reviewBytes;
+  if (minimumResultBytes > MAX_INPUT_BYTES) throw new Error(`Acceptance requires at least ${minimumResultBytes} completion bytes, exceeding the ${MAX_INPUT_BYTES}-byte input limit; split the requirement into independently deliverable products before enqueueing`);
   const targets: Record<Platform, readonly Config['packageTarget'][]> = { ios: ['simulator', 'ipa'], android: ['apk', 'aab'], macos: ['app', 'dmg'] };
   if (!targets[spec.platform].includes(config.packageTarget)) throw new Error(`packageTarget=${config.packageTarget} does not match platform=${spec.platform}`);
   if (spec.channel === 'google-play' && config.packageTarget !== 'aab') throw new Error('Google Play requires packageTarget=aab');
@@ -184,12 +206,58 @@ export const HostTurnSchema = z.strictObject({
   decisionsLengthAtClaim: count.optional(),
   /** Stable owner process for the host session; absent on legacy turns. */
   ownerPid: count.positive().optional(),
+  ownerIdentity: text.optional(),
+  kind: z.enum(['plan', 'node']).optional(), nodeId: text.optional(), planRevision: count.optional(),
 });
 export type HostTurn = z.infer<typeof HostTurnSchema>;
+
+const workflowNodeId = text.regex(/^[a-z][a-z0-9_-]{0,63}$/, 'Expected a lowercase workflow node identifier');
+const workflowPath = text.refine(value => relativeProjectPath(value, true), 'Expected a project-relative file or directory, or .');
+export const WorkflowNodeSchema = z.strictObject({
+  id: workflowNodeId, role: text.max(200), instructions: text.max(20000),
+  dependsOn: z.array(workflowNodeId).max(256).default([]),
+  readPaths: z.array(workflowPath).max(256).default(['.']),
+  writePaths: z.array(workflowPath).max(256).default([]),
+  acceptance: z.array(text.max(2000)).min(1).max(64),
+  provider: text.max(200).optional(), fresh: z.boolean().default(false),
+});
+export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;
+export const WorkflowPlanSchema = z.strictObject({
+  rationale: text.max(20000), nodes: z.array(WorkflowNodeSchema).min(1).max(256),
+  final: workflowNodeId, invalidate: z.array(workflowNodeId).max(256).default([]),
+});
+export type WorkflowPlan = z.infer<typeof WorkflowPlanSchema>;
+export const WorkflowNodeResultSchema = z.strictObject({
+  outcome: z.enum(['passed', 'failed']), summary: text.max(20000),
+  evidence: z.array(z.strictObject({ requirement: text.max(2000), evidence: text.max(20000) })).max(64),
+  result: z.unknown().optional(),
+});
+export type WorkflowNodeResult = z.infer<typeof WorkflowNodeResultSchema>;
+export const WorkflowNodeStateSchema = z.strictObject({
+  definition: WorkflowNodeSchema, status: z.enum(['pending', 'running', 'passed', 'failed']),
+  attempts: count.default(0), turn: HostTurnSchema.nullable().default(null),
+  result: WorkflowNodeResultSchema.optional(), completedAt: z.number().finite().optional(),
+  decisionsLengthAtClaim: count.optional(),
+});
+export type WorkflowNodeState = z.infer<typeof WorkflowNodeStateSchema>;
+export const WorkflowPhaseSchema = z.strictObject({
+  status: z.enum(['planning', 'running', 'complete']), revision: count.default(0), reason: text,
+  final: workflowNodeId.optional(), nodes: z.array(WorkflowNodeStateSchema).max(256).default([]),
+  history: z.array(z.strictObject({ revision: count.positive(), at: z.number().finite(), reason: text, plan: WorkflowPlanSchema })).default([]),
+  decisionsLengthAtClaim: count.optional(),
+  proofDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(),
+});
+export type WorkflowPhase = z.infer<typeof WorkflowPhaseSchema>;
+export const WorkflowStateSchema = z.strictObject({
+  cancelled: z.boolean().default(false),
+  phases: z.strictObject({ research: WorkflowPhaseSchema.optional(), build: WorkflowPhaseSchema.optional(), review: WorkflowPhaseSchema.optional() }),
+});
+export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
 export const JobSchema = z.object({
   id: text, spec: SpecSchema, requestSpec: SpecSchema.nullable(), requestSpecError: text.nullable().default(null), config: ConfigSchema, stage: StageSchema, status: StatusSchema,
   createdAt: z.number().finite(), updatedAt: z.number().finite(), nextAt: z.number().finite(),
   attempts: z.partialRecord(StageSchema, count), hostTurns: count, turn: HostTurnSchema.nullable().optional(), groups: z.array(z.number().int()),
+  workflow: WorkflowStateSchema.optional(),
   decisions: z.array(z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale })).default([]),
   commands: z.record(z.string(), CommandMetadataSchema).default({}), receipt: AppleReceiptSchema, logs: z.array(text), workspace: text,
   baseJobId: z.uuid().optional(), baseDigest: text.regex(/^[a-f0-9]{64}$/).optional(), basePrepared: z.boolean().optional(),

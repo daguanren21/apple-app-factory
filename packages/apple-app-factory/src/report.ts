@@ -47,6 +47,7 @@ export interface Report {
     hostTurns: number;
   };
   decisions: Job['decisions'];
+  workflow?: Job['workflow'];
   error?: string | null;
   feedback?: string;
   blockedReason?: NonNullable<Job['blockedReason']>;
@@ -165,6 +166,7 @@ export function buildReport(job: Job): Report {
       hostTurns: job.hostTurns,
     },
     decisions: job.decisions,
+    ...(job.workflow !== undefined ? { workflow: job.workflow } : {}),
     ...(job.error != null ? { error: job.error } : {}),
     ...(job.feedback !== undefined ? { feedback: job.feedback } : {}),
     ...(job.blockedReason != null ? { blockedReason: job.blockedReason } : {}),
@@ -276,6 +278,42 @@ export function renderMarkdown(report: Report): string {
   lines.push('', '## Checklist', '', '| 验收项 | 状态 | 证据 / 原因 |', '| --- | --- | --- |');
   for (const entry of report.checklist) {
     lines.push(`| ${md(entry.requirement)} | ${STATUS_LABEL[entry.status]} | ${md(entry.evidence ?? entry.reason ?? '')} |`);
+  }
+  if (report.workflow) {
+    lines.push('', '## Workflow', '', `- **cancelled**: ${report.workflow.cancelled}`);
+    for (const stage of ['research', 'build', 'review'] as const) {
+      const phase = report.workflow.phases[stage];
+      if (!phase) continue;
+      lines.push('', `### ${stage} — revision ${phase.revision}`, '', `- **status**: ${phase.status}`, `- **reason**: ${md(phase.reason)}`, `- **final**: ${md(phase.final ?? 'Not planned')}`);
+      lines.push('', '| Node | Role | Status | Attempts | Dependencies | Read paths | Write paths |', '| --- | --- | --- | --- | --- | --- | --- |');
+      for (const node of phase.nodes) {
+        const definition = node.definition;
+        lines.push(`| ${md(definition.id)} | ${md(definition.role)} | ${node.status} | ${node.attempts} | ${md(definition.dependsOn.join(', ') || 'None')} | ${md(definition.readPaths.join(', ') || 'None')} | ${md(definition.writePaths.join(', ') || 'None')} |`);
+      }
+      for (const node of phase.nodes) {
+        const definition = node.definition;
+        lines.push('', `#### ${md(definition.id)} — ${node.status}`, '', `- **instructions**: ${md(definition.instructions)}`, `- **declared context**: ${definition.fresh ? 'fresh' : 'host-managed'}${definition.provider ? `; declared provider=${md(definition.provider)}` : ''} (host-executed; not identity attestation)`);
+        if (node.turn) lines.push(`- **active turn**: ${md(node.turn.id)} (revision ${node.turn.planRevision ?? phase.revision})`);
+        if (node.completedAt !== undefined) lines.push(`- **completedAt**: ${iso(node.completedAt)}`);
+        if (node.result) lines.push(`- **result**: ${node.result.outcome} — ${md(node.result.summary)}`);
+        lines.push('', '**Acceptance evidence**', '');
+        for (const requirement of definition.acceptance) {
+          const evidence = node.result?.evidence.find(entry => entry.requirement === requirement);
+          lines.push(`- **${md(requirement)}**: ${md(evidence?.evidence ?? 'Not yet observed')}`);
+        }
+        for (const evidence of node.result?.evidence ?? []) {
+          if (!definition.acceptance.includes(evidence.requirement)) lines.push(`- **${md(evidence.requirement)}** (additional evidence): ${md(evidence.evidence)}`);
+        }
+        if (node.result?.result !== undefined) {
+          lines.push('', '**Structured output**', '', ...JSON.stringify(node.result.result, null, 2).split('\n').map(line => `    ${line}`));
+        }
+      }
+      lines.push('', '**Plan revision history**', '');
+      if (phase.history.length === 0) lines.push('No accepted plan yet.');
+      for (const entry of phase.history) {
+        lines.push(`- **revision ${entry.revision}** (${iso(entry.at)}): ${md(entry.reason)}`, `  - rationale: ${md(entry.plan.rationale)}`, `  - final: ${md(entry.plan.final)}; nodes: ${md(entry.plan.nodes.map(node => node.id).join(', '))}; invalidated: ${md(entry.plan.invalidate.join(', ') || 'None')}`);
+      }
+    }
   }
   lines.push('', '## 决策日志', '');
   if (report.decisions.length === 0) {

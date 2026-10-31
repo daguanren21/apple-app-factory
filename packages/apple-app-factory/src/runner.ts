@@ -2,14 +2,15 @@ import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync, wr
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { run, executionEnvironment, processGroupAlive, terminateOwnedProcessGroup } from './process.js';
+import { z } from 'zod';
+import { run, executionEnvironment, inspectProcess, processIsAlive, processGroupAlive, terminateOwnedProcessGroup } from './process.js';
 import { canonicalPath, inside, expandArgv } from './config.js';
 import { checkPrerequisites } from './preflight.js';
 import { flutterEnvironment, prepareFlutter } from './flutter.js';
 import { prepareExportOptions, prepareNativeExportCommands } from './export-options.js';
 import { dependencyDigest, generatedModulePaths, isGeneratedPath } from './dependencies.js';
-import { ReviewSchema, SpecSchema, toError, validateJobConfig } from './schemas.js';
-import type { Config, Job, HostStage, RoleSeat, Stage } from './schemas.js';
+import { ReviewSchema, SpecSchema, WorkflowPlanSchema, WorkflowNodeResultSchema, toError, validateJobConfig } from './schemas.js';
+import type { Config, Job, HostStage, HostTurn, RoleSeat, Stage, WorkflowPhase, WorkflowNodeState, WorkflowNode, WorkflowNodeResult, WorkflowState } from './schemas.js';
 import type { Run, RunOptions, RunResult } from './process.js';
 import type { Store } from './store.js';
 import { sourceDigest, prepareWorkspace, projectDirectory, artifactOutputPath } from './workspace.js';
@@ -18,9 +19,10 @@ import { assertProject, buildInstructions } from './project-profiles.js';
 import { closestOwnedGoWorkspace } from './go-dependencies.js';
 import { validateMacOSArtifact } from './macos.js';
 import { validateMyGoPackaging, validateMyGoCommand } from './mygo-build.js';
-import { invalidateVerification } from './proof.js';
+import { invalidateVerification, verificationProofDigest } from './proof.js';
 import { scanInbox } from './inbox.js';
 import { prepareIsolatedCommand, type IsolatedCommand, type IsolationCapabilities } from './isolation.js';
+import { activeWorkflowNodes, applyWorkflowPlan, newWorkflowPhase, readyWorkflowNodes, workflowTurnBudget, workflowTurnDigest } from './workflow.js';
 
 function requireDependencyProof(job: Job): void {
   if (!job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution proof is missing; retry this stopped task to re-run verification'), { code: 'SETUP_REQUIRED' });
@@ -30,7 +32,7 @@ function requireDependencyProof(job: Job): void {
 
 function taskPrompt(job: Job): string {
   const autopilot = job.config.autopilot === true
-    ? `AUTOPILOT MODE — owner-preauthorized unattended execution. Never ask the user a question or wait for a reply. For every non-trivial decision point, dispatch a decision-maker sub-context using the host's native subagent capability to decide and record its rationale. When compilation, tests or verification fail, dispatch the failure evidence to a developer sub-context, fix the actual cause, and iterate until the checks pass; never weaken acceptance to make them pass. Stuck states are host work, never a user handback: when the queue returns wait, blocked or a failed task, dispatch the persisted state and evidence to a fresh role context, diagnose the actual cause, and fix it within the existing budgets — repair source, adjust owner-authorized configuration (for example raising timeoutMs for legitimately long deterministic commands), or wait out a due time — then continue the loop. A terminally failed task with no recovery path may be continued by enqueueing the same product as a new version (bump the requirement version and set project.sourceDir to the verified source); never create parallel duplicates of live work and never edit harness state to bypass a rejection. Independent review must still be performed by a brand-new sub-context that did not implement this change (use the host's native subagent facility); never self-review or impersonate an independent reviewer. Local execution is already pre-authorized by the owner: allowLocalExecution=true is the owner's explicit choice, so run deterministic configured commands directly. The honest-degradation path remains mandatory: never fabricate results, screenshots or evidence, and never bypass acceptance. The only permitted stop is a safety red line — leaking credentials, fabricating evidence, or bypassing acceptance — and that stop must be reported as an honest verdict, never as a question to the user.\n`
+    ? `AUTOPILOT MODE — owner-preauthorized execution within frozen scope, permissions and budgets. Do not ask routine confirmation questions for already authorized work. Let the model plan the work graph, record material decisions, and execute only claimed nodes. When a local deterministic check fails, inspect its recorded evidence and repair the cause through the returned build planner; never weaken checks or replay the same failure blindly. Wait for due work and collect this controller's live workers before exiting. Missing prerequisites, permissions, independent-review capability, uncertain external effects, cancellation or exhausted budgets are honest stopped states: report them and continue other eligible jobs. Only an explicit owner action can change configuration/budgets or retry stopped work. Never re-enqueue the same requirement as a new version to reset its limits. Review must use a genuinely fresh non-implementer context; a disclosure or a self-reported identity is not a substitute. Never fabricate results, screenshots, model identity or completion, and never publish or expand permissions.\n`
     : '';
   return `${autopilot}You are the native host of an embedded multi-stack app Harness. Use your own context, tools and native delegation in ${projectDirectory(job)}; never launch another coding-agent CLI. Preserve the requested framework and existing architecture. Implement only this product. Never hide functionality from users or reviewers. Do not upload, submit, push, read publisher credentials or change factory state. Remote build commands belong only to the explicitly authorized Harness packaging profile, not host turns. The workspace is not a security sandbox. Complete real implementations, not placeholders.\nImmutable product requirements:\n${JSON.stringify(job.spec, null, 2)}\nPrevious verification/review failure (repair the mechanism, never weaken acceptance):\n${job.feedback ?? job.error ?? 'none'}\nPersisted execution logs:\n${JSON.stringify(job.logs.slice(-3))}\nContinue existing work. Only actual deterministic checks performed by the Harness establish verification; host claims do not.\n`;
 }
@@ -39,10 +41,11 @@ export interface TurnOptions { buildOnly?: boolean; ownerPid?: number; resumeAct
 export interface HostAction {
   job: Job;
   action: 'host' | 'step' | 'wait' | 'done';
-  turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string>; role: string[] };
+  turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string>; role: string[];
+    kind?: 'plan' | 'node'; workflow?: { phase: HostStage; revision: number; nodeId?: string; node?: WorkflowNode; dependencies?: Array<{ id: string; result?: WorkflowNodeResult }>; planSchema?: unknown } };
 }
 
-export interface DriveOptions { once?: boolean; maxRounds?: number; strict?: boolean; buildOnly?: boolean; ownerPid?: number }
+export interface DriveOptions { once?: boolean; maxRounds?: number; strict?: boolean; buildOnly?: boolean; ownerPid?: number; signal?: AbortSignal }
 export type JobView = {
   id: string; product: string; framework: string; platform: string; channel: string; version: string;
   priority: Job['spec']['priority']; stage: Job['stage']; status: Job['status']; hostTurns: number;
@@ -96,18 +99,20 @@ function deadlineExpired(job: Job): boolean {
   return Date.now() - job.createdAt > job.config.maxJobHours * 3600000;
 }
 
-function processIsLive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (cause) {
-    return toError(cause).code !== 'ESRCH';
-  }
+function remainingJobTime(job: Job): number {
+  const remaining = job.createdAt + job.config.maxJobHours * 3600000 - Date.now();
+  if (remaining <= 0) throw Object.assign(new Error('Task wall-clock limit reached; no further command or success may be committed'), { code: 'BUDGET' });
+  return remaining;
+}
+
+function hostOwner(ownerPid: number): Pick<HostTurn, 'ownerPid' | 'ownerIdentity'> {
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || !processIsAlive(ownerPid)) throw new Error('Host owner must identify a live process');
+  return { ownerPid, ownerIdentity: inspectProcess(ownerPid)?.identity };
 }
 
 
 function liveHostTurn(turn: NonNullable<Job['turn']>): boolean {
-  return turn.ownerPid !== undefined && processIsLive(turn.ownerPid);
+  return turn.ownerPid !== undefined && processIsAlive(turn.ownerPid, turn.ownerIdentity);
 }
 
 /** Adopt a dead/legacy host claim without incrementing host-turn or attempt budgets. */
@@ -120,7 +125,7 @@ function adoptHostTurn(store: Store, job: Job, ownerPid: number): Job {
       throw new Error('Active host turn context changed; abandon its token before requesting another turn');
     }
     if (liveHostTurn(current.turn)) return {};
-    return { turn: { ...current.turn, ownerPid } };
+    return { turn: { ...current.turn, ...hostOwner(ownerPid) } };
   });
 }
 
@@ -143,6 +148,17 @@ function requireReviewProof(job: Job): void {
   }
 }
 
+function hostEnvironment(job: Job): Record<string, string> {
+  // Host-visible JSON carries task overrides, never inherited credential values.
+  const environment = job.spec.framework === 'flutter' ? flutterEnvironment(job.config, job.workspace, { CI: '1' }) : { CI: '1' } as NodeJS.ProcessEnv;
+  if (job.spec.framework === 'mygo') Object.assign(environment, { GOENV: 'off', GOTOOLCHAIN: 'local', GOFLAGS: '-mod=readonly', GOWORK: closestOwnedGoWorkspace(job.workspace, job.spec.project?.directory) ?? 'off' });
+  if (job.spec.framework === 'flutter' && job.config.toolchain) {
+    environment.FLUTTER_ROOT = job.config.toolchain.flutterSdk;
+    environment.PATH = `${join(job.config.toolchain.flutterSdk, 'bin')}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ''}`;
+  }
+  return Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
+}
+
 function hostAction(store: Store, job: Job): HostAction {
   const turn = job.turn!;
   let instruction: string;
@@ -157,13 +173,6 @@ function hostAction(store: Store, job: Job): HostAction {
   } else {
     instruction = reviewInstructions(job);
   }
-  // Host-visible JSON carries only task overrides, never inherited credential values.
-  const environment = job.spec.framework === 'flutter' ? flutterEnvironment(job.config, job.workspace, { CI: '1' }) : { CI: '1' } as NodeJS.ProcessEnv;
-  if (job.spec.framework === 'mygo') Object.assign(environment, { GOENV: 'off', GOTOOLCHAIN: 'local', GOFLAGS: '-mod=readonly', GOWORK: closestOwnedGoWorkspace(job.workspace, job.spec.project?.directory) ?? 'off' });
-  if (job.spec.framework === 'flutter' && job.config.toolchain) {
-    environment.FLUTTER_ROOT = job.config.toolchain.flutterSdk;
-    environment.PATH = `${join(job.config.toolchain.flutterSdk, 'bin')}${process.env.PATH ? `${delimiter}${process.env.PATH}` : ''}`;
-  }
   const seats: RoleSeat[] = [...(job.config.roles?.[turn.stage] ?? DEFAULT_ROLES[turn.stage])];
   const role = seats.map(seat => (typeof seat === 'string' ? seat : seat.name));
   const pins = seats.map(seat => (typeof seat === 'string' ? { name: seat } : { name: seat.name, ...(seat.provider ? { provider: seat.provider } : {}), ...(seat.fresh ? { fresh: seat.fresh } : {}) }));
@@ -175,10 +184,10 @@ function hostAction(store: Store, job: Job): HostAction {
   if (pinnedSeats.length) {
     roleLines += `\nSeat pins: ${JSON.stringify(pins)}`;
     roleLines += `\nSeats with fresh=true must run in a brand-new fresh-context subagent that shares no prior context with the implementing seats.`;
-    if (sameProviderFamily) roleLines += `\nReview seats and implementation seats are pinned to the same provider family; if the host can select a different model family, the review judge must switch to another family, and if it cannot it must disclose that limitation honestly in the review result.`;
+    if (sameProviderFamily) roleLines += `\nReview and implementation share the owner's pinned provider family. Keep those pins; use a different model family only when the owner constraints permit it. Disclose the shared-family limitation honestly, and still require a fresh non-implementer review context.`;
   }
   const prompt = `${taskPrompt(job)}${instruction}\n${roleLines}`;
-  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt, cwd: projectDirectory(job), environment: Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)), role } };
+  return { job, action: 'host', turn: { id: turn.id, stage: turn.stage, prompt, cwd: projectDirectory(job), environment: hostEnvironment(job), role } };
 }
 
 function repair(job: Job, message: string): Partial<Job> {
@@ -196,11 +205,128 @@ function repair(job: Job, message: string): Partial<Job> {
   };
 }
 
+function workflowState(job: Job, stage: HostStage, phase: WorkflowPhase): WorkflowState {
+  return { cancelled: job.workflow?.cancelled ?? false, phases: { ...job.workflow?.phases, [stage]: phase } };
+}
+
+function pendingWorkflowNode(node: WorkflowNodeState): WorkflowNodeState {
+  return { definition: node.definition, status: 'pending', attempts: node.attempts, turn: null };
+}
+
+function stopWorkflow(job: Job, reason: string, cancelled = false): Partial<Job> {
+  const phases = { ...job.workflow?.phases };
+  for (const stage of ['research', 'build', 'review'] as const) {
+    const phase = phases[stage];
+    if (phase && (stage === job.stage || phase.nodes.some(node => node.turn))) phases[stage] = { ...phase, status: 'planning', reason, nodes: phase.nodes.map(node => node.turn ? pendingWorkflowNode(node) : node) };
+  }
+  return { workflow: { cancelled, phases }, turn: null, status: 'needs-owner', error: reason, feedback: reason };
+}
+
+function workflowAction(store: Store, job: Job, claim: HostTurn, node?: WorkflowNodeState): HostAction {
+  const phase = job.workflow!.phases[claim.stage]!;
+  const dependencies = node?.definition.dependsOn.map(id => {
+    const dependency = phase.nodes.find(value => value.definition.id === id)!;
+    return { id, ...(dependency.result ? { result: dependency.result } : {}) };
+  });
+  const policy = claim.stage === 'research'
+    ? researchPrompt(job, store.list().filter(value => value.id !== job.id && value.spec.channel === job.spec.channel && value.spec.id !== job.spec.id).map(value => ({ id: value.spec.id, purpose: value.spec.purpose, audience: value.spec.audience, differentiators: value.spec.differentiators })))
+    : claim.stage === 'build' ? `${buildInstructions(job.spec)} Research decision: ${JSON.stringify(job.research)}. Reproduce a supplied designRef faithfully; otherwise make task-appropriate design choices. The frozen checks and runtime acceptance run after the whole build graph, never as a replacement for implementation.` : reviewInstructions(job);
+  const phaseResult = claim.stage === 'research'
+    ? 'The final node result field must contain the typed research verdict: {viable,distinctness,risks?,plan}.'
+    : claim.stage === 'review' ? 'The final node result field must contain {approved,findings,acceptanceEvidence:[{requirement,evidence}]}, covering every immutable product acceptance requirement and the observations of all review nodes.'
+      : 'Complete build nodes with observed evidence and optional structured result data. No node verdict substitutes for the Harness deterministic checks/runtime or packaging gate.';
+  let instruction: string;
+  if (node) {
+    instruction = `DYNAMIC WORKFLOW NODE — execute only the persisted node ${node.definition.id}, not the whole checkpoint.\n${JSON.stringify(node.definition)}\nDependency results: ${JSON.stringify(dependencies)}\nRespect declared readPaths/writePaths; they coordinate shared-workspace ownership, not an OS sandbox. Never write outside your declared writePaths or begin unrelated pending nodes. ${node.definition.fresh || claim.stage === 'review' ? 'Use a brand-new independent native subagent context, not the implementing context.' : 'Use the host native context appropriate for this role.'} ${node.definition.provider ? `Run on provider/model family ${node.definition.provider}; disclose honestly if unavailable, never invent attestation.` : ''}\nReturn JSON {outcome:"passed"|"failed",summary,evidence:[{requirement,evidence}],result?}. A pass needs observed evidence for every node acceptance criterion. A failed outcome records the failure and invokes model replanning; do not weaken criteria. ${phase.final === node.definition.id ? phaseResult : 'Supply useful structured outputs for dependent nodes in result; do not finalize the checkpoint yourself.'}`;
+    if (claim.stage === 'review' && job.config.roles?.receipt) instruction += `\nRecord a distinct apphx decide receipt with role ${JSON.stringify(node.definition.role)} after this node claim; a prior or another node's receipt cannot be reused.`;
+    if (claim.stage === 'review') instruction += '\nEvery review node, including a specialist, must place a typed {approved,findings,acceptanceEvidence} verdict in result. Specialist product coverage may be partial; the final must cover all product criteria. A completed inspection that finds a blocker uses outcome=passed with approved=false and explicit findings; the Harness preserves that veto at the final checkpoint.';
+  } else {
+    instruction = `DYNAMIC WORKFLOW PLANNER — decide the work breakdown from the actual requirement, repository and current evidence. Do not mechanically copy a fixed role sequence. Produce a JSON DAG, not executable JavaScript and not a prose-only plan.\nCheckpoint: ${claim.stage}. Reason: ${phase.reason}. Limits: ${JSON.stringify(job.config.workflow)}. Minimum owner-configured seats: ${JSON.stringify(job.config.roles?.[claim.stage] ?? [])}.\nEach node names its role, instructions, dependencies, exact project-relative readPaths/writePaths and observable acceptance. Every node must join the final node. Parallelize only truly independent read/write ownership; '.' means the whole project. Research/review nodes cannot write; every review node must use fresh=true. Preserve required provider/fresh seat pins and duplicate seat counts.\nCurrent graph and outcomes: ${JSON.stringify(phase.nodes)}\nPreserve unaffected passed nodes and outputs. Explicit invalidate identifies completed work invalidated by new facts; dependents are also invalidated. Replace failed/pending work as needed, within budgets, and ensure the new final still requires actual work. Never alter frozen requirements, verification commands, permissions, or evidence gates. ${phaseResult}\nComplete this planning token with JSON matching: ${JSON.stringify(z.toJSONSchema(WorkflowPlanSchema))}`;
+    instruction += `\nGlobal host-turn budget: ${JSON.stringify(workflowTurnBudget(job, claim.stage))}. Keep this plan plus mandatory later checkpoints within remaining turns; do not spend future repair budget speculatively. The complete JSON input must fit the 1 MiB transport limit.`;
+  }
+  return { job, action: 'host', turn: { id: claim.id, stage: claim.stage, kind: node ? 'node' : 'plan', prompt: `${taskPrompt(job)}${policy}\n${instruction}`, cwd: projectDirectory(job), environment: hostEnvironment(job), role: [node?.definition.role ?? 'workflow-planner'], workflow: { phase: claim.stage, revision: phase.revision, ...(node ? { nodeId: node.definition.id, node: node.definition, dependencies } : { planSchema: z.toJSONSchema(WorkflowPlanSchema) }) } } };
+}
+
+function nextWorkflowTurn(store: Store, initial: Job, options: TurnOptions): HostAction {
+  if (initial.workflow?.cancelled || ['failed', 'needs-owner', 'ready', 'built'].includes(initial.status)) return { job: initial, action: 'done' };
+  if (deadlineExpired(initial)) return { job: store.update(initial.id, stopWorkflow(initial, 'Task wall-clock limit reached; active workflow tokens were revoked')), action: 'done' };
+  if (initial.groups.length && !initial.manualRecovery) return { job: initial, action: 'step' };
+  if (initial.manualRecovery || initial.status === 'blocked' && initial.blockedReason?.kind !== 'prerequisite' || initial.nextAt > Date.now()) return { job: initial, action: 'wait' };
+  const stage = initial.stage as HostStage;
+  if (!initial.workflow?.phases[stage] || !existsSync(projectDirectory(initial)) || initial.baseJobId && !initial.basePrepared || initial.sourceDirectory && !initial.importPrepared) {
+    try { prepareWorkspace(store, initial); mkdirSync(projectDirectory(initial), { recursive: true, mode: 0o700 }); }
+    catch (cause) { return { job: store.update(initial.id, { status: 'blocked', error: toError(cause).message }), action: 'wait' }; }
+  }
+  let selected: string | undefined;
+  const job = store.transition(initial.id, current => {
+    if (current.stage !== stage || current.workflow?.cancelled || ['failed', 'needs-owner', 'ready', 'built'].includes(current.status)) return {};
+    if (current.groups.length || current.manualRecovery || current.nextAt > Date.now()) return {};
+    if (deadlineExpired(current)) return stopWorkflow(current, 'Task wall-clock limit reached; active workflow tokens were revoked');
+    let phase = current.workflow?.phases[stage] ?? newWorkflowPhase(`Plan ${stage} work from the actual requirement and repository`);
+    if (stage === 'review') {
+      try { requireReviewProof(current); }
+      catch (cause) {
+        const error = toError(cause);
+        const invalid = { ...phase, status: 'planning' as const, reason: error.message, nodes: phase.nodes.map(pendingWorkflowNode) };
+        return { ...repair(current, error.message), workflow: workflowState(current, stage, invalid) };
+      }
+      const proofDigest = verificationProofDigest(current);
+      if (phase.proofDigest !== proofDigest) phase = { ...phase, status: 'planning', reason: 'Plan independent review against the current verification proof', proofDigest, nodes: phase.nodes.map(pendingWorkflowNode), decisionsLengthAtClaim: undefined };
+    }
+    if (phase.status === 'complete') phase = { ...phase, status: 'planning', reason: current.feedback ?? `Replan ${stage} after a policy checkpoint requested repair`, decisionsLengthAtClaim: undefined };
+    const ownerPid = options.ownerPid ?? process.pid;
+    if (current.turn) {
+      if (current.turn.kind !== 'plan' || current.turn.stage !== stage || current.turn.contextDigest !== workflowTurnDigest(current, stage, phase)) throw new Error('Workflow planner context changed; abandon its stale token before continuing');
+      if (options.resumeActive === false && liveHostTurn(current.turn)) return {};
+      const turn = liveHostTurn(current.turn) ? current.turn : { ...current.turn, ...hostOwner(ownerPid) };
+      selected = turn.id;
+      return { turn, workflow: workflowState(current, stage, phase), status: 'running' };
+    }
+    const active = phase.nodes.filter(node => node.turn);
+    const resumable = active.find(node => options.resumeActive !== false || !liveHostTurn(node.turn!));
+    if (resumable) {
+      const claim = resumable.turn!;
+      if (claim.stage !== stage || claim.planRevision !== phase.revision || claim.contextDigest !== workflowTurnDigest(current, stage, phase, resumable)) throw new Error('Workflow node context changed; abandon its stale token before continuing');
+      const turn = liveHostTurn(claim) ? claim : { ...claim, ...hostOwner(ownerPid) };
+      selected = turn.id;
+      phase = { ...phase, nodes: phase.nodes.map(node => node === resumable ? { ...node, turn } : node) };
+      return { workflow: workflowState(current, stage, phase), status: 'running' };
+    }
+    if (phase.status === 'planning' && active.length || phase.status === 'running' && active.length >= current.config.workflow!.maxParallel) return {};
+    const exhausted = current.hostTurns >= current.config.maxHostTurns;
+    if (phase.status === 'planning') {
+      if (exhausted || (current.attempts[stage] ?? 0) >= current.config.maxAttempts || phase.revision > current.config.workflow!.maxReplans) {
+        return { ...stopWorkflow(current, 'Workflow planning, host-turn or stage budget exhausted; raise the owner budget before retrying'), workflow: workflowState(current, stage, phase) };
+      }
+      const turn: HostTurn = { id: randomUUID(), stage, kind: 'plan', planRevision: phase.revision, createdAt: Date.now(), contextDigest: workflowTurnDigest(current, stage, phase), ...hostOwner(ownerPid) };
+      selected = turn.id;
+      return { workflow: workflowState(current, stage, phase), turn, status: 'running', hostTurns: current.hostTurns + 1, attempts: { ...current.attempts, [stage]: (current.attempts[stage] ?? 0) + 1 }, error: null, blockedReason: null };
+    }
+    const candidate = readyWorkflowNodes(phase, projectDirectory(current))[0];
+    if (!candidate) return {};
+    if (exhausted || candidate.attempts >= current.config.maxAttempts) {
+      return active.length ? {} : stopWorkflow(current, `Workflow node ${candidate.definition.id} or host-turn budget exhausted; raise the owner budget before retrying`);
+    }
+    const turn: HostTurn = { id: randomUUID(), stage, kind: 'node', nodeId: candidate.definition.id, planRevision: phase.revision, createdAt: Date.now(), contextDigest: workflowTurnDigest(current, stage, phase, candidate), ...hostOwner(ownerPid), decisionsLengthAtClaim: current.decisions.length };
+    selected = turn.id;
+    phase = { ...phase, decisionsLengthAtClaim: phase.decisionsLengthAtClaim ?? current.decisions.length, nodes: phase.nodes.map(node => node === candidate ? { ...node, status: 'running', attempts: node.attempts + 1, turn, decisionsLengthAtClaim: current.decisions.length } : node) };
+    return { ...(stage === 'build' && candidate.definition.writePaths.length ? invalidateVerification() : {}), workflow: workflowState(current, stage, phase), status: 'running', hostTurns: current.hostTurns + 1, error: null, blockedReason: null };
+  });
+  if (selected) {
+    if (job.turn?.id === selected) return workflowAction(store, job, job.turn);
+    const node = job.workflow?.phases[stage]?.nodes.find(value => value.turn?.id === selected);
+    if (node?.turn) return workflowAction(store, job, node.turn, node);
+  }
+  if (['failed', 'needs-owner', 'built', 'ready'].includes(job.status)) return { job, action: 'done' };
+  return { job, action: ['research', 'build', 'review'].includes(job.stage) ? 'wait' : 'step' };
+}
+
 export async function nextTurn(store: Store, id: string, options: TurnOptions = {}): Promise<HostAction> {
   store.acquire();
   try {
     let job = store.get(id);
     assertTurnPermission(job, options);
+    if (job.config.workflow && ['research', 'build', 'review'].includes(job.stage)) return nextWorkflowTurn(store, job, options);
     if (job.turn) {
       const ownerLive = liveHostTurn(job.turn);
       if (options.resumeActive === false) {
@@ -254,7 +380,7 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
       if (current.stage === 'review') requireReviewProof(current);
       const turn = {
         id: randomUUID(), stage: current.stage as HostStage, createdAt: Date.now(), contextDigest: contextDigest(current),
-        decisionsLengthAtClaim: current.decisions.length, ownerPid: options.ownerPid ?? process.pid,
+        decisionsLengthAtClaim: current.decisions.length, ...hostOwner(options.ownerPid ?? process.pid),
       };
       return { turn, hostTurns: current.hostTurns + 1, attempts: { ...current.attempts, [current.stage]: (current.attempts[current.stage] ?? 0) + 1 }, status: 'running', blockedReason: null, error: null };
     });
@@ -384,8 +510,12 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
   }
   let rounds = 0;
   let lastResult: Job | undefined;
-  while (maxRounds === undefined || rounds < maxRounds) {
+  while ((maxRounds === undefined || rounds < maxRounds) && !options.signal?.aborted) {
     const pick = await pickQueueTurn(store, { buildOnly: options.buildOnly, ownerPid: options.ownerPid });
+    if (options.signal?.aborted) {
+      if (pick.action === 'host') abandonTurn(store, pick.job.id, pick.turn.id, { buildOnly: options.buildOnly });
+      break;
+    }
     if (pick.action === 'idle') {
       const jobs = store.list();
       const pending = jobs.filter(job => !['built', 'failed', 'needs-owner'].includes(job.status)).length;
@@ -404,26 +534,28 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
       const allFailed = queueFailures(store, failed);
       return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
     }
-    let result: Job;
+    let result: Job | undefined;
     store.acquire();
     try {
       // A crashed invocation may still own child processes; drain them before
       // shared Flutter/Apple tooling can be used by this new step.
       await drainCommandGroups(store);
-      result = await executeStep(store, store.get(pick.job.id), {});
+      const claimed = store.next(current => current.id === pick.job.id && !current.workflow?.cancelled && !['research', 'build', 'review'].includes(current.stage));
+      if (claimed) result = await executeStep(store, claimed, { signal: options.signal });
     } finally {
-      store.release();
+      try { await drainCommandGroups(store); }
+      finally { store.release(); }
     }
+    if (!result) continue; // A cancellation or eligibility change won the selection/claim race.
     rounds += 1;
     lastResult = result;
     if (result.status === 'failed' || result.status === 'needs-owner') failed.push({ id: result.id, error: result.error ?? null });
   }
   const allFailed = queueFailures(store, failed);
-  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
+  return { action: options.signal?.aborted ? 'wait' : 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
 }
 
-function missingReviewReceipts(job: Job): string[] {
-  const boundary = job.turn?.decisionsLengthAtClaim;
+function missingReviewReceipts(job: Job, boundary = job.turn?.decisionsLengthAtClaim): string[] {
   if (boundary === undefined || boundary > job.decisions.length) {
     throw new Error('Decision receipt boundary is unavailable for this persisted host turn; abandon this turn and reclaim it before recording receipts');
   }
@@ -433,7 +565,7 @@ function missingReviewReceipts(job: Job): string[] {
     available.set(role, (available.get(role) ?? 0) + 1);
   }
   const missing: string[] = [];
-  for (const seat of job.config.roles?.review ?? []) {
+  for (const seat of job.config.roles?.review ?? DEFAULT_ROLES.review) {
     const name = typeof seat === 'string' ? seat : seat.name;
     const count = available.get(name) ?? 0;
     if (count === 0) missing.push(name);
@@ -442,45 +574,173 @@ function missingReviewReceipts(job: Job): string[] {
   return missing;
 }
 
+function completeWorkflowTurn(store: Store, job: Job, token: string, value: unknown): Partial<Job> {
+  if (job.workflow?.cancelled || !['research', 'build', 'review'].includes(job.stage) || job.status !== 'running') throw new Error('Stale, replayed or wrong-phase workflow token');
+  if (job.groups.length || job.manualRecovery) throw new Error('Command recovery must finish before completing workflow work');
+  const stage = job.stage as HostStage;
+  const phase = job.workflow?.phases[stage];
+  if (!phase) throw new Error('No persisted workflow phase owns this token');
+  const planner = job.turn?.id === token && job.turn.kind === 'plan' ? job.turn : undefined;
+  const node = phase.nodes.find(node => node.turn?.id === token);
+  const claim = planner ?? node?.turn;
+  if (!claim || claim.stage !== stage || claim.planRevision !== phase.revision) throw new Error('Stale, replayed or wrong-phase workflow token');
+  if (claim.contextDigest !== workflowTurnDigest(job, stage, phase, planner ? undefined : node)) throw new Error('Workflow context changed; abandon this stale token before continuing');
+  if (deadlineExpired(job)) return stopWorkflow(job, 'Task wall-clock limit reached; workflow result was not accepted');
+  if (stage === 'review') {
+    try { requireReviewProof(job); }
+    catch (cause) {
+      const reason = toError(cause).message;
+      return { ...repair(job, reason), workflow: workflowState(job, stage, { ...phase, status: 'planning', reason, nodes: phase.nodes.map(pendingWorkflowNode) }) };
+    }
+  }
+  if (planner) {
+    if (phase.status !== 'planning' || activeWorkflowNodes(job).length) throw new Error('Drain active workflow nodes before accepting a revised plan');
+    const accepted = applyWorkflowPlan(job, stage, value);
+    store.event(job.id, { acceptedWorkflowPlan: accepted.revision, stage });
+    return { workflow: workflowState(job, stage, { ...accepted, ...(stage === 'review' ? { proofDigest: verificationProofDigest(job) } : {}) }), turn: null, status: 'queued', error: null, nextAt: Date.now() };
+  }
+  if (!node || node.status !== 'running') throw new Error('Workflow node is not running under this token');
+  const result = WorkflowNodeResultSchema.parse(value);
+  if (result.outcome === 'passed' && !node.definition.acceptance.every(requirement => result.evidence.some(item => item.requirement === requirement))) throw new Error('Workflow node result must cover every declared acceptance criterion with observed evidence');
+  if (stage === 'review' && result.outcome === 'passed') result.result = ReviewSchema.parse(result.result);
+  const completed: WorkflowNodeState = { ...node, turn: null, status: result.outcome, result, completedAt: Date.now() };
+  const nodes = phase.nodes.map(current => current === node ? completed : current);
+  const nextPhase: WorkflowPhase = { ...phase, nodes, ...(result.outcome === 'failed' ? { status: 'planning', reason: `Node ${node.definition.id} failed: ${result.summary}` } : {}) };
+  const workflow = workflowState(job, stage, nextPhase);
+  store.event(job.id, { completedWorkflowNode: node.definition.id, token, revision: phase.revision, outcome: result.outcome });
+  if (node.definition.id === phase.final && result.outcome === 'passed' && phase.status === 'running') {
+    if (!nodes.every(current => current.status === 'passed' && !current.turn)) throw new Error('The workflow final node cannot bypass unfinished work');
+    const finished = { ...nextPhase, status: 'complete' as const };
+    let finalResult = result.result;
+    if (stage === 'review') {
+      const verdicts = nodes.map(current => ReviewSchema.parse(current.result?.result));
+      const proposed = ReviewSchema.parse(result.result);
+      finalResult = { ...proposed, approved: verdicts.every(verdict => verdict.approved), findings: [...new Set(verdicts.flatMap(verdict => verdict.findings))] };
+    }
+    return { workflow: workflowState(job, stage, finished), ...finishHostStage(store, { ...job, workflow }, token, stage === 'build' ? undefined : finalResult, phase.decisionsLengthAtClaim) };
+  }
+  return { workflow, status: nodes.some(current => current.turn) ? 'running' : 'queued', nextAt: Date.now(), ...(result.outcome === 'failed' ? { error: nextPhase.reason, feedback: nextPhase.reason } : {}) };
+}
+
+function abandonWorkflowTurn(store: Store, job: Job, token: string): Partial<Job> {
+  if (job.groups.length || job.manualRecovery) throw new Error('Command recovery must finish before abandoning workflow work');
+  if (job.turn?.id === token && job.turn.kind === 'plan') {
+    store.event(job.id, { abandonedWorkflowPlanner: token, stage: job.turn.stage });
+    return { turn: null, status: 'queued', nextAt: Date.now() };
+  }
+  const active = activeWorkflowNodes(job).find(entry => entry.node.turn?.id === token);
+  if (!active) throw new Error('Stale or replayed workflow token; no active node was abandoned');
+  const phase = job.workflow!.phases[active.stage]!;
+  store.event(job.id, { abandonedWorkflowNode: active.node.definition.id, token, stage: active.stage });
+  const nodes = phase.nodes.map(node => node === active.node ? pendingWorkflowNode(node) : node);
+  return { workflow: workflowState(job, active.stage, { ...phase, nodes }), status: nodes.some(node => node.turn) ? 'running' : 'queued', nextAt: Date.now() };
+}
+
+function workflowReason(reason: string): string {
+  if (!reason.trim() || reason.includes('\0') || reason.length > 20000) throw new Error('Workflow change requires a non-empty reason of at most 20000 characters');
+  return reason;
+}
+
+export function requestWorkflowReplan(store: Store, id: string, reason: string): Job {
+  workflowReason(reason);
+  return store.transition(id, job => {
+    if (!job.config.workflow || job.workflow?.cancelled) throw new Error('Replanning requires an enabled, non-cancelled dynamic workflow');
+    if (!['research', 'build', 'review'].includes(job.stage) || ['built', 'ready', 'failed', 'needs-owner'].includes(job.status)) throw new Error('Replan host work only; stopped budgets require explicit owner retry and deterministic checks cannot be skipped');
+    if (job.turn || job.groups.length || job.manualRecovery) throw new Error('Abandon the planner or finish command recovery before requesting another plan');
+    const stage = job.stage as HostStage;
+    const phase = job.workflow?.phases[stage] ?? newWorkflowPhase(reason);
+    return { workflow: workflowState(job, stage, { ...phase, status: 'planning', reason }), status: activeWorkflowNodes(job).length ? 'running' : 'queued', feedback: reason, error: null, nextAt: Date.now() };
+  });
+}
+
+export function cancelWorkflow(store: Store, id: string, reason: string): Job {
+  workflowReason(reason);
+  return store.transition(id, job => {
+    if (!job.config.workflow) throw new Error('Cancellation requires an enabled dynamic workflow');
+    if (['built', 'ready'].includes(job.status)) throw new Error('Cannot cancel an already delivered artifact');
+    if (job.groups.length || job.manualRecovery || job.status === 'running' && !['research', 'build', 'review'].includes(job.stage)) throw new Error('Finish deterministic command recovery before cancelling the workflow');
+    store.event(id, { cancelledWorkflow: reason });
+    return { ...invalidateVerification(), ...stopWorkflow(job, `Workflow cancelled: ${reason}`, true) };
+  });
+}
+
+/** Called only after the existing owner retry permission and budget checks pass. */
+export function workflowRetryPatch(job: Job, resumedConfig: Config): Partial<Job> {
+  if (!job.workflow?.cancelled) return {};
+  if (!resumedConfig.workflow) throw new Error('Keep dynamic workflow mode enabled when retrying a cancelled task');
+  const phases = { ...job.workflow.phases };
+  const review = phases.review;
+  if (review) phases.review = { ...review, status: 'planning', reason: 'Fresh review is required after cancellation', nodes: review.nodes.map(pendingWorkflowNode), decisionsLengthAtClaim: undefined, proofDigest: null };
+  if (['research', 'build'].includes(job.stage)) {
+    const stage = job.stage as 'research' | 'build';
+    const phase = phases[stage];
+    if (phase) phases[stage] = { ...phase, status: 'planning', reason: `Owner retry after cancellation: ${job.error ?? 'work was stopped'}` };
+  }
+  return { ...invalidateVerification(), workflow: { cancelled: false, phases }, ...(['review', 'package'].includes(job.stage) ? { stage: 'verify' as const } : {}) };
+}
+
+function missingWorkflowReceipts(job: Job, phase: WorkflowPhase): string[] {
+  const available = new Map<string, number[]>();
+  for (let index = 0; index < job.decisions.length; index += 1) {
+    const role = job.decisions[index].role;
+    const indices = available.get(role) ?? [];
+    indices.push(index);
+    available.set(role, indices);
+  }
+  const required = [...phase.nodes].sort((left, right) => (right.decisionsLengthAtClaim ?? 0) - (left.decisionsLengthAtClaim ?? 0));
+  const missing = new Set<string>();
+  for (const node of required) {
+    const boundary = node.decisionsLengthAtClaim;
+    if (boundary === undefined || boundary > job.decisions.length) throw new Error('Workflow receipt boundary is unavailable; replan and invalidate this review node before recording fresh receipts');
+    const entries = available.get(node.definition.role);
+    if (!entries?.length || entries[entries.length - 1] < boundary) missing.add(node.definition.id);
+    else entries.pop();
+  }
+  return phase.nodes.filter(node => missing.has(node.definition.id)).map(node => node.definition.role);
+}
+
+function finishHostStage(store: Store, job: Job, turnId: string, result?: unknown, receiptBoundary?: number): Partial<Job> {
+  let patch: Partial<Job>;
+  if (job.stage === 'research') {
+    const research = parseResearch(JSON.stringify(result), job.spec.channel);
+    patch = research.viable ? { stage: 'build', research } : { status: 'needs-owner', research, error: 'Research rejected this product; owner input is required to revise the requirement or provide missing facts' };
+  } else if (job.stage === 'build') {
+    if (result !== undefined) throw new Error('Build completion accepts no result payload; actual deterministic verification is required');
+    assertProject(projectDirectory(job), job.spec);
+    patch = { ...invalidateVerification(), stage: job.config.obfuscation ? 'obfuscate' : 'verify' };
+  } else {
+    const review = ReviewSchema.parse(result);
+    if (!job.spec.acceptance.every(requirement => review.acceptanceEvidence.some(item => item.requirement === requirement))) throw new Error('Review verdict must cover each acceptance requirement with concrete evidence');
+    if (job.config.roles?.receipt) {
+      const reviewPhase = job.workflow?.phases.review;
+      const missing = reviewPhase ? missingWorkflowReceipts(job, reviewPhase) : missingReviewReceipts(job, receiptBoundary);
+      if (missing.length) throw new Error(`Review seat receipts missing for: ${missing.join(', ')}; run each missing seat in its declared context, record it with apphx decide (role plus rationale), then complete this turn again`);
+    }
+    try { requireReviewProof(job); }
+    catch (cause) { return { ...repair(job, toError(cause).message), review }; }
+    if (!review.approved || review.findings.length) return { ...repair(job, `Independent review rejected the artifact: ${JSON.stringify(review)}`), review };
+    patch = { stage: 'package', review };
+  }
+  store.event(job.id, { completedTurn: turnId, stage: job.stage });
+  return { status: 'queued', nextAt: Date.now(), error: null, turn: null, ...patch };
+}
+
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {
   return store.transition(id, job => {
     assertTurnPermission(job, options);
+    if (job.config.workflow) return completeWorkflowTurn(store, job, turnId, result);
     if (!job.turn || job.turn.id !== turnId || job.turn.stage !== job.stage || job.status !== 'running') throw new Error('Stale, replayed or wrong-phase host turn; use next to inspect the active token');
     if (contextDigest(job) !== job.turn.contextDigest) throw new Error('Host turn context changed; abandon this stale token before continuing');
     if (job.groups.length || job.manualRecovery) throw new Error('Command recovery must finish before completing a host turn');
     if (deadlineExpired(job)) return { turn: null, status: 'needs-owner', error: 'Task wall-clock limit reached; the expired host result was not accepted without owner intervention' };
-    let patch: Partial<Job>;
-    if (job.stage === 'research') {
-      const research = parseResearch(JSON.stringify(result), job.spec.channel);
-      patch = research.viable ? { stage: 'build', research } : { status: 'needs-owner', research, error: 'Research rejected this product; owner input is required to revise the requirement or provide missing facts' };
-    } else if (job.stage === 'build') {
-      if (result !== undefined) throw new Error('Build completion accepts no result payload; actual deterministic verification is required');
-      assertProject(projectDirectory(job), job.spec);
-      patch = { ...invalidateVerification(), stage: job.config.obfuscation ? 'obfuscate' : 'verify' };
-    } else {
-      const review = ReviewSchema.parse(result);
-      if (!job.spec.acceptance.every(requirement => review.acceptanceEvidence.some(item => item.requirement === requirement))) throw new Error('Review verdict must cover each acceptance requirement with concrete evidence');
-      // Seat receipts (owner opt-in via roles.receipt): every review seat must
-      // have a decision-log entry recorded after this turn was claimed, so seat
-      // execution is evidenced instead of advisory. Missing seats reject the
-      // completion; the turn stays active and the host records them with decide.
-      if (job.config.roles?.receipt) {
-        const missing = missingReviewReceipts(job);
-        if (missing.length) throw new Error(`Review seat receipts missing for: ${missing.join(', ')}; run each missing seat in its declared context, record it with apphx decide (role plus rationale), then complete this turn again`);
-      }
-      try { requireReviewProof(job); }
-      catch (cause) { return { ...repair(job, toError(cause).message), review }; }
-      if (!review.approved || review.findings.length) return { ...repair(job, `Independent review rejected the artifact: ${JSON.stringify(review)}`), review };
-      patch = { stage: 'package', review };
-    }
-    store.event(id, { completedTurn: turnId, stage: job.stage });
-    return { status: 'queued', nextAt: Date.now(), error: null, turn: null, ...patch };
+    return finishHostStage(store, job, turnId, result);
   });
 }
 
 export function abandonTurn(store: Store, id: string, turnId: string, options: TurnOptions = {}): Job {
   return store.transition(id, job => {
     assertTurnPermission(job, options);
+    if (job.config.workflow) return abandonWorkflowTurn(store, job, turnId);
     if (!job.turn || job.turn.id !== turnId) throw new Error('Stale or replayed host turn; no active claim was abandoned');
     if (job.groups.length || job.manualRecovery) throw new Error('Command recovery must finish before abandoning a host turn');
     store.event(id, { abandonedTurn: turnId, stage: job.turn.stage });
@@ -489,14 +749,17 @@ export function abandonTurn(store: Store, id: string, turnId: string, options: T
 }
 
 function next(store: Store, job: Job, stage: Stage, extra: Partial<Job> = {}): Job {
+  remainingJobTime(job);
   return store.update(job.id, { stage, status: 'queued', nextAt: Date.now(), error: null, groups: [], ...extra });
 }
 
 export async function executeStep(store: Store, job: Job, { signal }: { signal?: AbortSignal } = {}): Promise<Job> {
+  job = store.get(job.id);
+  if (job.workflow?.cancelled || ['needs-owner', 'failed', 'ready', 'built'].includes(job.status)) return job;
   const config = job.config;
   let before: string | undefined;
   let dependenciesBefore: string | undefined;
-  if (['research', 'build', 'review'].includes(job.stage) || job.turn) throw new Error(`Stage ${job.stage} belongs to a native host turn; use next and complete`);
+  if (['research', 'build', 'review'].includes(job.stage) || job.turn || activeWorkflowNodes(job).length) throw new Error(`Stage ${job.stage} belongs to a native host turn; use next and complete`);
   if (signal?.aborted) return store.update(job.id, { status: 'waiting', nextAt: Date.now(), error: 'Worker was interrupted before this stage started' });
   if (!config.allowLocalExecution) return store.update(job.id, { status: 'blocked', error: config.executionWarning ?? 'Local execution is disabled. Explicitly enable allowLocalExecution only for trusted deterministic commands in a dedicated account or VM.' });
   if (deadlineExpired(job)) return store.update(job.id, { status: 'needs-owner', error: 'Task wall-clock limit reached; owner input is required to proceed' });
@@ -524,8 +787,9 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
           writableDirectories: capabilities.writableDirectories,
         });
       }
+      const remaining = remainingJobTime(job);
       const result = await run(isolated?.argv ?? command, {
-        timeoutMs: config.timeoutMs, signal, logPath, ...options, cwd, env: isolated?.env ?? effectiveEnv,
+        signal, logPath, ...options, timeoutMs: Math.min(config.timeoutMs, options.timeoutMs ?? config.timeoutMs, remaining), cwd, env: isolated?.env ?? effectiveEnv,
         onSpawn: (value, metadata) => {
           pid = value;
           const current = store.get(job.id);
@@ -533,6 +797,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
           options.onSpawn?.(value, metadata);
         },
       });
+      remainingJobTime(job);
       if (pid && processGroupAlive(pid)) {
         try { process.kill(process.platform === 'win32' ? pid : -pid, 'SIGTERM'); } catch {}
         throw new Error('Command left background processes; termination was requested and replay will wait for the owned group to exit');
@@ -740,6 +1005,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
       if (target === 'app' || target === 'dmg') await validateMacOSArtifact(path, target, exec);
       const digest = bundle ? sourceDigest(path, false) : createHash('sha256').update(readFileSync(path)).digest('hex');
       const artifact = { kind: target === 'simulator' ? 'ios-simulator' as const : target === 'app' ? 'macos-app' as const : target, path, digest, createdAt: new Date().toISOString() };
+      remainingJobTime(job);
       return store.update(job.id, { status: 'built', artifact, cloudBuildPending: false, error: null });
     }
     throw new Error(`Unknown task stage ${job.stage}`);
@@ -747,6 +1013,7 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     const error = toError(cause);
     if (store.get(job.id).cloudBuildPending) return store.update(job.id, { status: 'blocked', blockedReason: null, error: `Cloud build outcome requires provider reconciliation; automatic replay is forbidden. ${error.message}` });
     if (error.code === 'PROCESS_CLEANUP_BLOCKED') return store.update(job.id, { status: 'blocked', blockedReason: null, manualRecovery: error.message, error: error.message });
+    if (error.code === 'BUDGET' || deadlineExpired(job)) return store.update(job.id, { status: 'needs-owner', ...invalidateVerification(), turn: null, error: 'Task wall-clock limit reached; owner input is required before any further execution', feedback: error.message });
     if (signal?.aborted) return store.update(job.id, { status: 'waiting', attempts: { ...attempts, [job.stage]: job.attempts[job.stage] ?? 0 }, nextAt: Date.now(), error: error.message });
     if (error.code === 'PREREQUISITE_FAILED' && error.prerequisite) return store.update(job.id, { status: 'blocked', blockedReason: { kind: 'prerequisite', stage: job.stage, prerequisite: error.prerequisite }, attempts: { ...job.attempts }, nextAt: Date.now() + config.pollMs, error: error.message });
     if (!attemptCharged) return store.update(job.id, { status: 'blocked', blockedReason: null, attempts: { ...job.attempts }, nextAt: Date.now(), error: error.message });
@@ -754,6 +1021,14 @@ export async function executeStep(store: Store, job: Job, { signal }: { signal?:
     if (blocked) return store.update(job.id, { status: 'blocked', error: error.message });
     const charged = attempts[job.stage] ?? 0;
     const exhausted = error.code === 'BUDGET' || charged >= config.maxAttempts;
+    if (config.workflow) {
+      // Local deterministic failure is evidence for a bounded repair plan. The
+      // model diagnoses source/tooling without changing frozen permissions or
+      // commands; unknown external effects and prerequisites were fenced above.
+      const build = job.workflow?.phases.build ?? newWorkflowPhase(error.message);
+      const workflow = workflowState(job, 'build', { ...build, status: 'planning', reason: `${job.stage} failed: ${error.message}` });
+      return store.update(job.id, { ...repair({ ...job, attempts }, error.message), workflow, status: exhausted ? 'needs-owner' : 'waiting', nextAt: Date.now() + config.retryDelayMs * charged });
+    }
     if (job.stage === 'verify') {
       let changed = before === undefined || dependenciesBefore === undefined;
       if (!changed) {

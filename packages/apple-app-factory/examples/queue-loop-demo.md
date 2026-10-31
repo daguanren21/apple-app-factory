@@ -42,45 +42,41 @@ apphx enqueue requirements/notes-p2.json     --config factory.json
 
 ```text
 loop:
-  r = apphx next --any --config factory.json --build-only
-  action host → 按 turn.prompt 完成该回合 → apphx complete <id> <turn> [result.json]
-  action step → apphx step <id> --config factory.json --build-only（一次）
-  built 出现 → apphx notify <id>（或收尾时统一 notify --any）给作者发邮件
-  重复，直到 idle → 读 summary 做终局审计 → 按 nextAt 汇报并退出
+  r = apphx drive --once --config factory.json --build-only
+  host + turn.kind=plan → 模型调查后生成依赖/角色/读写范围/验收 DAG → complete <id> <turn> plan.json
+  host + turn.kind=node → 按唯一节点 packet 派工 → complete <id> <turn> node-result.json
+  host 无 kind → 仅旧静态配置按原阶段协议处理
+  step → 继续 drive（本轮确定性步骤已执行）；built → notify --any
+  wait 且仍有本会话 worker → 收集结果、complete，再 drive；没有 owned work 才按 nextDueAt 退出
+  done → 读 summary 做终局审计，report 每个 built 作业并 notify --any
 ```
 
 ## 3. 逐轮示意
 
 ```text
-#1  next --any → { "action": "host", "job": { "id": "…01", "product": "pack-checklist" },
-                  "turn": { "stage": "research", "prompt": "…" } }
-    宿主完成 research → apphx complete …01 <turn> research-result.json
+#1  drive → host / research / kind=plan
+    模型根据实际需求规划，例如 scope、risk 两个只读节点汇合到 decision；节点数和角色不是固定要求。
+    complete …01 <planner-token> plan.json → 图及 revision 持久化。
 
-#2  next --any → host（…01, stage=build）→ 实现 → apphx complete …01 <turn>（无 result）
-    注意：P0 未完工前不会被跳过，但它的 build 回合结束后下一轮会先跑它的确定性阶段。
+#2  drive → host / kind=node / nodeId=scope
+    再 drive → host / kind=node / nodeId=risk；依赖未完成的 decision 不会被领取。
+    每个 worker 只处理自己的范围，以 {outcome,summary,evidence,result?} 完成独立 token。
 
-#3  next --any → { "action": "step", "job": { "id": "…01", "stage": "verify" } }
-    apphx step …01 → verify 通过 → 任务进入 review
+#3  drive → host / kind=node / nodeId=decision
+    final 的 result 内提交 typed research verdict → 进入 build 的模型规划，不会自动派固定设计/开发团队。
+    模型按实际工程产生构建 DAG；全部节点汇合且工程检查通过后进入 verify。
 
-#4  next --any → host（…01, stage=review）→ 独立评审返回 approved + 逐条证据
-    apphx complete …01 <turn> review-result.json
+#4  drive → step（实际运行冻结检查和 runtime）→ review
+    模型规划只读、fresh 的 review DAG；final 汇总逐项产品证据，不能复用失效的验证或回执。
 
-#5  next --any → { "action": "step", "job": { "id": "…01", "stage": "package" } }
-    apphx step …01 → status=built，artifact 记录 kind/path/digest
-    # 通过门禁（verify+review 全过才可能 built）→ 发邮件给作者
-    apphx notify …01 → { "id": "…01", "notifiedTo": "author@example.org",
-                          "messageId": "…", "error": null }
-    # 失败会记 notifyError，重跑 notify 只补发未成功的，不会重复发
+#5  drive → step（package）→ built + artifact kind/path/digest
+    report 收集需求 checklist、节点结果和历史；notify …01 仅对门禁通过的作业发信。
 
-#6  next --any → host（…02 pomodoro-timer, P1, research）… 同 #1-#5 走完 → built
+#6  同一队列继续 …02、…03；P0 的 live 节点不会阻塞其他 eligible 作业。
+    wait 时仍有 owned worker 就先收集它们，不能重复派发同一个显式 next token。
 
-#7  next --any → host（…03 daily-notes, P2, research）… → built
-
-#8  next --any → { "action": "idle",
-                   "summary": { "total": 3, "built": 3, "failed": 0, "blocked": 0,
-                                "waiting": 0, "queued": 0, "running": 0 },
-                   "nextAt": null, "pendingErrors": [] }
-    终局审计：全部 built → 队列真正结束，汇报三个产物。
+#7  drive → done + summary（全部 built/failed/needs-owner）
+    汇报产物与 owner deferral。blocked/waiting/running 不是完成；没有本会话工作后按 nextDueAt 再唤醒。
 ```
 
 ## 4. 循环中常见的三种分支
@@ -112,13 +108,11 @@ cron/Hermes 每次唤醒只注入这一段，不带任何任务细节（job id�
 由 CLI 在唤醒时重新给出）：
 
 ```text
-在控制项目目录用 apphx status 查看队列，然后循环执行
-apphx next --any --config factory.json --build-only：
-host → 执行该回合并用 apphx complete <id> <turn> [result] 收尾；
-step → apphx step <id> 一次；built → apphx notify --any；
-重复直到 idle。
-idle 时读 summary：全部 built/failed 才是队列结束，存在 blocked/waiting 只是暂停；
-按 nextAt 安排下次唤醒，汇报状态后退出。一个唤醒内不超过所有者设定的动作上限。
+在控制项目目录循环执行 apphx drive --once --config factory.json --build-only：
+host → 按 turn.kind 处理模型计划或唯一节点，以严格 JSON 完成对应 token；无 kind 的旧配置按原阶段处理；
+step → 再 drive；built → report 与 notify --any；
+wait → 先收集、完成本会话仍在运行的 worker 并继续 drive；只有没有 owned work 时才按 nextDueAt 安排唤醒并退出；
+done → 读 summary 审计 built/failed/needs-owner，汇报后退出。不得把 blocked/waiting/running 当成完成。
 ```
 可用 `apphx schedule --host <id> --format launchd|systemd|cron --config /absolute/control/factory.json`
 生成模板和固定 re-entry 提示词。替换宿主的 headless 启动命令后由所有者安装；CLI 不安装或启动系统服务。

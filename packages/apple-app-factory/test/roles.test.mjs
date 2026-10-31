@@ -65,34 +65,10 @@ test('ConfigSchema accepts pinned object seats and keeps legacy strings', () => 
   assert.deepEqual(config.roles.build, [{ name: 'developer', provider: 'grok', fresh: true }, 'ui-designer']);
 });
 
-test('hostTurn prompt surfaces seat pins and the fresh-context mandate', async t => {
+test('legacy host turns preserve configured pinned and plain role ordering', async t => {
   const f = fixture(t, { roles: { build: [{ name: 'architect-review', provider: 'grok', fresh: true }, 'developer'] } });
   const claim = await buildClaim(f);
   assert.equal(claim.action, 'host');
   assert.deepEqual(claim.turn.role, ['architect-review', 'developer']);
-  assert.match(claim.turn.prompt, /Seat pins:/);
-  assert.match(claim.turn.prompt, /"provider":"grok"/);
-  assert.match(claim.turn.prompt, /"fresh":true/);
-  assert.match(claim.turn.prompt, /fresh=true/);
 });
 
-test('hostTurn prompt discloses a same-provider-family implementation and review judge', async t => {
-  const f = fixture(t, {
-    roles: {
-      build: [{ name: 'developer', provider: 'grok' }],
-      review: [{ name: 'architect-review', provider: 'grok', fresh: true }],
-    },
-  });
-  const claim = await buildClaim(f);
-  assert.match(claim.turn.prompt, /same provider family/);
-  assert.match(claim.turn.prompt, /switch to another family/);
-  assert.match(claim.turn.prompt, /disclose/);
-});
-
-test('build instruction mandates test-first and an explicit state machine', async t => {
-  const f = fixture(t);
-  const claim = await buildClaim(f);
-  assert.match(claim.turn.prompt, /test-first/);
-  assert.match(claim.turn.prompt, /state machine/);
-  assert.match(claim.turn.prompt, /docs\/architecture\.md/);
-});

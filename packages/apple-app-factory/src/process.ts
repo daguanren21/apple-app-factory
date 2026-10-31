@@ -1,8 +1,10 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdirSync, openSync, writeSync, closeSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { StringDecoder } from 'node:string_decoder';
 import { toError, type CommandMetadata, type Config, type ProcessIdentity } from './schemas.js';
 
 export interface RunOptions {
@@ -28,6 +30,61 @@ const COMMAND_TOKEN = 'APPLE_APP_FACTORY_COMMAND_TOKEN';
 export const TERMINATION_GRACE_MS = 1000;
 export const SUCCESS_DRAIN_GRACE_MS = 30000;
 const DRAIN_FAILURE_DETAIL = 'left stdout or stderr open after its verified process group exited; processes outside that group were not signaled';
+
+export interface ProcessInfo { identity: string; parentPid: number; argv: string[]; executable?: string; command?: string }
+
+function validPid(pid: number): boolean {
+  return Number.isSafeInteger(pid) && pid > 1 && pid <= 2147483647;
+}
+
+export function inspectProcess(pid: number): ProcessInfo | undefined {
+  if (!validPid(pid)) return undefined;
+  try {
+    if (process.platform === 'linux') {
+      const stat = (): string[] => {
+        const value = readFileSync(`/proc/${pid}/stat`, 'utf8');
+        // comm may contain spaces and parentheses; fields after its final ')' are numeric/stat fields.
+        return value.slice(value.lastIndexOf(')') + 2).trim().split(/\s+/);
+      };
+      const before = stat();
+      const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const after = stat();
+      const parentPid = Number(after[1]);
+      if (!boot || !/^\d+$/.test(before[19] ?? '') || before[19] !== after[19] || !Number.isSafeInteger(parentPid) || parentPid < 0) return undefined;
+      return { identity: `linux:${boot}:${pid}:${after[19]}`, parentPid, argv: command ? command.replace(/\0$/, '').split('\0') : [] };
+    }
+    if (process.platform === 'darwin') {
+      const options = { encoding: 'utf8' as const, timeout: 1000, maxBuffer: 1048576, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', LC_ALL: 'C', TZ: 'UTC0' } };
+      const ps = (fields: string): string | undefined => {
+        const result = spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', fields], options);
+        return result.status === 0 && !result.error ? result.stdout.trimEnd() : undefined;
+      };
+      const before = ps('lstart=,ppid=');
+      const boot = spawnSync('/usr/sbin/sysctl', ['-n', 'kern.boottime'], options);
+      const executable = ps('comm=');
+      const command = ps('args=');
+      const after = ps('lstart=,ppid=');
+      const birth = /^\s*(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\d+)\s*$/;
+      const first = before?.match(birth), last = after?.match(birth);
+      const bootTime = boot.status === 0 && !boot.error ? boot.stdout.match(/sec\s*=\s*(\d+),\s*usec\s*=\s*(\d+)/) : undefined;
+      if (!first || !last || first[1] !== last[1] || !bootTime) return undefined;
+      // macOS ps exposes second-resolution birth time, not an unambiguous argv vector.
+      // Same-second PID reuse remains conservatively live; never infer argv by splitting args.
+      return { identity: `darwin:${bootTime[1]}.${bootTime[2]}:${pid}:${last[1]}`, parentPid: Number(last[2]), argv: [], ...(executable ? { executable: executable.trimStart() } : {}), ...(command ? { command: command.trimStart() } : {}) };
+    }
+  } catch {}
+  return undefined;
+}
+
+export function processIsAlive(pid: number, expectedIdentity?: string): boolean {
+  if (!validPid(pid)) return false;
+  try { process.kill(pid, 0); }
+  catch (error) { if (toError(error).code === 'ESRCH') return false; }
+  if (expectedIdentity === undefined) return true;
+  const current = inspectProcess(pid);
+  return current === undefined || current.identity === expectedIdentity;
+}
 
 function groupMembers(pid: number): number[] | null {
   if (!Number.isSafeInteger(pid) || pid <= 1) return [];
@@ -136,6 +193,7 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
   if (executable === undefined) throw new Error('Command must be a non-empty argv array');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Command timeoutMs must be positive and finite');
   signal?.throwIfAborted();
+  if (onSpawn && process.platform === 'win32') throw Object.assign(new Error('Tracked commands require POSIX process-group supervision; no command was started'), { code: 'PROCESS_START_UNSUPPORTED' });
   const deadline = Date.now() + timeoutMs;
   const identity: ProcessIdentity = { token: randomUUID() };
   let fd: number | undefined;
@@ -145,8 +203,14 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
   }
   try {
     const { promise, resolve, reject } = Promise.withResolvers<RunResult>();
-    const child = spawn(executable, argv.slice(1), { cwd, env: { ...env, [COMMAND_TOKEN]: identity.token }, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    const commandEnv = { ...env, [COMMAND_TOKEN]: identity.token };
+    // Only trusted bootstrap code runs before ownership commits. In particular, caller
+    // NODE_OPTIONS / loader environment must not execute payload code in the bootstrap.
+    const child = (onSpawn
+      ? spawn(process.execPath, ['--no-warnings', fileURLToPath(new URL('./command-bootstrap.js', import.meta.url))], { cwd, env: { [COMMAND_TOKEN]: identity.token }, detached: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'], shell: false })
+      : spawn(executable, argv.slice(1), { cwd, env: commandEnv, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], shell: false })) as ChildProcessWithoutNullStreams;
     let stdout = '', stderr = '';
+    const stdoutDecoder = new StringDecoder('utf8'), stderrDecoder = new StringDecoder('utf8');
     let failure: unknown, exitCode: number | null | undefined;
     let exited = false, closed = false, cleanupStarted = false, cleanupComplete = false, cleanupFailed = false, drainResolved = false, settled = false;
     const finish = (): void => {
@@ -160,6 +224,7 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
     };
     const destroyStreams = (): void => {
       child.unref();
+      if (child.connected) child.disconnect();
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
@@ -215,20 +280,38 @@ export async function run(argv: string[], { cwd, env = process.env, input, logPa
     timer = setTimeout(onDeadline, Math.min(timeoutMs, 2147483647));
     signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (chunk: Buffer) => {
-      stdout = (stdout + chunk.toString()).slice(-OUTPUT_LIMIT);
+      stdout = (stdout + stdoutDecoder.write(chunk)).slice(-OUTPUT_LIMIT);
       if (fd !== undefined) writeSync(fd, chunk);
     });
     child.stderr.on('data', (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-OUTPUT_LIMIT);
+      stderr = (stderr + stderrDecoder.write(chunk)).slice(-OUTPUT_LIMIT);
       if (fd !== undefined) writeSync(fd, chunk);
     });
+    child.stdout.on('end', () => { stdout = (stdout + stdoutDecoder.end()).slice(-OUTPUT_LIMIT); });
+    child.stderr.on('end', () => { stderr = (stderr + stderrDecoder.end()).slice(-OUTPUT_LIMIT); });
     child.stdin.on('error', (error: Error) => { if (toError(error).code !== 'EPIPE') { failure ??= error; cleanup(); } });
     child.on('error', error => { failure ??= error; cleanup(); });
+    child.on('message', message => {
+      if (!message || typeof message !== 'object' || !('error' in message) || typeof message.error !== 'object' || message.error === null) return;
+      const details = message.error as NodeJS.ErrnoException & { spawnargs?: string[] };
+      const ErrorType = details.name === 'TypeError' ? TypeError : details.name === 'RangeError' ? RangeError : Error;
+      failure ??= Object.assign(new ErrorType(details.message), details);
+      cleanup();
+    });
     child.on('exit', code => { exited = true; exitCode = code; cleanup(); });
     child.on('close', code => { closed = true; exitCode ??= code; cleanup(); finish(); });
     if (child.pid && onSpawn) {
-      try { onSpawn(child.pid, { deadline, identity }); }
-      catch (error) { failure = error; cleanup(); }
+      const pid = child.pid;
+      const acknowledge = async (): Promise<void> => {
+        try {
+          await onSpawn(pid, { deadline, identity });
+          if (signal?.aborted) { onAbort(); return; }
+          if (Date.now() >= deadline) { onDeadline(); return; }
+          if (cleanupStarted || exited || !child.connected) return;
+          child.send({ argv, env: commandEnv }, error => { if (error) { failure ??= error; cleanup(); } });
+        } catch (error) { failure ??= error; cleanup(); }
+      };
+      void acknowledge();
     }
     if (signal?.aborted) onAbort();
     child.stdin.end(input ?? '');
