@@ -177,3 +177,35 @@ test('--strict reports terminal failed tasks with exit code 2', async t => {
   assert.equal(parsed.failed.length, 1);
   assert.equal(parsed.failed[0].id, job.id);
 });
+
+test('drive reports persisted terminal failures on every return', async t => {
+  const f = fixture(t);
+  // defer the fixture job so the doomed product is the only actionable one
+  f.store.update(f.job.id, { nextAt: Date.now() + 3_600_000 });
+  const doomed = f.store.enqueue({ ...spec, id: 'drive-doomed', version: '0.9.0' }, f.config);
+  const doomTurn = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(doomTurn.action, 'host');
+  assert.equal(doomTurn.job.id, doomed.id);
+  const rejected = completeTurn(f.store, doomed.id, doomTurn.turn.id, { viable: false, distinctness: 'Dead on arrival', risks: ['Infeasible'], plan: ['Do not proceed'] });
+  assert.equal(rejected.status, 'failed');
+  // a fresh due job's host return must carry the persisted failure
+  f.store.enqueue({ ...spec, id: 'drive-fresh', version: '0.9.1' }, f.config);
+  const host = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(host.action, 'host');
+  assert.ok(host.failed, 'host return must report persisted terminal failures');
+  assert.ok(host.failed.some(item => item.id === doomed.id), `failed must include ${doomed.id}: ${JSON.stringify(host.failed)}`);
+});
+
+test('drive surfaces pendingErrors when a persisted host turn context no longer matches', async t => {
+  const f = fixture(t);
+  const first = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(first.action, 'host');
+  const job = f.store.get(f.job.id);
+  // corrupt the persisted claim so the scan cannot complete it and must surface a reason
+  f.store.update(f.job.id, { turn: { ...job.turn, contextDigest: 'deadbeef'.repeat(8) } });
+  const next = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(next.action, 'wait');
+  assert.ok(next.pendingErrors && next.pendingErrors.length > 0, 'pendingErrors must carry the context mismatch');
+  assert.match(next.pendingErrors[0].error, /context changed/);
+  assert.equal(next.pendingErrors[0].id, f.job.id);
+});

@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync, wr
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { run, executionEnvironment, processGroupAlive } from './process.js';
+import { run, executionEnvironment, processGroupAlive, terminateOwnedProcessGroup } from './process.js';
 import { canonicalPath, inside, expandArgv } from './config.js';
 import { checkPrerequisites } from './preflight.js';
 import { flutterEnvironment, prepareFlutter } from './flutter.js';
@@ -55,6 +55,7 @@ export interface DriveResult {
   nextDueAt?: number;
   rounds: number;
   failed?: Array<{ id: string; error: string | null }>;
+  pendingErrors?: Array<{ id: string; error: string }>;
 }
 
 function jobView(job: Job): JobView {
@@ -263,6 +264,46 @@ export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Pr
 }
 
 /**
+ * A crashed invocation may still own child processes even though its queue
+ * lock is free. Drain recorded command groups queue-wide before shared
+ * Flutter/Apple tooling can be used by any new deterministic stage, so a
+ * surviving group never runs alongside the new command.
+ */
+export async function drainCommandGroups(store: Store): Promise<void> {
+  let failure: Error | undefined;
+  for (const job of store.list()) {
+    const groups: number[] = [], commands: Job['commands'] = {};
+    let manualRecovery = job.manualRecovery ?? null;
+    for (const pid of job.groups) {
+      const command = job.commands[pid];
+      try { await terminateOwnedProcessGroup(pid, command?.identity); }
+      catch (cause) {
+        const error = toError(cause);
+        failure ??= error;
+        manualRecovery ??= error.message;
+        groups.push(pid);
+        if (command) commands[pid] = command;
+      }
+    }
+    if (job.groups.length || manualRecovery) {
+      store.update(job.id, {
+        groups, commands, recoveryStage: groups.length ? job.recoveryStage ?? job.stage : undefined,
+        ...(manualRecovery ? { status: 'blocked', blockedReason: null, manualRecovery, error: manualRecovery } : {}),
+      });
+    }
+    if (manualRecovery) failure ??= Object.assign(new Error(manualRecovery), { code: 'PROCESS_CLEANUP_BLOCKED' });
+  }
+  if (failure) throw failure;
+}
+
+/** Terminal failures already persisted in the queue, merged with the current invocation's failures (deduped by id). */
+function queueFailures(store: Store, failed: Array<{ id: string; error: string | null }>): Array<{ id: string; error: string | null }> {
+  const byId = new Map(failed.map(item => [item.id, item]));
+  for (const job of store.list()) if (job.status === 'failed' && !byId.has(job.id)) byId.set(job.id, { id: job.id, error: job.error ?? null });
+  return [...byId.values()];
+}
+
+/**
  * Drive the queue loop for unattended operation: execute due deterministic
  * stages (obfuscate/verify/package) automatically and claim the next host turn,
  * returning it for a host-side sub-agent. Stops as soon as a host turn is
@@ -279,21 +320,25 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
     if (pick.action === 'idle') {
       const jobs = store.list();
       const pending = jobs.filter(job => !['built', 'failed'].includes(job.status)).length;
-      const terminalFailed = jobs.filter(job => job.status === 'failed').map(job => ({ id: job.id, error: job.error ?? null }));
-      const allFailed = [...failed, ...terminalFailed];
+      const allFailed = queueFailures(store, failed);
       return {
         action: pending ? 'wait' : 'done',
         nextDueAt: pick.nextAt ?? undefined,
         rounds,
         ...(allFailed.length ? { failed: allFailed } : {}),
+        ...(pick.pendingErrors.length ? { pendingErrors: pick.pendingErrors } : {}),
       };
     }
     if (pick.action === 'host') {
-      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(failed.length ? { failed } : {}) };
+      const allFailed = queueFailures(store, failed);
+      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
     }
     let result: Job;
     store.acquire();
     try {
+      // A crashed invocation may still own child processes; drain them before
+      // shared Flutter/Apple tooling can be used by this new step.
+      await drainCommandGroups(store);
       result = await executeStep(store, store.get(pick.job.id), {});
     } finally {
       store.release();
@@ -302,7 +347,8 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
     lastResult = result;
     if (result.status === 'failed') failed.push({ id: result.id, error: result.error ?? null });
   }
-  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(failed.length ? { failed } : {}) };
+  const allFailed = queueFailures(store, failed);
+  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
 }
 
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {

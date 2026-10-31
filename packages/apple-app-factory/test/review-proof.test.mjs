@@ -64,4 +64,11 @@ test('a post-verification source change is diagnosed with guard and digest while
   assert.match(rejected.error, /current=[a-f0-9]{16}/);
   assert.match(rejected.error, /recorded=[a-f0-9]{16}/);
   assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)), /Stale/);
+
+  // while verification is invalidated, the preserved review's evidence must not read as passed
+  const { buildReport } = await import('../dist/report.js');
+  const entry = buildReport(rejected).checklist.find(item => item.requirement === spec.acceptance[0]);
+  assert.equal(entry.status, 'unreviewed');
+  assert.match(entry.reason, /re-verification/);
+  assert.equal(entry.evidence, 'Configured runtime command completed');
 });

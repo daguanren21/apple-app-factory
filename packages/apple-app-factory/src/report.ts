@@ -109,7 +109,10 @@ function buildChecklist(job: Job): ChecklistEntry[] {
     const matched = review.acceptanceEvidence.find(entry => entry.requirement === requirement);
     const related = review.approved === false ? review.findings.filter(finding => relatedFinding(finding, requirement)) : [];
     if (related.length > 0) return { requirement, status: 'failed' as const, evidence: matched?.evidence ?? null, reason: related.join('; ') };
-    if (matched) return { requirement, status: 'passed' as const, evidence: matched.evidence, reason: null };
+    if (matched) {
+      if (!job.verifiedDigest) return { requirement, status: 'unreviewed' as const, evidence: matched.evidence ?? null, reason: 'Source changed since verification; re-verification is required before this evidence can pass' };
+      return { requirement, status: 'passed' as const, evidence: matched.evidence, reason: null };
+    }
     return { requirement, status: 'uncovered' as const, evidence: null, reason: '评审证据未覆盖该验收项' };
   });
 }
