@@ -162,7 +162,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   doctor [spec.json]            Check configured prerequisites and optional stack tools
   enqueue <spec.json|->          Persist requirements and return a task ID
   next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
-  drive [--once] [--max-rounds n] [--strict]   Drive the queue loop: execute due deterministic stages, claim host turns
+  drive [--once] [--max-rounds n] [--strict]   Drive the loop: sweep inbox, run due stages, claim host turns; wait/done carry nextDueAt and the queue summary; --strict exits 2 on failed/needs-owner
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
   decide <id> <json-file|->       Append decision-log entries (role, rationale) to a task

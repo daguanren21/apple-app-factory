@@ -157,6 +157,55 @@ test('--once processes exactly one due deterministic task per drive', async t =>
   assert.equal(second.result.stage, 'review');
 });
 
+test('drive sweeps the configured inbox before advancing the loop', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-drive-intake-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const inbox = join(root, 'inbox');
+  mkdirSync(inbox);
+  const config = baseConfig(root, { inbox: { directory: inbox } });
+  const store = new Store(config.stateDir);
+  t.after(() => store.close());
+  writeFileSync(join(inbox, 'new-requirement.json'), JSON.stringify({ ...spec, id: 'drive-intake', version: '2.0.0' }));
+  const result = await driveQueue(store, config, { once: true });
+  assert.equal(result.action, 'host');
+  assert.equal(result.intake.accepted, 1);
+  assert.equal(result.intake.errors, undefined);
+  const jobs = store.list();
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].spec.id, 'drive-intake');
+});
+
+test('drive reports intake errors without stopping the loop', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-drive-intake-errors-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const inbox = join(root, 'inbox');
+  mkdirSync(inbox);
+  const config = baseConfig(root, { inbox: { directory: inbox } });
+  const store = new Store(config.stateDir);
+  t.after(() => store.close());
+  writeFileSync(join(inbox, 'a-broken.json'), '{');
+  writeFileSync(join(inbox, 'b-valid.json'), JSON.stringify({ ...spec, id: 'drive-intake', version: '2.0.0' }));
+  const result = await driveQueue(store, config, { once: true });
+  assert.equal(result.action, 'host');
+  assert.equal(result.intake.accepted, 1);
+  assert.equal(result.intake.errors.length, 1);
+  assert.match(result.intake.errors[0].source, /a-broken\.json/);
+  assert.match(result.intake.errors[0].error, /Cannot accept requirement/);
+});
+
+test('drive wait and done returns carry the queue summary', async t => {
+  const f = fixture(t);
+  f.store.update(f.job.id, { status: 'waiting', nextAt: Date.now() + 3_600_000 });
+  const waiting = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(waiting.action, 'wait');
+  assert.deepEqual(waiting.summary, { total: 1, built: 0, failed: 0, needsOwner: 0, blocked: 0, waiting: 1, queued: 0, running: 0 });
+  f.store.update(f.job.id, { status: 'built' });
+  const done = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(done.action, 'done');
+  assert.equal(done.summary.built, 1);
+  assert.equal(done.summary.needsOwner, 0);
+});
+
 test('--strict reports terminal failed tasks with exit code 2', async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-drive-strict-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
