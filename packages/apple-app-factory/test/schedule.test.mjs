@@ -42,7 +42,7 @@ function readPlist(t, f, content) {
   writeFileSync(path, content);
   const result = process.platform === 'darwin'
     ? spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path], { encoding: 'utf8' })
-    : spawnSync('python3', ['-c', 'import json, plistlib, sys; print(json.dumps(plistlib.load(sys.stdin.buffer)))'], { input: content, encoding: 'utf8' });
+    : spawnSync('python3', ['-c', 'import json, plistlib, sys; print(json.dumps(plistlib.loads(sys.stdin.buffer.read())))'], { input: content, encoding: 'utf8' });
   if (result.error?.code === 'ENOENT') {
     t.skip('Requires plutil or Python plistlib to parse the generated launchd document');
     return;
