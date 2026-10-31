@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { nextTurn, nextQueueTurn } from '../dist/runner.js';
@@ -110,10 +110,77 @@ test('priority never overrides eligibility: a deferred P0 is skipped for a due l
   assert.deepEqual(f.store.get(deferred.id), deferred);
 });
 
+test('queue skips a live subprocess owner, then adopts its dead turn without a new budget', async t => {
+  const f = fixture(t);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => { if (!holder.killed) holder.kill('SIGTERM'); });
+  await new Promise((resolve, reject) => {
+    holder.once('spawn', resolve);
+    holder.once('error', reject);
+  });
+  assert.ok(holder.pid);
+  const owned = f.enqueue('live-owner', 'research', 0);
+  const sibling = f.enqueue('sibling', 'research', 0);
+  const claimed = await nextTurn(f.store, owned.id, { ownerPid: holder.pid });
+  const hostTurns = claimed.job.hostTurns;
+  const attempts = { ...claimed.job.attempts };
+
+  const next = await nextQueueTurn(f.store);
+  assert.equal(next.action, 'host');
+  assert.equal(next.job.id, sibling.id, 'live owned turn must not block another actionable job');
+  assert.equal(f.store.get(owned.id).turn.ownerPid, holder.pid);
+
+  holder.kill('SIGTERM');
+  await new Promise(resolve => holder.once('exit', resolve));
+  const recovered = await nextQueueTurn(f.store);
+  assert.equal(recovered.action, 'host');
+  assert.equal(recovered.job.id, owned.id);
+  assert.equal(recovered.turn.id, claimed.turn.id);
+  assert.equal(recovered.job.hostTurns, hostTurns);
+  assert.deepEqual(recovered.job.attempts, attempts);
+  assert.equal(f.store.get(owned.id).turn.ownerPid, process.pid);
+
+  const unowned = f.enqueue('legacy-owner', 'research', 0);
+  const legacyClaim = await nextTurn(f.store, unowned.id, { ownerPid: holder.pid });
+  const { ownerPid: _discardedOwner, ...legacyTurn } = f.store.get(unowned.id).turn;
+  f.store.update(unowned.id, { turn: legacyTurn });
+  const adopted = await nextQueueTurn(f.store);
+  assert.equal(adopted.action, 'host');
+  assert.equal(adopted.job.id, unowned.id);
+  assert.equal(adopted.turn.id, legacyClaim.turn.id);
+  assert.equal(f.store.get(unowned.id).turn.ownerPid, process.pid);
+  assert.equal(f.store.get(unowned.id).hostTurns, legacyClaim.job.hostTurns);
+});
+
+test('explicit next adopts a dead owner, then queue refuses the live resumed session', async t => {
+  const f = fixture(t);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => { if (!holder.killed) holder.kill('SIGTERM'); });
+  await new Promise((resolve, reject) => {
+    holder.once('spawn', resolve);
+    holder.once('error', reject);
+  });
+  assert.ok(holder.pid);
+  const job = f.enqueue('explicit-recovery', 'research', 0);
+  const claimed = await nextTurn(f.store, job.id, { ownerPid: holder.pid });
+  holder.kill('SIGTERM');
+  await new Promise(resolve => holder.once('exit', resolve));
+
+  const resumed = await nextTurn(f.store, job.id, { ownerPid: process.pid });
+  assert.equal(resumed.turn.id, claimed.turn.id);
+  assert.equal(resumed.job.hostTurns, claimed.job.hostTurns);
+  assert.equal(f.store.get(job.id).turn.ownerPid, process.pid);
+  const queue = await nextQueueTurn(f.store);
+  assert.equal(queue.action, 'idle');
+  assert.deepEqual(queue.pendingErrors, []);
+  assert.equal(queue.summary.running, 1);
+});
+
 test('nextQueueTurn reports stale turn context and keeps scanning the queue', async t => {
   const f = fixture(t);
   const stale = f.enqueue('stale', 'research', 0);
-  const claim = await nextTurn(f.store, stale.id);
+  const deadOwner = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
+  const claim = await nextTurn(f.store, stale.id, { ownerPid: deadOwner });
   assert.equal(claim.action, 'host');
   f.store.update(stale.id, { logs: [...stale.logs, 'context-changed'] });
   const future = f.enqueue('future', 'research', Date.now() + 3600000);

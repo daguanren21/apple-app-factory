@@ -35,10 +35,11 @@ loopx 的循环模型：控制面编译每轮 packet、**runner 拥有 wake**、
 待唤醒）。每次唤醒注入固定 re-entry 指令；`wait.nextDueAt` 超过 24h 时先排一个
 24h 的唤醒接力。宿主应用重启后需人工重开会话。
 
-**Codex / Claude Code / 任意宿主 + 系统 cron**：cron/launchd 定时启动宿主的
-headless 会话（如 `codex exec` / `claude -p`）注入固定 re-entry 指令；或最简做法——
-cron 只跑 `apphx drive --once` 并把 JSON 输出投给宿主处理。注意：确定性阶段可以
-无宿主执行，但 `action: host` 必须由宿主会话完成，纯 CLI cron 推不完整循环。
+**Codex / Claude Code / 任意宿主 + 系统调度**：用 `apphx schedule --host <id>`
+生成模板，替换为实际前台 headless 命令（如 `codex exec` / `claude -p`）并注入固定 re-entry 指令。
+调度器必须启动持续存活的宿主会话，由它调用 `drive`、处理 `action: host` 并 `complete`，直到 `wait`/`done` 后退出。
+不能只定时执行一次 `drive --once`，再把 JSON 移交另一个会话：CLI 记录父进程 PID，短命包装进程退出后会让仍在执行的回合被误判为可续领。
+cron 模板还要求其 `PATH` 中有兼容的 `flock -n <file> <command>`；headless 命令保持前台，使锁覆盖整个宿主会话，而非只覆盖一次 CLI 调用。
 
 **无子代理宿主（stock Pi / Gemini）**：不满足 autopilot 独立评审，按 skill 规定
 诚实降级为非 autopilot 流程（人工开评审会话），不要无人值守跑。

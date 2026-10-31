@@ -52,6 +52,53 @@ async function reviewTurn(f) {
   return nextTurn(f.store, f.job.id);
 }
 
+test('review seat receipts count duplicate names by appended entry, not timestamps', async t => {
+  const f = fixture(t, { roles: { receipt: true, review: ['duplicate-seat', { name: 'duplicate-seat' }, 'qa-engineer'] } });
+  const build = await buildTurn(f);
+  completeTurn(f.store, f.job.id, build.turn.id);
+  const verified = await runStep(f.store, f.config, f.job.id);
+  assert.equal(verified.stage, 'review');
+
+  // Commit a pre-claim receipt at the exact claim clock value. The persisted
+  // decision cursor, rather than a wall-clock comparison, must reject it.
+  const clock = Date.now();
+  const originalNow = Date.now;
+  let review;
+  Date.now = () => clock;
+  try {
+    f.store.update(f.job.id, { decisions: [{ at: clock, stage: 'review', role: 'duplicate-seat', rationale: 'receipt committed before this review turn' }] });
+    review = await nextTurn(f.store, f.job.id);
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(review.turn.stage, 'review');
+  assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)),
+    /Review seat receipts missing for: duplicate-seat, duplicate-seat, qa-engineer/);
+
+  // One duplicate seat plus qa is still insufficient for the second seat.
+  const current = f.store.get(f.job.id);
+  const firstReceipts = ['duplicate-seat', 'qa-engineer'];
+  f.store.update(f.job.id, { decisions: [...current.decisions, ...firstReceipts.map(role => ({ at: clock - 1000, stage: 'review', role, rationale: `${role} recorded after the turn claim` }))] });
+  assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)),
+    /Review seat receipts missing for: duplicate-seat/);
+
+  // The second duplicate is appended separately and now completes the multiset.
+  const afterOne = f.store.get(f.job.id);
+  f.store.update(f.job.id, { decisions: [...afterOne.decisions, { at: clock - 1000, stage: 'review', role: 'duplicate-seat', rationale: 'second duplicate seat recorded after the turn claim' }] });
+  const approved = completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job));
+  assert.equal(approved.stage, 'package');
+  assert.equal(approved.status, 'queued');
+});
+
+test('legacy active review turns without a receipt cursor fail closed', async t => {
+  const f = fixture(t, { roles: { receipt: true } });
+  const review = await reviewTurn(f);
+  const current = f.store.get(f.job.id);
+  const { decisionsLengthAtClaim: _discarded, ...legacyTurn } = current.turn;
+  f.store.update(f.job.id, { turn: legacyTurn });
+  assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)), /boundary.*abandon.*reclaim/);
+});
+
 test('host-native research/build/review persist while actual deterministic commands gate progress', async t => {
   const f = fixture(t);
   const first = await nextTurn(f.store, f.job.id);

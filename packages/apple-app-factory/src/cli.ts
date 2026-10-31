@@ -86,6 +86,96 @@ async function probe(argv: string[], config: Config, context?: { cwd: string; en
 const frameworks = FrameworkSchema.options;
 const packageTargets = PackageTargetSchema.options;
 
+const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const xmlText = (value: string): string => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;').replaceAll('\r', '&#13;');
+const systemdSpecifiers = (value: string): string => value.replaceAll('%', '%%');
+const systemdArgument = (value: string): string => JSON.stringify(systemdSpecifiers(value).replaceAll('$', '$$$$'));
+// cron strips escaped percent signs before invoking the shell, regardless of shell quotes.
+// Separate quoted chunks also handle a literal backslash immediately before a percent sign.
+const cronShellQuote = (value: string): string => value.split('%').map(shellQuote).join('\\%');
+
+const reentryInstruction = (configPath: string): string =>
+  `Drive the apphx loop: run apphx drive --once --config ${shellQuote(configPath)} --build-only. On action host perform the turn roles exactly as the apphx skill directs without asking the user, then complete the turn with apphx complete and run drive --once again. On action step run drive --once again. On action wait exit this session; the scheduler will wake you at nextDueAt. On action done run apphx report for every built job, run apphx notify --any, report the queue summary including needs-owner items, then exit.`;
+
+/** OS-level wake templates for unattended loops. The owner fills in the host's headless launch command; apphx never installs system services itself. */
+function scheduleTemplate(host: { id: string }, options: { configPath: string; stateDir: string; format: string }) {
+  const configPath = resolve(options.configPath);
+  const controlDir = dirname(configPath);
+  const reentry = reentryInstruction(configPath);
+  const log = join(options.stateDir, 'schedule.log');
+  const headless = `${host.id}-headless-command`;
+  const hermesNote = 'For Hermes prefer its native cron (attach the apphx skill, absolute workdir and this re-entry prompt); this OS schedule is the fallback.';
+  let content: string;
+  let install: string;
+  if (options.format === 'launchd') {
+    content = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${xmlText(`apphx.${host.id}.loop`)}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- TODO(owner): replace with your ${xmlText(host.id)} headless launch command; the second argument is the re-entry prompt -->
+        <string>${xmlText(headless)}</string>
+        <string>${xmlText(reentry)}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${xmlText(controlDir)}</string>
+    <!-- revive a crashed session; normal exits wait for the next interval -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>${xmlText(log)}</string>
+    <key>StandardErrorPath</key>
+    <string>${xmlText(log)}</string>
+</dict>
+</plist>
+`;
+    install = `Save as ~/Library/LaunchAgents/apphx.${host.id}.loop.plist, then: launchctl load ~/Library/LaunchAgents/apphx.${host.id}.loop.plist. Tune StartInterval to your wake cadence; host turns still need the ${host.id} process, so fill in the headless command first. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
+  } else if (options.format === 'systemd') {
+    // These path directives consume raw paths, not quoted/C-escaped ExecStart arguments.
+    content = `# /etc/systemd/system/apphx-${host.id}-loop.service
+[Unit]
+Description=apphx ${host.id} loop wake
+
+[Service]
+Type=oneshot
+WorkingDirectory=${systemdSpecifiers(`${controlDir}/`)}
+# TODO(owner): replace with your ${host.id} headless launch command; the quoted argument is the re-entry prompt
+ExecStart=${headless} ${systemdArgument(reentry)}
+StandardOutput=append:${systemdSpecifiers(log)}
+StandardError=append:${systemdSpecifiers(log)}
+Restart=on-failure
+
+# /etc/systemd/system/apphx-${host.id}-loop.timer
+[Unit]
+Description=apphx ${host.id} loop wake timer
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`;
+    install = `Install both units, then: systemctl daemon-reload && systemctl enable --now apphx-${host.id}-loop.timer. Tune OnCalendar to your wake cadence. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
+  } else {
+    const lock = join(options.stateDir, `schedule-${host.id}.lock`);
+    content = `# crontab -e
+# TODO(owner): replace ${headless} with your ${host.id} headless launch command
+*/5 * * * * cd ${cronShellQuote(controlDir)} && flock -n ${cronShellQuote(lock)} ${headless} ${cronShellQuote(reentry)} >> ${cronShellQuote(log)} 2>&1
+`;
+    install = `Requires a util-linux-compatible flock executable in cron's PATH (flock -n <file> <command>); ensure the state directory exists and keep the headless command in the foreground so its instance lock spans the whole session. Add the line above to your crontab. cron has no crash revival; consider the launchd or systemd format for KeepAlive/Restart behaviour. ${host.id === 'hermes' ? hermesNote : ''}`.trim();
+  }
+  return { host: host.id, format: options.format, content, reentry, install };
+}
+
 function initialConfig(framework: Framework, platform: Platform, target: Config['packageTarget']): Record<string, unknown> {
   if ((framework === 'mygo') !== (platform === 'macos')) throw new Error(`${framework} does not support ${platform}`);
   if ((framework === 'android-java' && platform !== 'android') || (framework === 'swift' && platform !== 'ios')) throw new Error(`${framework} does not support ${platform}`);
@@ -176,6 +266,8 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   inbox                         Read durable intake results
   reconcile-intake <id> <json|-> Restore a legacy request identity from original input
   notify [<id>|--any]          Email the author for built, gate-passed tasks (--any sweeps all unnotified)
+  schedule --host <id>         Print an OS wake template (launchd/systemd/cron) for unattended loops
+    --format <format>          launchd|systemd|cron (default cron); content includes the fixed re-entry prompt
   remote <command>              Call an installed Mac CLI over SSH (build-only)
   obfuscator <project>          Run the bundled deterministic obfuscator on a project copy
     --config <file>             Obfuscator options as JSON (required)
@@ -205,6 +297,7 @@ async function main(): Promise<void> {
       'package-target': { type: 'string' },
       observe: { type: 'boolean' },
       any: { type: 'boolean' },
+      format: { type: 'string' },
       out: { type: 'string' },
       collect: { type: 'boolean', default: false },
       once: { type: 'boolean', default: false },
@@ -227,7 +320,7 @@ async function main(): Promise<void> {
     enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], drive: ['config', 'build-only', 'once', 'max-rounds', 'strict'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
     decide: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], report: ['config', 'build-only', 'out', 'collect'], retry: ['config', 'build-only'],
-    notify: ['config', 'build-only', 'any'],
+    notify: ['config', 'build-only', 'any'], schedule: ['config', 'build-only', 'host', 'format'],
     submit: ['config', 'build-only'], scan: ['config', 'build-only', 'observe'], inbox: ['config', 'build-only'],
     'reconcile-intake': ['config', 'build-only'],
     remote: ['config', 'observe'],
@@ -379,10 +472,10 @@ async function main(): Promise<void> {
     } else if (command === 'next') {
       if (values.any) {
         arity(args, 0, 0, 'next --any');
-        print(await nextQueueTurn(store, { buildOnly }));
+        print(await nextQueueTurn(store, { buildOnly, ownerPid: process.ppid }));
       } else {
         arity(args, 1, 1, 'next <id>');
-        const result = await nextTurn(store, args[0], { buildOnly });
+        const result = await nextTurn(store, args[0], { buildOnly, ownerPid: process.ppid });
         print(result);
         if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
@@ -390,7 +483,7 @@ async function main(): Promise<void> {
       arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--build-only] [--config <file>]');
       const maxRounds = values['max-rounds'] === undefined ? undefined : Number(values['max-rounds']);
       if (maxRounds !== undefined && (!Number.isSafeInteger(maxRounds) || maxRounds <= 0)) throw new Error('--max-rounds must be a positive integer');
-      const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly });
+      const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid: process.ppid });
       print(result);
       if (values.strict && result.failed?.length) process.exitCode = 2;
     } else if (command === 'complete') {
@@ -426,6 +519,14 @@ async function main(): Promise<void> {
         arity(args, 1, 1, 'notify <id>');
         print(await notifyJob(store, config, args[0]));
       }
+    } else if (command === 'schedule') {
+      arity(args, 0, 0, 'schedule --host <id> [--format launchd|systemd|cron]');
+      if (!values.host) throw new Error('schedule requires --host <id>; run apphx hosts to list supported hosts');
+      const host = hosts.find(value => value.id === values.host);
+      if (!host) throw new Error(`Unsupported host ${JSON.stringify(values.host)}. Supported hosts: ${hosts.map(value => value.id).join(', ')}`);
+      const format = values.format ?? 'cron';
+      if (!['launchd', 'systemd', 'cron'].includes(format)) throw new Error('--format must be launchd, systemd or cron');
+      print(scheduleTemplate(host, { configPath, stateDir: config.stateDir, format }));
     } else if (command === 'retry') {
       arity(args, 1, 1, 'retry <id>');
       print(view(store.transition(args[0], job => {

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { driveQueue, completeTurn } from '../dist/runner.js';
@@ -206,6 +206,36 @@ test('drive wait and done returns carry the queue summary', async t => {
   assert.equal(done.summary.needsOwner, 0);
 });
 
+test('drive skips a live session turn and recovers it after the owner exits', async t => {
+  const f = fixture(t);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => { if (!holder.killed) holder.kill('SIGTERM'); });
+  await new Promise((resolve, reject) => {
+    holder.once('spawn', resolve);
+    holder.once('error', reject);
+  });
+  assert.ok(holder.pid);
+  const owned = f.job;
+  const sibling = f.store.enqueue({ ...spec, id: 'drive-live-sibling', version: '0.9.0' }, f.config);
+  const claimed = await driveQueue(f.store, f.config, { once: true, ownerPid: holder.pid });
+  assert.equal(claimed.action, 'host');
+  assert.equal(claimed.job.id, owned.id);
+  const hostTurns = claimed.job.hostTurns;
+  const skipped = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(skipped.action, 'host');
+  assert.equal(skipped.job.id, sibling.id);
+  assert.equal(f.store.get(owned.id).turn.ownerPid, holder.pid);
+
+  holder.kill('SIGTERM');
+  await new Promise(resolve => holder.once('exit', resolve));
+  const recovered = await driveQueue(f.store, f.config, { once: true });
+  assert.equal(recovered.action, 'host');
+  assert.equal(recovered.job.id, owned.id);
+  assert.equal(recovered.turn.id, claimed.turn.id);
+  assert.equal(recovered.job.hostTurns, hostTurns);
+  assert.equal(f.store.get(owned.id).turn.ownerPid, process.pid);
+});
+
 test('--strict reports terminal failed tasks with exit code 2', async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-drive-strict-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -247,7 +277,8 @@ test('drive reports persisted terminal failures on every return', async t => {
 
 test('drive surfaces pendingErrors when a persisted host turn context no longer matches', async t => {
   const f = fixture(t);
-  const first = await driveQueue(f.store, f.config, { once: true });
+  const deadOwner = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
+  const first = await driveQueue(f.store, f.config, { once: true, ownerPid: deadOwner });
   assert.equal(first.action, 'host');
   const job = f.store.get(f.job.id);
   // corrupt the persisted claim so the scan cannot complete it and must surface a reason
