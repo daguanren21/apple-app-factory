@@ -1,5 +1,13 @@
 # apphx
 
+## 2.6.0
+
+### Minor Changes
+
+- drive 循环补全：每次驱动先自动扫 inbox 入队（submit 即进队列，逐条错误上报不打断循环）；wait/done 返回携带完整队列 summary 终局审计（含 needsOwner 计数）；新增无人值守 wake 接线手册（Hermes cron / DimAgent schedule_wakeup / 通用 cron 三种配方与固定 re-entry 指令）。
+
+- 新增 `apphx schedule --host <id> [--format launchd|systemd|cron]`：生成 OS 级唤醒模板（launchd KeepAlive / systemd Restart=on-failure 崩溃自动拉起宿主会话，cron 兜底），内嵌固定 re-entry 提示词，只打印不安装。模板按 XML、systemd 和 cron/shell 语法转义路径及提示词；cron 使用 `flock -n` 防止同一状态目录与宿主的会话重叠。队列领取在锁内跳过活跃宿主进程持有的回合，原宿主退出后可续领且不重复扣预算。新增可选席位回执门禁 `roles.receipt`：按领取事务保存的 decision 索引只接受领取后追加的回执，同名席位分别计数；旧活跃 review 回合缺少索引时须 abandon 后重新领取。
+
 ## 2.5.0
 
 ### Minor Changes
