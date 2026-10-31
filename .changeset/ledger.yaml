@@ -40,3 +40,8 @@ apphx@2.4.0:
     - decision-log
     - role-panels
     - verify-repair-evidence
+apphx@2.5.0:
+  dir: packages/apple-app-factory
+  intents:
+    - architect-gate
+    - drive-loop
