@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigSchema, RolesConfigSchema, RequirementSchema } from '../dist/schemas.js';
+import { ConfigSchema, RequirementSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { nextTurn } from '../dist/runner.js';
 
@@ -60,10 +60,3 @@ test('build prompt reproduces the referenced design faithfully and records the d
   assert.match(claim.turn.prompt, /docs\/ui-design\.md/);
 });
 
-test('RolesConfigSchema defaults build to ui-designer then developer and honors explicit overrides', () => {
-  const defaults = RolesConfigSchema.parse({});
-  assert.deepEqual(defaults.build, ['ui-designer', 'developer']);
-  const overridden = RolesConfigSchema.parse({ build: ['senior-designer', 'implementer'] });
-  assert.deepEqual(overridden.build, ['senior-designer', 'implementer']);
-  assert.deepEqual(overridden.research, ['product-analyst']);
-});

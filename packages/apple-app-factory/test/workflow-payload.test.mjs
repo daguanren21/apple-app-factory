@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ConfigSchema } from '../dist/schemas.js';
+import { Store } from '../dist/store.js';
+import { nextTurn, completeTurn } from '../dist/runner.js';
+import { runStep } from '../dist/scheduler.js';
+import { MAX_INPUT_BYTES } from '../dist/input-limits.js';
+
+const plan = (id, acceptance = ['Fixture inspected']) => ({ rationale: 'One bounded node before the policy checkpoint', nodes: [{ id, role: id, instructions: 'Inspect the controlled fixture', acceptance, fresh: true }], final: id });
+const passed = (acceptance, result) => ({ outcome: 'passed', summary: 'Controlled contract fixture', evidence: acceptance.map(requirement => ({ requirement, evidence: 'x' })), ...(result === undefined ? {} : { result }) });
+
+test('final review plan admission counts combined node and immutable product evidence before consuming its token', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'apphx-combined-payload-'));
+  const check = [process.execPath, '-e', 'require("node:assert/strict").equal(require("node:fs").readFileSync("main.dart","utf8"),"void main() {}")'];
+  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'work'), packageTarget: 'simulator', allowLocalExecution: true,
+    workflow: { maxReplans: 0 }, maxHostTurns: 6, verification: { checks: [check], runtime: [check] } });
+  const store = new Store(config.stateDir);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const productAcceptance = 'r'.repeat(1000000);
+  const spec = { id: 'payload-boundary', name: 'Payload boundary', purpose: 'Check bounded result representability', audience: 'Harness maintainers', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Bounded exact evidence'], acceptance: [productAcceptance] };
+  assert.ok(Buffer.byteLength(JSON.stringify(spec)) < MAX_INPUT_BYTES);
+  const job = store.enqueue(spec, config);
+  let packet = await nextTurn(store, job.id);
+  completeTurn(store, job.id, packet.turn.id, plan('research'));
+  packet = await nextTurn(store, job.id);
+  completeTurn(store, job.id, packet.turn.id, passed(['Fixture inspected'], { viable: true, distinctness: 'A representability boundary, not product acceptance evidence', plan: ['Exercise exact source verification before the review payload boundary'] }));
+  packet = await nextTurn(store, job.id);
+  completeTurn(store, job.id, packet.turn.id, plan('build'));
+  packet = await nextTurn(store, job.id);
+  writeFileSync(join(packet.turn.cwd, 'pubspec.yaml'), 'name: payload_boundary\ndependencies:\n  flutter: {sdk: flutter}\n');
+  writeFileSync(join(packet.turn.cwd, 'main.dart'), 'void main() {}');
+  completeTurn(store, job.id, packet.turn.id, passed(['Fixture inspected']));
+  assert.equal((await runStep(store, config, job.id)).stage, 'review');
+  const planner = await nextTurn(store, job.id);
+  const before = store.get(job.id);
+  const criteria = Array.from({ length: 25 }, (_, index) => String(index).padStart(2, '0') + 'c'.repeat(1998));
+  const review = { approved: true, findings: [], acceptanceEvidence: [{ requirement: productAcceptance, evidence: 'x' }] };
+  assert.ok(Buffer.byteLength(JSON.stringify(plan('review', criteria))) < MAX_INPUT_BYTES);
+  assert.ok(Buffer.byteLength(JSON.stringify(passed(criteria, review))) > MAX_INPUT_BYTES);
+  assert.throws(() => completeTurn(store, job.id, planner.turn.id, plan('review', criteria)), /completion.*(limit|bytes)/i);
+  assert.deepEqual(store.get(job.id), before, 'Impossible plan must retain the planner token and every consumed budget');
+  const compactCriteria = ['Fixture inspected'];
+  assert.ok(Buffer.byteLength(JSON.stringify(passed(compactCriteria, review))) <= MAX_INPUT_BYTES);
+  completeTurn(store, job.id, planner.turn.id, plan('review', compactCriteria));
+  const final = await nextTurn(store, job.id);
+  const completed = completeTurn(store, job.id, final.turn.id, passed(compactCriteria, review));
+  assert.equal(completed.stage, 'package');
+  assert.equal(completed.hostTurns, 6);
+  assert.equal(completed.artifact ?? null, null);
+});

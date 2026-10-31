@@ -8,12 +8,14 @@ import { parseArgs } from 'node:util';
 import { canonicalPath, loadConfig, loadJSON, expandArgv, normalizeIsolationPaths, validateProjectSource } from './config.js';
 import { Store } from './store.js';
 import { run, executionEnvironment } from './process.js';
+import { resolveHostOwner } from './host-session.js';
 
 import { runStep } from './scheduler.js';
-import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue } from './runner.js';
+import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue, requestWorkflowReplan, cancelWorkflow, workflowRetryPatch } from './runner.js';
 import { hosts, installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from './integrations.js';
 import { submitRequirement, scanInbox } from './inbox.js';
-import { MAX_INPUT_BYTES, parseRequirement, readInputFile } from './requirements.js';
+import { parseRequirement, readInputFile } from './requirements.js';
+import { MAX_INPUT_BYTES } from './input-limits.js';
 import { dispatchRemote } from './remote.js';
 import { FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './schemas.js';
 import type { Config, Framework, Job, Platform } from './schemas.js';
@@ -24,6 +26,7 @@ import { invalidateVerification, verificationConfigChanged } from './proof.js';
 import { notifyJob, notifyBuiltJobs } from './notify.js';
 import { prepareIsolatedCommand, removeConfinedPath, type IsolatedCommand } from './isolation.js';
 import { reportJob } from './report.js';
+import { activeWorkflowNodes } from './workflow.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2));
@@ -95,7 +98,7 @@ const systemdArgument = (value: string): string => JSON.stringify(systemdSpecifi
 const cronShellQuote = (value: string): string => value.split('%').map(shellQuote).join('\\%');
 
 const reentryInstruction = (configPath: string): string =>
-  `Drive the apphx loop: run apphx drive --once --config ${shellQuote(configPath)} --build-only. On action host perform the turn roles exactly as the apphx skill directs without asking the user, then complete the turn with apphx complete and run drive --once again. On action step run drive --once again. On action wait exit this session; the scheduler will wake you at nextDueAt. On action done run apphx report for every built job, run apphx notify --any, report the queue summary including needs-owner items, then exit.`;
+  `Drive the apphx loop: run apphx drive --once --config ${shellQuote(configPath)} --build-only. On action host inspect turn.kind: produce the JSON DAG for plan, or execute exactly the claimed node for node; for a legacy turn without kind follow its stage roles. Use the apphx skill and native delegation without asking the user. Complete each exact token with its typed result and run drive --once again; claim additional independent nodes only within capacity. On action step run drive --once again. On action wait first collect and complete any active native workers owned by this session, then drive again; exit only when no owned work remains and let the scheduler wake at nextDueAt. On action done run apphx report for every built job, run apphx notify --any, report the queue summary including needs-owner items, then exit.`;
 
 /** OS-level wake templates for unattended loops. The owner fills in the host's headless launch command; apphx never installs system services itself. */
 function scheduleTemplate(host: { id: string }, options: { configPath: string; stateDir: string; format: string }) {
@@ -183,6 +186,8 @@ function initialConfig(framework: Framework, platform: Platform, target: Config[
   if (!allowedTargets.includes(target)) throw new Error(`${target} does not match platform ${platform}`);
   const template = JSON.parse(readFileSync(join(packageRoot, 'examples', `${framework}.factory.json`), 'utf8')) as Record<string, unknown>;
   template.packageTarget = target;
+  template.workflow = {};
+  template.maxHostTurns = 64;
   if (framework === 'mygo') {
     template.packaging = {
       provider: 'local',
@@ -253,8 +258,11 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   enqueue <spec.json|->          Persist requirements and return a task ID
   next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
   drive [--once] [--max-rounds n] [--strict]   Drive the loop: sweep inbox, run due stages, claim host turns; wait/done carry nextDueAt and the queue summary; --strict exits 2 on failed/needs-owner
-  complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
+    --host-pid <pid>             next/drive: live ancestor owning native work (or APPHX_HOST_PID); explicit flag wins
+  complete <id> <turn> [json|-]   Submit a workflow plan/node result, research/review verdict, or legacy build
   abandon <id> <turn>            Abandon a host turn without resetting its budget
+  replan <id> <reason>           Request a native workflow planner; preserve completed graph evidence
+  cancel <id> <reason>           Revoke workflow claims and defer the job to its owner
   decide <id> <json-file|->       Append decision-log entries (role, rationale) to a task
   step <id>                     Execute one obfuscation, verification or packaging stage
   status [id]                   Read durable task state as JSON
@@ -289,6 +297,7 @@ async function main(): Promise<void> {
       project: { type: 'string' },
       global: { type: 'boolean' },
       host: { type: 'string' },
+      'host-pid': { type: 'string' },
       'allow-local-execution': { type: 'boolean' },
       autopilot: { type: 'boolean' },
       framework: { type: 'string' },
@@ -317,7 +326,8 @@ async function main(): Promise<void> {
   const flags: Record<string, string[]> = {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
     init: ['config', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
-    enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], drive: ['config', 'build-only', 'once', 'max-rounds', 'strict'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
+    enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any', 'host-pid'], drive: ['config', 'build-only', 'once', 'max-rounds', 'strict', 'host-pid'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
+    replan: ['config', 'build-only'], cancel: ['config', 'build-only'],
     decide: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], report: ['config', 'build-only', 'out', 'collect'], retry: ['config', 'build-only'],
     notify: ['config', 'build-only', 'any'], schedule: ['config', 'build-only', 'host', 'format'],
@@ -470,28 +480,39 @@ async function main(): Promise<void> {
       arity(args, 1, 1, 'report <id> [--out <dir>] [--collect] [--build-only] [--config <file>]');
       print(reportJob(store, args[0], { out: values.out, collect: values.collect, buildOnly, config }));
     } else if (command === 'next') {
+      const { ownerPid } = resolveHostOwner(values['host-pid']);
       if (values.any) {
         arity(args, 0, 0, 'next --any');
-        print(await nextQueueTurn(store, { buildOnly, ownerPid: process.ppid }));
+        print(await nextQueueTurn(store, { buildOnly, ownerPid }));
       } else {
         arity(args, 1, 1, 'next <id>');
-        const result = await nextTurn(store, args[0], { buildOnly, ownerPid: process.ppid });
+        const result = await nextTurn(store, args[0], { buildOnly, ownerPid });
         print(result);
         if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
     } else if (command === 'drive') {
-      arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--build-only] [--config <file>]');
+      arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--host-pid <pid>] [--build-only] [--config <file>]');
       const maxRounds = values['max-rounds'] === undefined ? undefined : Number(values['max-rounds']);
       if (maxRounds !== undefined && (!Number.isSafeInteger(maxRounds) || maxRounds <= 0)) throw new Error('--max-rounds must be a positive integer');
-      const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid: process.ppid });
-      print(result);
-      if (values.strict && result.failed?.length) process.exitCode = 2;
+      const { ownerPid } = resolveHostOwner(values['host-pid']);
+      const controller = new AbortController();
+      const stop = (): void => controller.abort();
+      process.on('SIGINT', stop);
+      process.on('SIGTERM', stop);
+      try {
+        const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid, signal: controller.signal });
+        print(result);
+        if (values.strict && result.failed?.length) process.exitCode = 2;
+      } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
     } else if (command === 'complete') {
       arity(args, 2, 3, 'complete <id> <turn-id> [result.json|-]');
       outcome(await completeTurn(store, args[0], args[1], args[2] ? inputJSON(args[2]) : undefined, { buildOnly }));
     } else if (command === 'abandon') {
       arity(args, 2, 2, 'abandon <id> <turn-id>');
       outcome(abandonTurn(store, args[0], args[1], { buildOnly }));
+    } else if (command === 'replan' || command === 'cancel') {
+      arity(args, 2, 2, `${command} <id> <reason>`);
+      print(view(command === 'replan' ? requestWorkflowReplan(store, args[0], args[1]) : cancelWorkflow(store, args[0], args[1])));
     } else if (command === 'decide') {
       arity(args, 2, 2, 'decide <id> <json-file|->');
       if (buildOnly) assertDecideBuildOnly(config);
@@ -531,7 +552,7 @@ async function main(): Promise<void> {
       arity(args, 1, 1, 'retry <id>');
       print(view(store.transition(args[0], job => {
         if (!['blocked', 'needs-owner', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
-        if (job.turn) throw new Error('Abandon the active host turn before changing task configuration');
+        if (job.turn || activeWorkflowNodes(job).length > 0) throw new Error('Abandon the active host turns before changing task configuration');
         if (job.cloudBuildPending) throw new Error('Cloud packaging outcome is uncertain; reconcile the existing provider run rather than replaying it with retry');
         const resumedConfig = { ...config, packageTarget: config.packageTarget };
         const proofChanged = verificationConfigChanged(job, resumedConfig);
@@ -547,7 +568,7 @@ async function main(): Promise<void> {
           const exceeded = deadlineExpired ? `maxJobHours (${resumedConfig.maxJobHours})` : hostLimit ? `maxHostTurns (${resumedConfig.maxHostTurns})` : `maxAttempts (${resumedConfig.maxAttempts}) at ${job.stage}`;
           return { ...patch, config: resumedConfig, status: 'needs-owner', manualRecovery: null, nextAt: Date.now(), error: `${exceeded} is exhausted under the resumed configuration; raise the budget in factory.json or provide owner input before retrying` };
         }
-        return { ...patch, config: resumedConfig, status: 'queued', manualRecovery: null, nextAt: Date.now(), error: null };
+        return { ...patch, ...workflowRetryPatch(job, resumedConfig), config: resumedConfig, status: 'queued', manualRecovery: null, nextAt: Date.now(), error: null };
       })));
     } else throw new Error(`Unknown command ${command}; use --help`);
   } finally { store.close(); }

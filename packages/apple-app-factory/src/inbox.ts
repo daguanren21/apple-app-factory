@@ -3,7 +3,8 @@ import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, unlin
 import { join, resolve } from 'node:path';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { toError, validateJobConfig, type Config, type InboxEntry } from './schemas.js';
-import { MAX_INPUT_BYTES, parseRequirement, readInputFile, type Requirement } from './requirements.js';
+import { parseRequirement, readInputFile, type Requirement } from './requirements.js';
+import { MAX_INPUT_BYTES } from './input-limits.js';
 import type { Store } from './store.js';
 
 export type InboxScan = { entries: InboxEntry[]; error: string | null; observed: boolean };

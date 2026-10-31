@@ -2,11 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { inspectProcessGroup, signalOwnedProcessGroup, TERMINATION_GRACE_MS } from './process.js';
+import { inspectProcess, processIsAlive, inspectProcessGroup, signalOwnedProcessGroup, TERMINATION_GRACE_MS } from './process.js';
 import { canonicalPath, normalizeIsolationPaths, validateProjectSource } from './config.js';
 import { projectDirectory, sourceDigest } from './workspace.js';
 import { dependencyDigest } from './dependencies.js';
 import { ConfigSchema, JobSchema, SpecSchema, InboxEntrySchema, validateJobConfig, toError, type CommandMetadata, type Job, type Spec, type Config, type InboxEntry } from './schemas.js';
+import { activeWorkflowNodes } from './workflow.js';
 
 function parseStoredJob(data: unknown): Job {
   if (typeof data !== 'string') throw new Error('Stored task data must be JSON text');
@@ -47,6 +48,7 @@ function migrateSpec(value: unknown): Spec {
 export class Store {
   readonly db: DatabaseSync;
   readonly directory: string;
+  private workerClaim?: { identity: string; token: string };
 
   constructor(directory: string) {
     this.directory = canonicalPath(directory);
@@ -68,10 +70,8 @@ export class Store {
             CREATE TABLE IF NOT EXISTS inbox (source TEXT PRIMARY KEY, digest TEXT, data TEXT NOT NULL);`);
           const owner = this.db.prepare('SELECT pid FROM worker WHERE id=1').get();
           if (owner) {
-            if (typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 1) throw new Error('Legacy queue has invalid execution ownership; inspect it with the previous factory version');
-            let alive = true;
-            try { process.kill(owner.pid, 0); } catch (cause) { alive = toError(cause).code !== 'ESRCH'; }
-            if (alive) throw new Error(`Stop the previous factory execution (${owner.pid}) before migrating its queue; no process was signaled`);
+            if (typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 1 || owner.pid > 2147483647) throw new Error('Legacy queue has invalid execution ownership; inspect it with the previous factory version');
+            if (processIsAlive(owner.pid)) throw new Error(`Stop the previous factory execution (${owner.pid}) before migrating its queue; no process was signaled`);
           }
           this.db.exec('CREATE TABLE IF NOT EXISTS snapshot_migrations (job TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(job,version));');
           const hasJobs = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").get();
@@ -129,6 +129,10 @@ export class Store {
         throw new Error(`Cannot migrate saved factory snapshots: ${toError(cause).message}. No migration was committed. Preserve queue.sqlite and use the previous factory version to inspect or repair unsupported data.`);
       }
     }
+    this.db.exec(`CREATE TABLE IF NOT EXISTS worker_identity (id INTEGER PRIMARY KEY CHECK(id=1), identity TEXT NOT NULL, claim TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS worker_identity_insert BEFORE INSERT ON worker BEGIN DELETE FROM worker_identity WHERE id=NEW.id; END;
+      CREATE TRIGGER IF NOT EXISTS worker_identity_update BEFORE UPDATE ON worker BEGIN DELETE FROM worker_identity WHERE id=OLD.id; END;
+      CREATE TRIGGER IF NOT EXISTS worker_identity_delete AFTER DELETE ON worker BEGIN DELETE FROM worker_identity WHERE id=OLD.id; END;`);
   }
   close(): void { this.db.close(); }
   transaction<T>(action: () => T): T {
@@ -161,7 +165,7 @@ export class Store {
     }
     if (existing || prospective) return existing;
     const base = this.selectBase(spec, baseJobId, pending);
-    if (base && (base.spec.id !== spec.id || base.spec.platform !== spec.platform || base.spec.channel !== spec.channel || base.spec.framework !== spec.framework || !['built', 'ready'].includes(base.status) || !base.verifiedDigest || !base.verifiedDependencyDigest || base.turn || base.groups.length || base.manualRecovery)) {
+    if (base && (base.spec.id !== spec.id || base.spec.platform !== spec.platform || base.spec.channel !== spec.channel || base.spec.framework !== spec.framework || !['built', 'ready'].includes(base.status) || !base.verifiedDigest || !base.verifiedDependencyDigest || base.turn || activeWorkflowNodes(base).length || base.groups.length || base.manualRecovery)) {
       throw new Error('baseJobId must identify a finished, verified task of the same product, platform, channel and framework with no active work');
     }
     if (base) this.predecessorSpec(spec, base);
@@ -248,6 +252,7 @@ export class Store {
   }
   private saveJob(current: Job, patch: Partial<Job>, reconcileIntake = false): Job {
     const config = patch.config ? this.snapshotConfig(patch.config) : current.config;
+    if (Boolean(config.workflow) !== Boolean(current.config.workflow) && (current.hostTurns > 0 || current.workflow || current.stage !== 'research' || current.groups.length)) throw new Error('Workflow mode is frozen once a task has started; enqueue a new task instead of bypassing its work graph');
     if (current.sourceDirectory && [config.stateDir, config.workspaceRoot].some(path => overlaps(path, current.sourceDirectory!))) throw new Error('Pinned project source must not overlap stateDir or workspaceRoot after reconfiguration');
     const job = JobSchema.parse({ ...current, ...patch, config, updatedAt: Date.now() });
     validateJobConfig(job.spec, job.config);
@@ -268,26 +273,33 @@ export class Store {
     });
   }
   acquire(): void {
+    const current = inspectProcess(process.pid);
+    if (!current) throw new Error('Cannot inspect this worker process incarnation; queue ownership was not changed');
+    const claim = { identity: current.identity, token: randomUUID() };
     const jobs = this.transaction(() => {
       const jobs = this.list();
-      const owner = this.db.prepare('SELECT pid FROM worker WHERE id=1').get();
+      const owner = this.db.prepare('SELECT worker.pid, worker_identity.identity FROM worker LEFT JOIN worker_identity USING(id) WHERE worker.id=1').get();
       if (owner) {
-        if (typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 1) throw new Error('Stored worker PID must be a valid process ID');
-        let alive = true;
-        try { process.kill(owner.pid, 0); } catch (error) { alive = toError(error).code !== 'ESRCH'; }
-        if (alive) throw new Error(`Execution ${owner.pid} already owns this queue; wait for its command to finish`);
+        if (typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 1 || owner.pid > 2147483647) throw new Error('Stored worker PID must be a valid process ID');
+        if (owner.identity !== null && (typeof owner.identity !== 'string' || !owner.identity)) throw new Error('Stored worker process incarnation is invalid; inspect queue ownership before retrying');
+        if (processIsAlive(owner.pid, typeof owner.identity === 'string' ? owner.identity : undefined)) throw new Error(`Execution ${owner.pid} already owns this queue; wait for its command to finish`);
       }
       this.db.prepare('INSERT OR REPLACE INTO worker VALUES(1,?)').run(process.pid);
+      this.db.prepare('INSERT INTO worker_identity VALUES(1,?,?)').run(claim.identity, claim.token);
       return jobs;
     });
+    this.workerClaim = claim;
     for (const job of jobs) {
-      if (job.status === 'running' && !job.turn) this.update(job.id, { status: 'waiting', blockedReason: null, nextAt: Date.now(), error: 'Execution stopped during a deterministic stage; recover its command groups before resuming' });
+      if (job.status === 'running' && !job.turn && !activeWorkflowNodes(job).length) this.update(job.id, { status: 'waiting', blockedReason: null, nextAt: Date.now(), error: 'Execution stopped during a deterministic stage; recover its command groups before resuming' });
     }
   }
   release(): void {
+    const claim = this.workerClaim;
+    if (!claim) return;
     this.transaction(() => {
-      this.db.prepare('DELETE FROM worker WHERE id=1 AND pid=?').run(process.pid);
+      this.db.prepare('DELETE FROM worker WHERE id=1 AND pid=? AND EXISTS (SELECT 1 FROM worker_identity WHERE id=1 AND identity=? AND claim=?)').run(process.pid, claim.identity, claim.token);
     });
+    this.workerClaim = undefined;
   }
   next(canClaim: (job: Job) => boolean = () => true, excludeIds: ReadonlySet<string> = new Set()): Job | undefined {
     const now = Date.now();
@@ -335,7 +347,7 @@ export class Store {
         const claimed = this.transaction(() => {
           const current = this.get(job.id);
           const eligible = current.status === 'queued' || current.status === 'waiting' || (current.status === 'blocked' && current.blockedReason?.kind === 'prerequisite');
-          if (!eligible || current.turn || current.nextAt > Date.now() || current.groups.length || current.manualRecovery != null || !canClaim(current)) return undefined;
+          if (!eligible || current.workflow?.cancelled || current.turn || activeWorkflowNodes(current).length || current.nextAt > Date.now() || current.groups.length || current.manualRecovery != null || !canClaim(current)) return undefined;
           return this.saveJob(current, { status: 'running', blockedReason: null, manualRecovery: null, groups: [], commands: {}, recoveryStage: undefined });
         });
         if (claimed) return claimed;

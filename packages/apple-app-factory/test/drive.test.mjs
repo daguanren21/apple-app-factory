@@ -278,11 +278,11 @@ test('drive reports persisted terminal failures on every return', async t => {
 test('drive surfaces pendingErrors when a persisted host turn context no longer matches', async t => {
   const f = fixture(t);
   const deadOwner = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
-  const first = await driveQueue(f.store, f.config, { once: true, ownerPid: deadOwner });
+  const first = await driveQueue(f.store, f.config, { once: true });
   assert.equal(first.action, 'host');
   const job = f.store.get(f.job.id);
   // corrupt the persisted claim so the scan cannot complete it and must surface a reason
-  f.store.update(f.job.id, { turn: { ...job.turn, contextDigest: 'deadbeef'.repeat(8) } });
+  f.store.update(f.job.id, { turn: { ...job.turn, ownerPid: deadOwner, ownerIdentity: undefined, contextDigest: 'deadbeef'.repeat(8) } });
   const next = await driveQueue(f.store, f.config, { once: true });
   assert.equal(next.action, 'wait');
   assert.ok(next.pendingErrors && next.pendingErrors.length > 0, 'pendingErrors must carry the context mismatch');

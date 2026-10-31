@@ -63,13 +63,6 @@ test('build turns carry the ui-designer then developer roles by default and conf
   assert.match(claim2.turn.prompt, /senior-developer/);
 });
 
-test('roles config fills default role lists per stage', () => {
-  const base = { stateDir: '/tmp/roles-state', workspaceRoot: '/tmp/roles-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } };
-  const parsed = ConfigSchema.parse({ ...base, roles: {} });
-  assert.deepEqual(parsed.roles.research, ['product-analyst']);
-  assert.deepEqual(parsed.roles.build, ['ui-designer', 'developer']);
-  assert.deepEqual(parsed.roles.review, ['architect-review', 'qa-engineer', 'acceptance-reviewer']);
-});
 
 test('nextQueueTurn drives a single-job queue exactly like next <id>', async t => {
   const f = fixture(t);
@@ -141,8 +134,8 @@ test('queue skips a live subprocess owner, then adopts its dead turn without a n
   assert.equal(f.store.get(owned.id).turn.ownerPid, process.pid);
 
   const unowned = f.enqueue('legacy-owner', 'research', 0);
-  const legacyClaim = await nextTurn(f.store, unowned.id, { ownerPid: holder.pid });
-  const { ownerPid: _discardedOwner, ...legacyTurn } = f.store.get(unowned.id).turn;
+  const legacyClaim = await nextTurn(f.store, unowned.id);
+  const { ownerPid: _discardedOwner, ownerIdentity: _discardedIdentity, ...legacyTurn } = f.store.get(unowned.id).turn;
   f.store.update(unowned.id, { turn: legacyTurn });
   const adopted = await nextQueueTurn(f.store);
   assert.equal(adopted.action, 'host');
@@ -180,9 +173,9 @@ test('nextQueueTurn reports stale turn context and keeps scanning the queue', as
   const f = fixture(t);
   const stale = f.enqueue('stale', 'research', 0);
   const deadOwner = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
-  const claim = await nextTurn(f.store, stale.id, { ownerPid: deadOwner });
+  const claim = await nextTurn(f.store, stale.id);
   assert.equal(claim.action, 'host');
-  f.store.update(stale.id, { logs: [...stale.logs, 'context-changed'] });
+  f.store.update(stale.id, { turn: { ...claim.job.turn, ownerPid: deadOwner, ownerIdentity: undefined }, logs: [...stale.logs, 'context-changed'] });
   const future = f.enqueue('future', 'research', Date.now() + 3600000);
   const result = await nextQueueTurn(f.store);
   assert.equal(result.action, 'idle');

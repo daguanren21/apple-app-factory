@@ -349,3 +349,86 @@ test('a dead legacy group without a prior manual condition remains claimable', t
   assert.deepEqual(resumed.groups, []);
   assert.deepEqual(resumed.commands, {});
 });
+
+for (const boundary of ['before-metadata', 'during-metadata', 'after-metadata']) {
+  test(`parent loss ${boundary} never runs unacknowledged payload and permits safe regeneration`, posix, async t => {
+    const f = fixture(t), store = f.open();
+    const job = enqueue(store, f.config);
+    store.update(job.id, { stage: 'verify', attempts: { build: 2, verify: 1 }, hostTurns: 3 });
+    const entered = join(f.root, 'metadata-boundary.json');
+    const generations = join(f.root, 'generations');
+    const artifact = join(f.root, 'generated-artifact');
+    // Before the start barrier, spawn ran this real payload while the callback was
+    // still uncommitted, leaving an unrecorded generation that recovery could replay.
+    const payload = `const fs=require('node:fs');
+      fs.appendFileSync(${JSON.stringify(generations)},'unacknowledged\\n');
+      fs.writeFileSync(${JSON.stringify(artifact)},'unacknowledged');
+      setTimeout(()=>process.exit(0),1500);`;
+    const worker = f.launch(`
+      import { writeFileSync } from 'node:fs';
+      import { Store } from ${JSON.stringify(storeModule)};
+      import { run } from ${JSON.stringify(processModule)};
+      const store=new Store(${JSON.stringify(f.config.stateDir)});
+      store.acquire();
+      const job=store.next();
+      const pause=(pid,metadata)=>{
+        writeFileSync(${JSON.stringify(entered)},JSON.stringify({pid,metadata}));
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5000);
+        process.exit(77);
+      };
+      await run([process.execPath,'-e',${JSON.stringify(payload)}],{
+        timeoutMs:7000,
+        onSpawn(pid,metadata){
+          const patch={groups:[pid],commands:{[pid]:metadata}};
+          if(${JSON.stringify(boundary)}==='during-metadata') {
+            store.transaction(()=>{
+              store.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(JSON.stringify({...store.get(job.id),...patch}),job.id);
+              pause(pid,metadata);
+            });
+          } else {
+            if(${JSON.stringify(boundary)}==='after-metadata') store.update(job.id,patch);
+            pause(pid,metadata);
+          }
+        }
+      });
+    `);
+    const launch = await until(() => {
+      try { return JSON.parse(readFileSync(entered, 'utf8')); } catch { return undefined; }
+    });
+    f.groups.set(launch.pid, launch.metadata.identity);
+    const unacknowledged = store.get(job.id);
+    assert.equal(unacknowledged.status, 'running');
+    assert.deepEqual(unacknowledged.groups, boundary === 'after-metadata' ? [launch.pid] : []);
+    worker.child.kill('SIGKILL');
+    assert.equal((await worker.done).signal, 'SIGKILL');
+    // The waiting bootstrap must observe IPC EOF, without a recovery process first
+    // having to discover or signal an uncommitted group. The old payload is bounded.
+    await until(() => !processGroupAlive(launch.pid));
+    assert.equal(existsSync(generations), false, 'A crash before ack must not create any generation');
+    assert.equal(existsSync(artifact), false);
+
+    const restarted = f.open();
+    restarted.acquire();
+    const resumed = restarted.next();
+    assert.equal(resumed.id, job.id);
+    assert.deepEqual(resumed.groups, []);
+    assert.deepEqual(resumed.commands, {});
+    assert.equal(resumed.manualRecovery, null);
+    assert.deepEqual(resumed.attempts, { build: 2, verify: 1 });
+    assert.equal(resumed.hostTurns, 3);
+    const regenerated = await run([process.execPath, '-e', `const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(generations)},'recovered\\n');fs.writeFileSync(${JSON.stringify(artifact)},'recovered')`], {
+      timeoutMs: 5000,
+      onSpawn(pid, metadata) {
+        f.groups.set(pid, metadata.identity);
+        restarted.update(job.id, { groups: [pid], commands: { [pid]: metadata } });
+      },
+    });
+    assert.equal(regenerated.code, 0, regenerated.stderr);
+    assert.equal(readFileSync(generations, 'utf8'), 'recovered\n');
+    assert.equal(readFileSync(artifact, 'utf8'), 'recovered');
+    const current = restarted.get(job.id);
+    assert.equal(current.groups.every(pid => !processGroupAlive(pid)), true);
+    restarted.update(job.id, { groups: [], commands: {}, status: 'waiting' });
+    restarted.release();
+  });
+}
