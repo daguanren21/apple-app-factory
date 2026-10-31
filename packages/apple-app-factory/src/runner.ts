@@ -19,6 +19,7 @@ import { closestOwnedGoWorkspace } from './go-dependencies.js';
 import { validateMacOSArtifact } from './macos.js';
 import { validateMyGoPackaging, validateMyGoCommand } from './mygo-build.js';
 import { invalidateVerification } from './proof.js';
+import { scanInbox } from './inbox.js';
 import { prepareIsolatedCommand, type IsolatedCommand, type IsolationCapabilities } from './isolation.js';
 
 function requireDependencyProof(job: Job): void {
@@ -56,6 +57,10 @@ export interface DriveResult {
   rounds: number;
   failed?: Array<{ id: string; error: string | null }>;
   pendingErrors?: Array<{ id: string; error: string }>;
+  /** Idle audit for `wait`/`done` returns so a scheduler can decide without another status call. */
+  summary?: QueueSummary;
+  /** Inbox intake performed at the start of this drive (only when an inbox is configured). */
+  intake?: { accepted: number; errors?: Array<{ source: string; error: string }> };
 }
 
 function jobView(job: Job): JobView {
@@ -324,6 +329,16 @@ function queueFailures(store: Store, failed: Array<{ id: string; error: string |
 export async function driveQueue(store: Store, config: Config, options: DriveOptions = {}): Promise<DriveResult> {
   const maxRounds = options.once ? 1 : options.maxRounds;
   const failed: Array<{ id: string; error: string | null }> = [];
+  // Intake belongs to the loop (loopx-style frontier ingestion): every drive
+  // sweeps the configured inbox first so submitted requirements join the
+  // queue without the host remembering a separate scan command. Per-entry
+  // intake errors are reported, never fatal to the loop itself.
+  let intake: DriveResult['intake'];
+  if (config.inbox) {
+    const scan = await scanInbox(store, config);
+    const errors = scan.entries.filter(entry => entry.status === 'error').map(entry => ({ source: entry.source, error: entry.error ?? 'requirement rejected' }));
+    intake = { accepted: scan.entries.filter(entry => entry.status === 'accepted').length, ...(errors.length ? { errors } : {}) };
+  }
   let rounds = 0;
   let lastResult: Job | undefined;
   while (maxRounds === undefined || rounds < maxRounds) {
@@ -338,11 +353,13 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
         rounds,
         ...(allFailed.length ? { failed: allFailed } : {}),
         ...(pick.pendingErrors.length ? { pendingErrors: pick.pendingErrors } : {}),
+        summary: pick.summary,
+        ...(intake ? { intake } : {}),
       };
     }
     if (pick.action === 'host') {
       const allFailed = queueFailures(store, failed);
-      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
+      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
     }
     let result: Job;
     store.acquire();
@@ -359,7 +376,7 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
     if (result.status === 'failed' || result.status === 'needs-owner') failed.push({ id: result.id, error: result.error ?? null });
   }
   const allFailed = queueFailures(store, failed);
-  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
+  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}) };
 }
 
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {
