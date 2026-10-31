@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { run, executionEnvironment } from './process.js';
 
 import { runStep } from './scheduler.js';
-import { nextTurn, nextQueueTurn, completeTurn, abandonTurn } from './runner.js';
+import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue } from './runner.js';
 import { hosts, installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from './integrations.js';
 import { submitRequirement, scanInbox } from './inbox.js';
 import { MAX_INPUT_BYTES, parseRequirement, readInputFile } from './requirements.js';
@@ -162,6 +162,7 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   doctor [spec.json]            Check configured prerequisites and optional stack tools
   enqueue <spec.json|->          Persist requirements and return a task ID
   next [<id>|--any]             Resume a host turn, show the next deterministic action, or pick the next actionable queued task (--any)
+  drive [--once] [--max-rounds n] [--strict]   Drive the queue loop: execute due deterministic stages, claim host turns
   complete <id> <turn> [json|-]   Record research/review, or finish the host's build turn
   abandon <id> <turn>            Abandon a host turn without resetting its budget
   decide <id> <json-file|->       Append decision-log entries (role, rationale) to a task
@@ -206,6 +207,9 @@ async function main(): Promise<void> {
       any: { type: 'boolean' },
       out: { type: 'string' },
       collect: { type: 'boolean', default: false },
+      once: { type: 'boolean', default: false },
+      'max-rounds': { type: 'string' },
+      strict: { type: 'boolean', default: false },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -220,7 +224,7 @@ async function main(): Promise<void> {
   const flags: Record<string, string[]> = {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
     init: ['config', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
-    enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
+    enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any'], drive: ['config', 'build-only', 'once', 'max-rounds', 'strict'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
     decide: ['config', 'build-only'],
     step: ['config', 'build-only'], status: ['config', 'build-only'], events: ['config', 'build-only'], report: ['config', 'build-only', 'out', 'collect'], retry: ['config', 'build-only'],
     notify: ['config', 'build-only', 'any'],
@@ -382,6 +386,13 @@ async function main(): Promise<void> {
         print(result);
         if (result.job.status === 'blocked' || result.job.status === 'failed') process.exitCode = 2;
       }
+    } else if (command === 'drive') {
+      arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--build-only] [--config <file>]');
+      const maxRounds = values['max-rounds'] === undefined ? undefined : Number(values['max-rounds']);
+      if (maxRounds !== undefined && (!Number.isSafeInteger(maxRounds) || maxRounds <= 0)) throw new Error('--max-rounds must be a positive integer');
+      const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly });
+      print(result);
+      if (values.strict && result.failed?.length) process.exitCode = 2;
     } else if (command === 'complete') {
       arity(args, 2, 3, 'complete <id> <turn-id> [result.json|-]');
       outcome(await completeTurn(store, args[0], args[1], args[2] ? inputJSON(args[2]) : undefined, { buildOnly }));
