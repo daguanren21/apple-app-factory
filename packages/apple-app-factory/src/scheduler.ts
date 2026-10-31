@@ -1,34 +1,6 @@
-import { executeStep } from './runner.js';
-import { terminateOwnedProcessGroup } from './process.js';
+import { executeStep, drainCommandGroups } from './runner.js';
 import { toError, type Config, type Job } from './schemas.js';
 import type { Store } from './store.js';
-
-async function drainCommandGroups(store: Store): Promise<void> {
-  let failure: Error | undefined;
-  for (const job of store.list()) {
-    const groups: number[] = [], commands: Job['commands'] = {};
-    let manualRecovery = job.manualRecovery ?? null;
-    for (const pid of job.groups) {
-      const command = job.commands[pid];
-      try { await terminateOwnedProcessGroup(pid, command?.identity); }
-      catch (cause) {
-        const error = toError(cause);
-        failure ??= error;
-        manualRecovery ??= error.message;
-        groups.push(pid);
-        if (command) commands[pid] = command;
-      }
-    }
-    if (job.groups.length || manualRecovery) {
-      store.update(job.id, {
-        groups, commands, recoveryStage: groups.length ? job.recoveryStage ?? job.stage : undefined,
-        ...(manualRecovery ? { status: 'blocked', blockedReason: null, manualRecovery, error: manualRecovery } : {}),
-      });
-    }
-    if (manualRecovery) failure ??= Object.assign(new Error(manualRecovery), { code: 'PROCESS_CLEANUP_BLOCKED' });
-  }
-  if (failure) throw failure;
-}
 
 export async function runStep(store: Store, config: Config, id: string, options: { signal?: AbortSignal; buildOnly?: boolean } = {}): Promise<Job> {
   store.acquire();

@@ -2,14 +2,14 @@ import { mkdirSync, readFileSync, readdirSync, lstatSync, rmSync, existsSync, wr
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { run, executionEnvironment, processGroupAlive } from './process.js';
+import { run, executionEnvironment, processGroupAlive, terminateOwnedProcessGroup } from './process.js';
 import { canonicalPath, inside, expandArgv } from './config.js';
 import { checkPrerequisites } from './preflight.js';
 import { flutterEnvironment, prepareFlutter } from './flutter.js';
 import { prepareExportOptions, prepareNativeExportCommands } from './export-options.js';
 import { dependencyDigest, generatedModulePaths, isGeneratedPath } from './dependencies.js';
 import { ReviewSchema, SpecSchema, toError, validateJobConfig } from './schemas.js';
-import type { Job, HostStage, RoleSeat, Stage } from './schemas.js';
+import type { Config, Job, HostStage, RoleSeat, Stage } from './schemas.js';
 import type { Run, RunOptions, RunResult } from './process.js';
 import type { Store } from './store.js';
 import { sourceDigest, prepareWorkspace, projectDirectory, artifactOutputPath } from './workspace.js';
@@ -23,7 +23,8 @@ import { prepareIsolatedCommand, type IsolatedCommand, type IsolationCapabilitie
 
 function requireDependencyProof(job: Job): void {
   if (!job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution proof is missing; retry this stopped task to re-run verification'), { code: 'SETUP_REQUIRED' });
-  if (dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory) !== job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution changed since verification; re-verification is required'), { code: 'EVIDENCE_CHANGED' });
+  const current = dependencyDigest(job.workspace, job.spec.framework, job.spec.project?.directory);
+  if (current !== job.verifiedDependencyDigest) throw Object.assign(new Error(`Dependency resolution changed since verification (dependency digest current=${current.slice(0, 16)} recorded=${job.verifiedDependencyDigest.slice(0, 16)}); re-verification is required`), { code: 'EVIDENCE_CHANGED' });
 }
 
 function taskPrompt(job: Job): string {
@@ -38,6 +39,31 @@ export interface HostAction {
   job: Job;
   action: 'host' | 'step' | 'wait' | 'done';
   turn?: { id: string; stage: HostStage; prompt: string; cwd: string; environment: Record<string, string>; role: string[] };
+}
+
+export interface DriveOptions { once?: boolean; maxRounds?: number; strict?: boolean; buildOnly?: boolean }
+export type JobView = {
+  id: string; product: string; framework: string; platform: string; channel: string; version: string;
+  priority: Job['spec']['priority']; stage: Job['stage']; status: Job['status']; hostTurns: number;
+  attempts: Job['attempts']; workspace: string; artifact: Job['artifact']; error: string | null;
+};
+export interface DriveResult {
+  action: 'host' | 'step' | 'wait' | 'done';
+  job?: JobView;
+  turn?: NonNullable<HostAction['turn']>;
+  result?: JobView;
+  nextDueAt?: number;
+  rounds: number;
+  failed?: Array<{ id: string; error: string | null }>;
+  pendingErrors?: Array<{ id: string; error: string }>;
+}
+
+function jobView(job: Job): JobView {
+  return {
+    id: job.id, product: job.spec.id, framework: job.spec.framework, platform: job.spec.platform, channel: job.spec.channel,
+    version: job.spec.version, priority: job.spec.priority, stage: job.stage, status: job.status, hostTurns: job.hostTurns,
+    attempts: job.attempts, workspace: job.workspace, artifact: job.artifact ?? null, error: job.error ?? null,
+  };
 }
 
 const DEFAULT_ROLES: Record<HostStage, string[]> = {
@@ -67,9 +93,16 @@ function deadlineExpired(job: Job): boolean {
 
 function requireReviewProof(job: Job): void {
   try {
-    if (!job.verifiedDigest || sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory) !== job.verifiedDigest) throw new Error('Source changed since verification; stale evidence cannot approve a handoff');
+    if (!job.verifiedDigest) throw new Error('Source changed since verification; stale evidence cannot approve a handoff');
+    const currentSource = sourceDigest(job.workspace, true, job.spec.framework, job.spec.project?.directory);
+    if (currentSource !== job.verifiedDigest) throw new Error(`Source changed since verification (source digest current=${currentSource.slice(0, 16)} recorded=${job.verifiedDigest.slice(0, 16)}); stale evidence cannot approve a handoff`);
     requireDependencyProof(job);
-    if (job.spec.screenshotsDir && sourceDigest(inside(projectDirectory(job), job.spec.screenshotsDir), false) !== job.screenshotDigest) throw new Error('Screenshots changed since runtime verification; stale evidence cannot approve a handoff');
+    if (job.spec.screenshotsDir) {
+      const screenshots = inside(projectDirectory(job), job.spec.screenshotsDir);
+      const currentScreenshots = sourceDigest(screenshots, false);
+      const recordedScreenshots = job.screenshotDigest ?? '';
+      if (currentScreenshots !== job.screenshotDigest) throw new Error(`Screenshots changed since runtime verification (screenshot digest current=${currentScreenshots.slice(0, 16)} recorded=${recordedScreenshots.slice(0, 16)}); stale evidence cannot approve a handoff`);
+    }
   } catch (cause) {
     const error = toError(cause);
     if (error.code !== 'SETUP_REQUIRED') error.code = 'EVIDENCE_CHANGED';
@@ -190,18 +223,12 @@ export type QueueTurn =
 
 export type QueueSummary = { total: number; built: number; failed: number; needsOwner: number; blocked: number; waiting: number; queued: number; running: number };
 
-/**
- * Pick the earliest-due actionable task in the whole queue for a host loop:
- * the first job (ordered by priority lane, then next_at, then insertion) whose
- * `next` returns a host turn or a deterministic step. Jobs that are deferred, stopped or still
- * owned by another execution are skipped; jobs whose persisted turn context no
- * longer matches are surfaced in `pendingErrors` instead of silently blocking
- * the queue. `idle` reports the earliest future due time plus a status summary
- * so the host can audit whether the queue is truly finished or merely blocked,
- * and knows when to wake again. Does not hold the queue worker lock across
- * calls; each host claim stays transactional inside `nextTurn`.
- */
-export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueueTurn> {
+type QueuePick =
+  | { action: 'host'; job: Job; turn: NonNullable<HostAction['turn']> }
+  | { action: 'step'; job: Job }
+  | { action: 'idle'; nextAt: number | null; pendingErrors: Array<{ id: string; error: string }>; summary: QueueSummary };
+
+async function pickQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueuePick> {
   const pendingErrors: Array<{ id: string; error: string }> = [];
   // Priority lanes order the scan (P0 > P1 > P2); within a lane, earliest due
   // time wins, then insertion order. Priority never overrides eligibility:
@@ -211,7 +238,8 @@ export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Pr
   for (const job of jobs) {
     try {
       const action = await nextTurn(store, job.id, options);
-      if (action.action === 'host' || action.action === 'step') return action;
+      if (action.action === 'host' && action.turn) return { action: 'host', job: action.job, turn: action.turn };
+      if (action.action === 'step') return { action: 'step', job: action.job };
     } catch (cause) {
       pendingErrors.push({ id: job.id, error: toError(cause).message });
     }
@@ -224,6 +252,111 @@ export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Pr
   }
   const due = jobs.map(job => job.nextAt).filter(nextAt => nextAt > Date.now());
   return { action: 'idle', nextAt: due.length ? Math.min(...due) : null, pendingErrors, summary };
+}
+
+/**
+ * Pick the earliest-due actionable task in the whole queue for a host loop:
+ * the first job (ordered by priority lane, then next_at, then insertion) whose
+ * `next` returns a host turn or a deterministic step. Jobs that are deferred, stopped or still
+ * owned by another execution are skipped; jobs whose persisted turn context no
+ * longer matches are surfaced in `pendingErrors` instead of silently blocking
+ * the queue. `idle` reports the earliest future due time plus a status summary
+ * so the host can audit whether the queue is truly finished or merely blocked,
+ * and knows when to wake again. Does not hold the queue worker lock across
+ * calls; each host claim stays transactional inside `nextTurn`.
+ */
+export async function nextQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueueTurn> {
+  const pick = await pickQueueTurn(store, options);
+  if (pick.action === 'idle') return pick;
+  return { job: pick.job, action: pick.action, ...(pick.action === 'host' ? { turn: pick.turn } : {}) };
+}
+
+/**
+ * A crashed invocation may still own child processes even though its queue
+ * lock is free. Drain recorded command groups queue-wide before shared
+ * Flutter/Apple tooling can be used by any new deterministic stage, so a
+ * surviving group never runs alongside the new command.
+ */
+export async function drainCommandGroups(store: Store): Promise<void> {
+  let failure: Error | undefined;
+  for (const job of store.list()) {
+    const groups: number[] = [], commands: Job['commands'] = {};
+    let manualRecovery = job.manualRecovery ?? null;
+    for (const pid of job.groups) {
+      const command = job.commands[pid];
+      try { await terminateOwnedProcessGroup(pid, command?.identity); }
+      catch (cause) {
+        const error = toError(cause);
+        failure ??= error;
+        manualRecovery ??= error.message;
+        groups.push(pid);
+        if (command) commands[pid] = command;
+      }
+    }
+    if (job.groups.length || manualRecovery) {
+      store.update(job.id, {
+        groups, commands, recoveryStage: groups.length ? job.recoveryStage ?? job.stage : undefined,
+        ...(manualRecovery ? { status: 'blocked', blockedReason: null, manualRecovery, error: manualRecovery } : {}),
+      });
+    }
+    if (manualRecovery) failure ??= Object.assign(new Error(manualRecovery), { code: 'PROCESS_CLEANUP_BLOCKED' });
+  }
+  if (failure) throw failure;
+}
+
+/** Terminal failures already persisted in the queue, merged with the current invocation's failures (deduped by id). */
+function queueFailures(store: Store, failed: Array<{ id: string; error: string | null }>): Array<{ id: string; error: string | null }> {
+  const byId = new Map(failed.map(item => [item.id, item]));
+  for (const job of store.list()) if ((job.status === 'failed' || job.status === 'needs-owner') && !byId.has(job.id)) byId.set(job.id, { id: job.id, error: job.error ?? null });
+  return [...byId.values()];
+}
+
+/**
+ * Drive the queue loop for unattended operation: execute due deterministic
+ * stages (obfuscate/verify/package) automatically and claim the next host turn,
+ * returning it for a host-side sub-agent. Stops as soon as a host turn is
+ * claimed or the queue has no actionable work. `once` runs a single round,
+ * `maxRounds` bounds deterministic steps, and `strict` reports failed jobs.
+ */
+export async function driveQueue(store: Store, config: Config, options: DriveOptions = {}): Promise<DriveResult> {
+  const maxRounds = options.once ? 1 : options.maxRounds;
+  const failed: Array<{ id: string; error: string | null }> = [];
+  let rounds = 0;
+  let lastResult: Job | undefined;
+  while (maxRounds === undefined || rounds < maxRounds) {
+    const pick = await pickQueueTurn(store, { buildOnly: options.buildOnly });
+    if (pick.action === 'idle') {
+      const jobs = store.list();
+      const pending = jobs.filter(job => !['built', 'failed', 'needs-owner'].includes(job.status)).length;
+      const allFailed = queueFailures(store, failed);
+      return {
+        action: pending ? 'wait' : 'done',
+        nextDueAt: pick.nextAt ?? undefined,
+        rounds,
+        ...(allFailed.length ? { failed: allFailed } : {}),
+        ...(pick.pendingErrors.length ? { pendingErrors: pick.pendingErrors } : {}),
+      };
+    }
+    if (pick.action === 'host') {
+      const allFailed = queueFailures(store, failed);
+      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
+    }
+    let result: Job;
+    store.acquire();
+    try {
+      // A crashed invocation may still own child processes; drain them before
+      // shared Flutter/Apple tooling can be used by this new step.
+      await drainCommandGroups(store);
+      result = await executeStep(store, store.get(pick.job.id), {});
+    } finally {
+      store.release();
+    }
+    rounds += 1;
+    lastResult = result;
+    if (result.status === 'failed' || result.status === 'needs-owner') failed.push({ id: result.id, error: result.error ?? null });
+  }
+  const allFailed = queueFailures(store, failed);
+  return { action: 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}) };
 }
 
 export function completeTurn(store: Store, id: string, turnId: string, result?: unknown, options: TurnOptions = {}): Job {
@@ -245,7 +378,7 @@ export function completeTurn(store: Store, id: string, turnId: string, result?: 
       const review = ReviewSchema.parse(result);
       if (!job.spec.acceptance.every(requirement => review.acceptanceEvidence.some(item => item.requirement === requirement))) throw new Error('Review verdict must cover each acceptance requirement with concrete evidence');
       try { requireReviewProof(job); }
-      catch (cause) { return repair(job, toError(cause).message); }
+      catch (cause) { return { ...repair(job, toError(cause).message), review }; }
       if (!review.approved || review.findings.length) return { ...repair(job, `Independent review rejected the artifact: ${JSON.stringify(review)}`), review };
       patch = { stage: 'package', review };
     }
