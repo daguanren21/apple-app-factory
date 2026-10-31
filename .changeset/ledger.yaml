@@ -45,3 +45,8 @@ apphx@2.5.0:
   intents:
     - architect-gate
     - drive-loop
+apphx@2.6.0:
+  dir: packages/apple-app-factory
+  intents:
+    - loop-intake-wake
+    - schedule-seat-receipts
