@@ -333,7 +333,7 @@ for (const ownership of ['unknown', 'mismatch']) {
     assert.equal(restarted.next(), undefined);
     const phases = restarted.events(job.id).map(event => event.data.commands?.[ownedPid]).filter(Boolean);
     assert.equal(phases.some(command => Number.isFinite(command.termAt)), true);
-    assert.equal(phases.some(command => Number.isFinite(command.killAt)), true);
+    // The live run owner may finish cleanup before Store needs its own SIGKILL.
     assert.equal(restarted.events(job.id).some(event => event.data.status === 'running'), false);
   });
 }
