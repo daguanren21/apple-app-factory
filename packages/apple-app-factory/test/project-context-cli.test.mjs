@@ -24,7 +24,10 @@ function fixture(t) {
       cwd, input, env: { ...process.env, HOME: home }, encoding: 'utf8', timeout: 20000,
     });
     assert.equal(result.status, code, result.stderr || result.stdout);
-    return code === 0 ? JSON.parse(result.stdout) : JSON.parse(result.stderr);
+    if (code === 0) return JSON.parse(result.stdout);
+    const errors = result.stderr.split(/\r?\n/).filter(line => line.startsWith('{"error":'));
+    assert.equal(errors.length, 1, result.stderr);
+    return JSON.parse(errors[0]);
   };
   const init = (extra = [], options) => invoke(['init', ...extra], options);
   const enqueue = (config, input = spec, cwd = project) => invoke(['enqueue', '-', '--config', config], { cwd, input: JSON.stringify(input) });
