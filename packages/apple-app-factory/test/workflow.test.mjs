@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { JobSchema, WorkflowNodeSchema, WorkflowPhaseSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { completeTurn, nextTurn } from '../dist/runner.js';
+import { JobSchema, WorkflowNodeSchema, WorkflowPhaseSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { completeTurn, nextTurn } from '../dist/workflow/runner.js';
 import {
   activeWorkflowNodes, applyWorkflowPlan, newWorkflowPhase, readyWorkflowNodes,
   workflowNodeConflict, workflowProgress, workflowTurnBudget, workflowTurnDigest,
-} from '../dist/workflow.js';
+} from '../dist/workflow/graph.js';
 
 function fixture(config = {}, overrides = {}) {
   return JobSchema.parse({
@@ -21,10 +21,10 @@ function fixture(config = {}, overrides = {}) {
     },
     requestSpec: null,
     config: {
-      stateDir: '/owned/state', workspaceRoot: '/owned/workspaces', packageTarget: 'simulator',
+      projectMode: 'isolated', stateDir: '/owned/state', workspaceRoot: '/owned/workspaces', packageTarget: 'simulator',
       verification: { checks: [['check']], runtime: [['runtime']] }, workflow: {}, ...config,
     },
-    workspace: '/owned/workspaces/workflow-fixture', stage: 'build', status: 'queued',
+    projectRoot: '/owned/workspaces/workflow-fixture', workspace: '/owned/workspaces/workflow-fixture', stage: 'build', status: 'queued',
     createdAt: 1, updatedAt: 1, nextAt: 0, attempts: {}, hostTurns: 0, groups: [], receipt: {}, logs: [],
     ...overrides,
   });

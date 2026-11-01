@@ -7,13 +7,13 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { createServer, connect } from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { ConfigSchema } from '../dist/schemas.js';
-import { loadConfig, normalizeIsolationPaths } from '../dist/config.js';
-import { prepareIsolatedCommand, removeConfinedPath } from '../dist/isolation.js';
-import { run, processGroupAlive } from '../dist/process.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn, executeStep } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { loadConfig, normalizeIsolationPaths } from '../dist/configuration/config.js';
+import { prepareIsolatedCommand, removeConfinedPath } from '../dist/execution/isolation.js';
+import { run, processGroupAlive } from '../dist/execution/process.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn, executeStep } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
 
 const mac = { skip: process.platform !== 'darwin' };
 const cli = new URL('../dist/cli.js', import.meta.url).pathname;
@@ -23,7 +23,7 @@ function fixture(t, isolation = { mode: 'macos-sandbox', readOnlyPaths: [], netw
   const stateDir = join(root, 'state'), workspaceRoot = join(root, 'workspaces'), workspace = join(workspaceRoot, 'owned');
   for (const path of [stateDir, workspace, join(root, 'tools'), join(workspaceRoot, 'sibling'), `${workspace}-other`]) mkdirSync(path, { recursive: true });
   const configPath = join(root, 'factory.json');
-  const config = ConfigSchema.parse({ configPath, stateDir, workspaceRoot, packageTarget: 'apk', allowLocalExecution: true, retryDelayMs: 1, isolation, verification: { checks: [[process.execPath, '--check', 'model.mjs']], runtime: [[process.execPath, 'runtime.mjs']] } });
+  const config = ConfigSchema.parse({ configPath, projectMode: 'isolated', stateDir, workspaceRoot, packageTarget: 'apk', allowLocalExecution: true, retryDelayMs: 1, isolation, verification: { checks: [[process.execPath, '--check', 'model.mjs']], runtime: [[process.execPath, 'runtime.mjs']] } });
   writeFileSync(configPath, JSON.stringify(config));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return { root, workspace, configPath, config, env: { PATH: process.env.PATH, LANG: 'C', CI: '1' } };
@@ -173,7 +173,7 @@ test('detached child cannot redirect parent artifact deletion outside the sandbo
   };
   syncBuiltinESMExports();
   try {
-    const prepared = store.update(job.id, { stage: 'package', verifiedDigest: (await import('../dist/workspace.js')).sourceDigest(job.workspace, true, 'swift'), verifiedDependencyDigest: (await import('../dist/dependencies.js')).dependencyDigest(job.workspace, 'swift'), review: { approved: true, findings: [], acceptanceEvidence: [] } });
+    const prepared = store.update(job.id, { stage: 'package', verifiedDigest: (await import('../dist/projects/workspace.js')).sourceDigest(job.workspace, true, 'swift'), verifiedDependencyDigest: (await import('../dist/projects/dependencies.js')).dependencyDigest(job.workspace, 'swift'), review: { approved: true, findings: [], acceptanceEvidence: [] } });
     const result = await executeStep(store, prepared);
     assert.equal(existsSync(join(job.workspace, 'build/swapped')), true);
     const pid = Number(readFileSync(join(job.workspace, 'build/helper.pid'), 'utf8'));

@@ -4,13 +4,13 @@ import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn, executeStep } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
-import { sourceDigest } from '../dist/workspace.js';
-import { dependencyDigest } from '../dist/dependencies.js';
-import { run } from '../dist/process.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn, executeStep } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
+import { run } from '../dist/execution/process.js';
 
 const cli = resolve('dist/cli.js');
 const research = { viable: true, distinctness: 'Controlled lifecycle fixture; not a store approval claim.', risks: [], plan: ['Exercise the configured local workflow.'] };
@@ -57,7 +57,7 @@ function fixture(t, framework = 'expo', platform = 'android', target = 'apk', ov
   const artifactPath = `build/fixture.${target === 'simulator' ? 'app' : target}`;
   // These real Node child processes test orchestration and evidence, not any SDK/compiler.
   const packagingScript = `const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(packagingLog)},'package\\n');fs.mkdirSync('build',{recursive:true});${target === 'simulator' ? `fs.mkdirSync(${JSON.stringify(artifactPath)});fs.writeFileSync(${JSON.stringify(`${artifactPath}/Runner`)},'controlled process output');` : `fs.writeFileSync(${JSON.stringify(artifactPath)},'controlled process output');`}`;
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: target,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: target,
     allowLocalExecution: true, retryDelayMs: 1,
     verification: {
       prerequisites: [],

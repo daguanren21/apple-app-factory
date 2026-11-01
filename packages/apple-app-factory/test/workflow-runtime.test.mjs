@@ -6,15 +6,15 @@ import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { driveQueue, completeTurn, requestWorkflowReplan, cancelWorkflow } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { driveQueue, completeTurn, requestWorkflowReplan, cancelWorkflow } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'apphx-dynamic-runtime-'));
   const check = [process.execPath, '-e', 'require("node:fs").accessSync("main.dart")'];
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'work'), packageTarget: 'simulator', allowLocalExecution: true,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'work'), packageTarget: 'simulator', allowLocalExecution: true,
     maxHostTurns: 64, retryDelayMs: 1, workflow: {}, verification: { checks: [check], runtime: [check] }, ...overrides });
   const stores = [];
   const open = () => { const store = new Store(config.stateDir); stores.push(store); return store; };

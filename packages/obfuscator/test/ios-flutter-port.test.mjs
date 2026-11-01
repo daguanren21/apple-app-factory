@@ -4,9 +4,9 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { applyObfuscation } from '../dist/obfuscate.js';
-import { walkProject } from '../dist/common.js';
-import { buildPNG } from '../dist/png.js';
+import { applyObfuscation } from '../dist/pipeline/obfuscate.js';
+import { walkProject } from '../dist/core/common.js';
+import { buildPNG } from '../dist/transforms/resources/png.js';
 
 // End-to-end wiring test for the iOS/Flutter ported pipeline sections:
 // objc.projectIdentity, content.dfa, objc.symbols, objc.stringEncryption and flutter.

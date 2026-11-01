@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { run } from '../dist/process.js';
+import { run } from '../dist/execution/process.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
@@ -26,7 +26,7 @@ function fixture(t, overrides = {}) {
   const inbox = join(root, 'requirements');
   const workspaceRoot = join(root, 'workspaces');
   const configPath = join(root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({ ...example, stateDir, workspaceRoot, inbox: { directory: inbox }, ...overrides }));
+  writeFileSync(configPath, JSON.stringify({ ...example, projectMode: 'isolated', stateDir, workspaceRoot, inbox: { directory: inbox }, ...overrides }));
   return { root, stateDir, inbox, workspaceRoot, configPath };
 }
 

@@ -62,15 +62,12 @@ export function prepare(outputDirectory) {
     const originals = fixtureFiles(definition.id);
     for (const [name, content] of Object.entries(originals)) write(join(caseRoot, 'original-source', name), content);
     const configPath = join(caseRoot, 'control/factory.json');
-    const config = {
-      stateDir: join(caseRoot, 'state'), workspaceRoot: join(caseRoot, 'workspaces'),
-      allowLocalExecution: true, packageTarget: 'simulator',
-      timeoutMs: 10_000, retryDelayMs: 1, maxAttempts: 3, maxHostTurns: 12,
-      verification: {
-        checks: [[process.execPath, '--max-old-space-size=64', join(EVAL_ROOT, 'oracle.mjs'), 'check']],
-        runtime: [[process.execPath, '--max-old-space-size=64', join(EVAL_ROOT, 'oracle.mjs'), 'runtime']],
-      },
-    };
+    const config = { projectMode: 'isolated', stateDir: join(caseRoot, 'state'), workspaceRoot: join(caseRoot, 'workspaces'), allowLocalExecution: true, packageTarget: 'simulator',
+    timeoutMs: 10_000, retryDelayMs: 1, maxAttempts: 3, maxHostTurns: 12,
+    verification: {
+      checks: [[process.execPath, '--max-old-space-size=64', join(EVAL_ROOT, 'oracle.mjs'), 'check']],
+      runtime: [[process.execPath, '--max-old-space-size=64', join(EVAL_ROOT, 'oracle.mjs'), 'runtime']],
+    }, }
     const spec = {
       id: label, name: 'Controlled record workflow', purpose: 'Evaluate native-host policy decisions against a controlled local record runtime; no iOS UI is claimed',
       audience: 'Harness evaluators', framework: 'flutter', platform: 'ios', channel: 'app-store', version: '1.0.0',
@@ -242,9 +239,9 @@ export async function score(runDirectory, { manifestSha256 } = {}) {
   let cases;
   if (integrity.length) cases = manifest.cases.map(item => ({ label: item.label, case: item.definition, status: 'fail', falseApproval: false, reasons: integrity, evidence: {} }));
   else {
-    const { sourceDigest } = await import(pathToFileURL(join(PACKAGE_ROOT, 'dist/workspace.js')).href);
-    const { dependencyDigest } = await import(pathToFileURL(join(PACKAGE_ROOT, 'dist/dependencies.js')).href);
-    const { ResearchSchema, ReviewSchema } = await import(pathToFileURL(join(PACKAGE_ROOT, 'dist/schemas.js')).href);
+    const { sourceDigest } = await import(pathToFileURL(join(PACKAGE_ROOT, 'dist/projects/workspace.js')).href);
+    const { dependencyDigest } = await import(pathToFileURL(join(PACKAGE_ROOT, 'dist/projects/dependencies.js')).href);
+    const { ResearchSchema, ReviewSchema } = await import(pathToFileURL(join(PACKAGE_ROOT, 'dist/contracts/schemas.js')).href);
     cases = [];
     for (const item of manifest.cases) cases.push(await scoreCase(root, item, { sourceDigest, dependencyDigest, ResearchSchema, ReviewSchema }));
   }

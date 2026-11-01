@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
-import { processGroupAlive } from '../dist/process.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { processGroupAlive } from '../dist/execution/process.js';
 
 const posix = { skip: process.platform === 'win32', timeout: 15000 };
 const success = [process.execPath, '-e', 'process.exit(0)'];
@@ -25,12 +25,10 @@ async function until(action, timeoutMs = 5000) {
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-scheduler-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    ...overrides,
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  ...overrides, });
   const store = new Store(config.stateDir);
   const controller = new AbortController();
   const pending = [];

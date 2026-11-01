@@ -5,32 +5,33 @@ import { resolve, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { canonicalPath, loadConfig, loadJSON, expandArgv, normalizeIsolationPaths, validateProjectSource } from './config.js';
-import { Store } from './store.js';
-import { run, executionEnvironment } from './process.js';
-import { resolveHostOwner } from './host-session.js';
+import { canonicalPath, loadConfig, loadJSON, expandArgv, normalizeIsolationPaths, validateProjectSource, projectStorage } from './configuration/config.js';
+import { Store } from './state/store.js';
+import { run, executionEnvironment } from './execution/process.js';
+import { resolveHostOwner } from './hosts/session.js';
 
-import { runStep } from './scheduler.js';
-import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue, requestWorkflowReplan, cancelWorkflow, workflowRetryPatch } from './runner.js';
-import { hosts, installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from './integrations.js';
-import { submitRequirement, scanInbox } from './inbox.js';
-import { parseRequirement, readInputFile } from './requirements.js';
-import { MAX_INPUT_BYTES } from './input-limits.js';
-import { dispatchRemote } from './remote.js';
-import { FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './schemas.js';
-import type { Config, Framework, Job, Platform } from './schemas.js';
-import { assertProject, doctorCommands } from './project-profiles.js';
-import { closestOwnedGoWorkspace } from './go-dependencies.js';
-import { validateMyGoCommand } from './mygo-build.js';
-import { invalidateVerification, verificationConfigChanged } from './proof.js';
-import { notifyJob, notifyBuiltJobs } from './notify.js';
-import { prepareIsolatedCommand, removeConfinedPath, type IsolatedCommand } from './isolation.js';
-import { reportJob } from './report.js';
-import { activeWorkflowNodes } from './workflow.js';
+import { runStep } from './workflow/scheduler.js';
+import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue, requestWorkflowReplan, cancelWorkflow, workflowRetryPatch } from './workflow/runner.js';
+import { hosts, installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from './hosts/integrations.js';
+import { submitRequirement, scanInbox } from './intake/inbox.js';
+import { parseRequirement, readInputFile } from './intake/requirements.js';
+import { MAX_INPUT_BYTES } from './contracts/input-limits.js';
+import { dispatchRemote } from './hosts/remote.js';
+import { FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './contracts/schemas.js';
+import type { Config, Framework, Job, Platform } from './contracts/schemas.js';
+import { assertProject, detectProjectFramework, hasProjectIndicators, doctorCommands } from './projects/profiles.js';
+import { closestOwnedGoWorkspace } from './projects/go-dependencies.js';
+import { validateMyGoCommand } from './contracts/mygo-build.js';
+import { invalidateVerification, verificationConfigChanged } from './workflow/proof.js';
+import { listNotifications, claimNotification, completeNotification, reconcileNotification } from './delivery/notifications.js';
+import { prepareIsolatedCommand, removeConfinedPath, type IsolatedCommand } from './execution/isolation.js';
+import { reportJob } from './delivery/report.js';
+import { activeWorkflowNodes } from './workflow/graph.js';
+import { deliveryManifest } from './delivery/manifest.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2));
-const view = (job: Job) => ({ id: job.id, product: job.spec.id, framework: job.spec.framework, platform: job.spec.platform, channel: job.spec.channel, version: job.spec.version, priority: job.spec.priority, stage: job.stage, status: job.status, hostTurns: job.hostTurns, attempts: job.attempts, workspace: job.workspace, artifact: job.artifact ?? null, error: job.error ?? null });
+const view = (job: Job) => ({ id: job.id, product: job.spec.id, framework: job.spec.framework, platform: job.spec.platform, channel: job.spec.channel, version: job.spec.version, priority: job.spec.priority, stage: job.stage, status: job.status, hostTurns: job.hostTurns, attempts: job.attempts, projectRoot: job.projectRoot, workspace: job.workspace, delivery: deliveryManifest(job), artifact: job.artifact ?? null, error: job.error ?? null });
 
 function inputJSON(path: string): unknown {
   const bytes = path === '-' ? readFileSync(0) : readInputFile(path);
@@ -98,7 +99,7 @@ const systemdArgument = (value: string): string => JSON.stringify(systemdSpecifi
 const cronShellQuote = (value: string): string => value.split('%').map(shellQuote).join('\\%');
 
 const reentryInstruction = (configPath: string): string =>
-  `Drive the apphx loop: run apphx drive --once --config ${shellQuote(configPath)} --build-only. On action host inspect turn.kind: produce the JSON DAG for plan, or execute exactly the claimed node for node; for a legacy turn without kind follow its stage roles. Use the apphx skill and native delegation without asking the user. Complete each exact token with its typed result and run drive --once again; claim additional independent nodes only within capacity. On action step run drive --once again. On action wait first collect and complete any active native workers owned by this session, then drive again; exit only when no owned work remains and let the scheduler wake at nextDueAt. On action done run apphx report for every built job, run apphx notify --any, report the queue summary including needs-owner items, then exit.`;
+  `Drive the apphx loop: run apphx drive --once --config ${shellQuote(configPath)} --build-only. Preserve the saved projectRoot and follow turn.cwd; never reselect the project from a temporary working directory. On action host inspect turn.kind: produce the JSON DAG for plan, or execute exactly the claimed node for node; for a legacy turn without kind follow its stage roles. Use the apphx skill and native delegation within the existing owner authorization. Complete each exact token with its typed result and run drive --once again; claim additional independent nodes only within capacity. On action step run drive --once again. On action wait first collect and complete any active native workers owned by this session, then drive again; exit only when no owned work remains and let the scheduler wake at nextDueAt. On action done run apphx report for every built job and report its live source, runtime command, artifact and report paths. Inspect apphx notify --any; for approved pending targets use notify claim, the host's existing connector, then notify complete with the actual tool receipt. No connector or approval means report unsent, not SMTP setup or implicit authorization. Claimed/unknown sends require external reconciliation, never blind resend. Report the queue summary including needs-owner items and separate notification outcomes, then exit.`;
 
 /** OS-level wake templates for unattended loops. The owner fills in the host's headless launch command; apphx never installs system services itself. */
 function scheduleTemplate(host: { id: string }, options: { configPath: string; stateDir: string; format: string }) {
@@ -188,6 +189,7 @@ function initialConfig(framework: Framework, platform: Platform, target: Config[
   template.packageTarget = target;
   template.workflow = {};
   template.maxHostTurns = 64;
+  template.uiQuality = true;
   if (framework === 'mygo') {
     template.packaging = {
       provider: 'local',
@@ -249,7 +251,9 @@ const help = `apphx <command> [--config factory.json] [--build-only]
     --project <directory>       Select the project (default: current directory)
     --global                    Use the host's user-level skill directory instead
   doctor --host <host>           Check installed workflow files; does not run the agent
-  init [--allow-local-execution] [--autopilot] Create owner-editable factory.json; default Flutter/iOS
+  init [--allow-local-execution] [--autopilot] Bind factory.json to the current project; infer existing stack
+    --project <directory>       Select the persistent source root (default: session working directory)
+    --isolated                  Explicit factory snapshot mode; keep sources separate from imported originals
     --autopilot                 Owner-preauthorized unattended local build (implies allowLocalExecution)
     --framework <stack>         flutter|android-java|swift|react-native|expo|uni-app|mygo
     --platform <platform>       ios|android|macos (mygo defaults macos; android-java android)
@@ -273,7 +277,10 @@ const help = `apphx <command> [--config factory.json] [--build-only]
   scan [--observe]              Validate or ingest inbox files; never start an agent
   inbox                         Read durable intake results
   reconcile-intake <id> <json|-> Restore a legacy request identity from original input
-  notify [<id>|--any]          Email the author for built, gate-passed tasks (--any sweeps all unnotified)
+  notify [<id>|--any]            List host-owned notification packets; never sends messages
+  notify claim <id> <target>     Claim one authorized destination before invoking a host connector
+  notify complete <id> <claim> <json|-> Record accepted, confirmed-failed or unknown delivery
+  notify reconcile <id> <target> <json|-> Resolve uncertain delivery from external evidence; never resends
   schedule --host <id>         Print an OS wake template (launchd/systemd/cron) for unattended loops
     --format <format>          launchd|systemd|cron (default cron); content includes the fixed re-entry prompt
   remote <command>              Call an installed Mac CLI over SSH (build-only)
@@ -300,6 +307,7 @@ async function main(): Promise<void> {
       'host-pid': { type: 'string' },
       'allow-local-execution': { type: 'boolean' },
       autopilot: { type: 'boolean' },
+      isolated: { type: 'boolean' },
       framework: { type: 'string' },
       seed: { type: 'string' },
       platform: { type: 'string' },
@@ -325,7 +333,7 @@ async function main(): Promise<void> {
   if (!command || command === 'help' || values.help) { console.log(help); return; }
   const flags: Record<string, string[]> = {
     hosts: [], install: ['project', 'global'], update: ['project', 'global'], uninstall: ['project', 'global'],
-    init: ['config', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
+    init: ['config', 'project', 'isolated', 'allow-local-execution', 'autopilot', 'framework', 'platform', 'package-target'], doctor: ['config', 'build-only', 'host', 'project', 'global'],
     enqueue: ['config', 'build-only'], next: ['config', 'build-only', 'any', 'host-pid'], drive: ['config', 'build-only', 'once', 'max-rounds', 'strict', 'host-pid'], complete: ['config', 'build-only'], abandon: ['config', 'build-only'],
     replan: ['config', 'build-only'], cancel: ['config', 'build-only'],
     decide: ['config', 'build-only'],
@@ -379,28 +387,38 @@ async function main(): Promise<void> {
   }
   if (command === 'doctor' && (values.project || values.global)) throw new Error('--project and --global require doctor --host <host>');
   if (command === 'init') {
-    arity(args, 0, 0, 'init [--framework <stack>] [--platform ios|android|macos] [--package-target simulator|ipa|apk|aab|app|dmg] [--config <file>] [--allow-local-execution] [--autopilot]');
-    const framework = values.framework ?? 'flutter';
+    arity(args, 0, 0, 'init [--project <directory>] [--isolated] [--framework <stack>] [--platform ios|android|macos] [--package-target simulator|ipa|apk|aab|app|dmg] [--config <file>] [--allow-local-execution] [--autopilot]');
+    const projectRoot = canonicalPath(resolve(values.project ?? process.cwd()));
+    const detected = existsSync(projectRoot) ? detectProjectFramework(projectRoot) : undefined;
+    if (!values.framework && !detected && hasProjectIndicators(projectRoot)) throw new Error('The selected directory has an existing project whose app framework is not uniquely identified; select its app with --framework and preserve project.directory rather than generating a replacement');
+    if (!values.isolated && values.framework && detected && values.framework !== detected) throw new Error(`The selected project is ${detected}; refusing to replace it with ${values.framework}. Select the actual project root and preserve its framework.`);
+    const framework = values.framework ?? detected ?? 'flutter';
     if (!frameworks.includes(framework as Framework)) throw new Error(`Unknown framework ${framework}; choose ${frameworks.join(', ')}`);
     const platform = PlatformSchema.parse(values.platform ?? (framework === 'mygo' ? 'macos' : framework === 'android-java' ? 'android' : 'ios'));
     const target = values['package-target'] ?? (platform === 'macos' ? 'app' : platform === 'ios' ? framework === 'expo' ? 'ipa' : 'simulator' : 'apk');
     if (!packageTargets.includes(target as Config['packageTarget'])) throw new Error(`Unknown package target ${target}; choose ${packageTargets.join(', ')}`);
     const template = initialConfig(framework as Framework, platform, target as Config['packageTarget']);
+    template.projectMode = values.isolated ? 'isolated' : 'project';
+    template.projectRoot = projectRoot;
+    Object.assign(template, projectStorage(projectRoot));
     if (values['allow-local-execution']) template.allowLocalExecution = true;
     if (values.autopilot) {
       template.allowLocalExecution = true;
       template.autopilot = true;
     }
-    mkdirSync(dirname(resolve(configPath)), { recursive: true });
-    writeFileSync(configPath, `${JSON.stringify(template, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-    print({ config: resolve(configPath), framework, platform, packageTarget: target, localExecution: template.allowLocalExecution, next: framework === 'mygo' ? 'Pin MyGo v0.3.0 in go.mod (Go 1.27.1), match app name/version/arch and artifact path, and implement real desktop UI acceptance in cmd/acceptance. Native UI needs no Bun. Local ad-hoc builds only; init creates configuration, not source.' : framework === 'expo' ? 'Configure your existing eas.json production (store IPA/AAB), apk (Android buildType apk), or simulator (ios.simulator true) profile, real device acceptance, and exact app product/output path; no prebuild/eject is requested. Run apphx doctor <spec.json> --build-only.' : 'Adapt module/scheme, real device acceptance, signing and artifact path to your project; then run apphx doctor <spec.json> --build-only. init creates configuration, not app source.' });
+    const destination = tokens.some(token => token.kind === 'option' && token.name === 'config') ? resolve(configPath) : join(projectRoot, 'factory.json');
+    mkdirSync(projectRoot, { recursive: true });
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, `${JSON.stringify(template, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    print({ config: destination, projectRoot, projectMode: template.projectMode, stateDir: template.stateDir, workspaceRoot: template.workspaceRoot, framework, platform, packageTarget: target, localExecution: template.allowLocalExecution, next: framework === 'mygo' ? 'Pin MyGo v0.3.0 in go.mod (Go 1.27.1), match app name/version/arch and artifact path, and implement real desktop UI acceptance in cmd/acceptance. Native UI needs no Bun. Local ad-hoc builds only; init creates configuration, not source.' : framework === 'expo' ? 'Configure your existing eas.json production (store IPA/AAB), apk (Android buildType apk), or simulator (ios.simulator true) profile, real device acceptance, and exact app product/output path; no prebuild/eject is requested. Run apphx doctor <spec.json> --build-only.' : 'Adapt module/scheme, real device acceptance, signing and artifact path to your selected project; then run apphx doctor <spec.json> --build-only. init creates configuration, not app source.' });
     return;
   }
   if (command === 'remote') {
     process.exitCode = await dispatchRemote(loadJSON(configPath), [...args, ...(values.observe ? ['--observe'] : [])]);
     return;
   }
-  const config = loadConfig(configPath);
+  const metadataOnly = ['status', 'events', 'abandon', 'cancel', 'inbox', 'notify'].includes(command);
+  const config = loadConfig(configPath, { access: metadataOnly ? 'metadata' : 'source' });
   if (command === 'submit') {
     arity(args, 1, 1, 'submit <spec.json|->');
     print(submitRequirement(config, inputJSON(args[0])));
@@ -413,14 +431,14 @@ async function main(): Promise<void> {
     if (spec) {
       validateJobConfig(spec, config);
       let source: string | undefined;
-      try { source = validateProjectSource(spec, config); }
+      try { source = validateProjectSource(spec, config) ?? (config.projectMode === 'project' ? config.projectRoot : undefined); }
       catch (error) {
         if (spec.framework !== 'mygo' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
       const directory = spec.project?.directory ?? '.';
       const project = source ? resolve(source, directory) : undefined;
-      if (source && project && (spec.framework !== 'mygo' || existsSync(project))) {
-        assertProject(project, spec);
+      if (source && project && existsSync(project)) {
+        if (spec.project?.sourceDir || detectProjectFramework(project)) assertProject(project, spec);
         if (spec.framework === 'mygo' || config.isolation) prerequisiteContext = {
           cwd: project, sourceRoot: source,
           env: { ...executionEnvironment(config), ...(spec.framework === 'mygo' ? { GOWORK: closestOwnedGoWorkspace(source, directory) ?? 'off', GOENV: 'off', GOTOOLCHAIN: 'local', GOFLAGS: '-mod=readonly' } : {}) },
@@ -531,14 +549,18 @@ async function main(): Promise<void> {
       const { spec, baseJobId } = parseRequirement(inputJSON(args[1]));
       print(view(store.reconcileIntake(args[0], spec, baseJobId)));
     } else if (command === 'notify') {
-      if (values.any) {
-        arity(args, 0, 0, 'notify --any');
-        const outcomes = await notifyBuiltJobs(store, config);
-        print(outcomes);
-        if (outcomes.some(outcome => outcome.error)) process.exitCode = 2;
+      if (args[0] === 'claim') {
+        if (values.any) throw new Error('notify claim requires one job and target, not --any');
+        arity(args, 3, 3, 'notify claim <id> <target>');
+        print(claimNotification(store, args[1], args[2]));
+      } else if (args[0] === 'complete' || args[0] === 'reconcile') {
+        if (values.any) throw new Error(`notify ${args[0]} requires one job and receipt, not --any`);
+        arity(args, 4, 4, `notify ${args[0]} <id> <${args[0] === 'complete' ? 'claim' : 'target'}> <json|->`);
+        const result = inputJSON(args[3]);
+        print(args[0] === 'complete' ? completeNotification(store, args[1], args[2], result) : reconcileNotification(store, args[1], args[2], result));
       } else {
-        arity(args, 1, 1, 'notify <id>');
-        print(await notifyJob(store, config, args[0]));
+        arity(args, 0, values.any ? 0 : 1, 'notify [<id>|--any]');
+        print(listNotifications(store, args[0]));
       }
     } else if (command === 'schedule') {
       arity(args, 0, 0, 'schedule --host <id> [--format launchd|systemd|cron]');
@@ -554,7 +576,8 @@ async function main(): Promise<void> {
         if (!['blocked', 'needs-owner', 'ready', 'built'].includes(job.status)) throw new Error(`Cannot retry ${job.status}; budgets and active work cannot be reset by retry`);
         if (job.turn || activeWorkflowNodes(job).length > 0) throw new Error('Abandon the active host turns before changing task configuration');
         if (job.cloudBuildPending) throw new Error('Cloud packaging outcome is uncertain; reconcile the existing provider run rather than replaying it with retry');
-        const resumedConfig = { ...config, packageTarget: config.packageTarget };
+        if (job.config.projectMode === 'project' && (config.projectMode !== 'project' || config.projectRoot !== job.config.projectRoot)) throw new Error('Retry cannot change the selected project root or mode; restore the original project context');
+        const resumedConfig = { ...config, configPath: job.config.configPath, projectMode: job.config.projectMode, projectRoot: job.config.projectRoot, stateDir: job.config.stateDir, workspaceRoot: job.config.workspaceRoot, notifications: job.config.notifications };
         const proofChanged = verificationConfigChanged(job, resumedConfig);
         const patch: Partial<Job> = proofChanged ? { ...invalidateVerification(), stage: ['verify', 'review', 'package'].includes(job.stage) ? 'verify' : job.stage } : {};
         validateJobConfig(job.spec, resumedConfig);

@@ -21,9 +21,11 @@ loopx 的循环模型：控制面编译每轮 packet、**runner 拥有 wake**、
 > 用 `apphx complete <id> <turn> result.json` 完成唯一 token，再 drive；仅在依赖和读写范围独立、且有宿主容量时领取其他节点。
 > `action: step` → 继续跑 drive --once（确定性阶段自动执行）。
 > `action: wait` → 若本会话仍有 worker，先收集并 complete 后再 drive；只有没有 owned work 时才按 `nextDueAt` 安排唤醒并结束会话。
-> `action: done` → 对每个 built 任务跑 `apphx report <id> --out results --collect`，
-> 跑 `apphx notify --any`，汇报 summary（含 needs-owner 清单），结束。
+> `action: done` → 对每个 built 任务跑 `apphx report <id> --collect`，报告 live source、运行命令/cwd、产物和报告路径；默认报告输出位于外部 stateDir/results。
+> 查看 `apphx notify --any` 的通知包；仅对已获准目的地先 claim，再调用宿主已有连接器，并用 complete 记录真实结果。缺连接器时报告未发送；claimed/unknown 先外部协调，不盲重发。汇报 summary（含 needs-owner 清单）和独立的通知结果后结束。
 > 不要在指令里写入任何 job id、prompt 或结论——每轮 packet 由 drive 重新给出。
+
+初始化时以当前会话选定项目为准：`apphx init --project /absolute/project ...` 固定 projectRoot。研究/实现直接进入该源码上下文；执行副本只用于需要隔离的处理，不是用户的新项目根。多个独立新项目应各有可读目录和配置；仅明确要求工厂快照时选择 --isolated。旧任务继续其原路径，不自动迁移代码。
 
 ## 持久宿主所有权：不要把短命 CLI/包管理器当 controller
 

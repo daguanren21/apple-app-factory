@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { driveQueue, completeTurn } from '../dist/runner.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { driveQueue, completeTurn } from '../dist/workflow/runner.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const success = [process.execPath, '-e', 'process.exit(0)'];
@@ -24,12 +24,10 @@ function reviewFor(job) {
 }
 
 function baseConfig(root, overrides = {}) {
-  return ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, retryDelayMs: 1,
-    verification: { checks: [success], runtime: [success] },
-    ...overrides,
-  });
+  return ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, retryDelayMs: 1,
+  verification: { checks: [success], runtime: [success] },
+  ...overrides, });
 }
 
 function fixture(t, overrides = {}, product = spec) {
@@ -126,10 +124,8 @@ test('drive --build-only rejects removed publication permissions before creating
   const root = mkdtempSync(join(tmpdir(), 'factory-drive-build-only-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const configPath = join(root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({
-    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true,
-    verification: { prerequisites: [], checks: [success], runtime: [success] }, allowSubmit: true,
-  }));
+  writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true,
+  verification: { prerequisites: [], checks: [success], runtime: [success] }, allowSubmit: true, }));
   const result = spawnSync(process.execPath, [cli, 'drive', '--once', '--build-only', '--config', configPath], { encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /allowSubmit/);
@@ -245,10 +241,8 @@ test('--strict reports terminal failed tasks with exit code 2', async t => {
   const job = store.enqueue(spec, config);
   store.update(job.id, { status: 'failed', error: 'controlled terminal failure' });
   store.close();
-  writeFileSync(configPath, JSON.stringify({
-    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-  }));
+  writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true,
+  verification: { prerequisites: [], checks: [success], runtime: [success] }, }));
   const result = spawnSync(process.execPath, [cli, 'drive', '--strict', '--once', '--config', configPath], { encoding: 'utf8' });
   assert.equal(result.status, 2, result.stderr);
   const parsed = JSON.parse(result.stdout);

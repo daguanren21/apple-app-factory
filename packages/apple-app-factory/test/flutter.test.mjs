@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadConfig } from '../dist/config.js';
-import { prepareFlutter } from '../dist/flutter.js';
-import { executeStep } from '../dist/runner.js';
-import { Store } from '../dist/store.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { prepareFlutter } from '../dist/platforms/flutter.js';
+import { executeStep } from '../dist/workflow/runner.js';
+import { Store } from '../dist/state/store.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
@@ -14,7 +14,7 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-flutter-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, 'factory.json');
-  writeFileSync(path, JSON.stringify({ ...example, allowLocalExecution: true, toolchain: { flutterSdk: 'sdk' } }));
+  writeFileSync(path, JSON.stringify({ ...example, projectMode: 'isolated', allowLocalExecution: true, toolchain: { flutterSdk: 'sdk' } }));
   return { root, path, config: loadConfig(path) };
 }
 

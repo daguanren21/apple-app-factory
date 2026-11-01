@@ -19,7 +19,7 @@ import {
   isCanMissObjCCodeInLine,
   getObjcCharArray,
   getSwiftEncryptCode,
-} from '../dist/string-encrypt.js';
+} from '../dist/transforms/code/string-encrypt.js';
 
 function tempProject(t, files) {
   const root = mkdtempSync(join(tmpdir(), 'string-encrypt-'));

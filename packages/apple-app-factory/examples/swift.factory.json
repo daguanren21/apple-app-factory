@@ -1,6 +1,6 @@
 {
-  "stateDir": ".factory",
-  "workspaceRoot": "workspaces",
+  "projectMode": "project",
+  "projectRoot": ".",
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "simulator",

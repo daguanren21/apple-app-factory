@@ -2,10 +2,10 @@
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { deriveHash, FRAMEWORKS } from './common.js';
-import type { Framework } from './common.js';
-import { ObfuscatorConfigSchema } from './config.js';
-import { applyObfuscation } from './obfuscate.js';
+import { deriveHash, FRAMEWORKS } from './core/common.js';
+import type { Framework } from './core/common.js';
+import { ObfuscatorConfigSchema } from './core/config.js';
+import { applyObfuscation } from './pipeline/obfuscate.js';
 
 const help = `obfuscator --project <dir> [--config <config.json>] [--framework <stack>] [--seed <text>]
   Deterministically obfuscates an owned app project in place.

@@ -5,9 +5,9 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { assertProject, buildInstructions, doctorCommands } from '../dist/project-profiles.js';
-import { dependencyDigest, generatedModulePaths, isGeneratedPath, validateLocalDependencies } from '../dist/dependencies.js';
-import { sourceDigest } from '../dist/workspace.js';
+import { assertProject, buildInstructions, detectProjectFramework, doctorCommands } from '../dist/projects/profiles.js';
+import { dependencyDigest, generatedModulePaths, isGeneratedPath, validateLocalDependencies } from '../dist/projects/dependencies.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'apphx-profiles-'));
@@ -40,6 +40,31 @@ for (const [framework, files] of Object.entries(manifests)) {
     assert.match(buildInstructions({ ...spec(framework), project: { sourceDir: '/owner/project', directory: '.' } }), /Preserve the imported project/);
   });
 }
+
+for (const [framework, files] of Object.entries(manifests)) {
+  test(`manifest-only detection identifies ${framework} without probing tools`, t => {
+    const root = fixture(t);
+    for (const [path, content] of Object.entries(files)) file(root, path, content);
+    assert.equal(detectProjectFramework(root), framework);
+  });
+}
+
+test('manifest detection prefers Expo over React Native and refuses ambiguous stacks', t => {
+  const expo = fixture(t);
+  file(expo, 'package.json', { name: 'app', dependencies: { expo: '^53.0.0', 'react-native': '0.80.0' } });
+  assert.equal(detectProjectFramework(expo), 'expo');
+  const ambiguous = fixture(t);
+  file(ambiguous, 'pubspec.yaml', manifests.flutter['pubspec.yaml']);
+  file(ambiguous, 'package.json', manifests.expo['package.json']);
+  assert.equal(detectProjectFramework(ambiguous), undefined);
+});
+
+test('manifest detection does not recurse into an unrelated monorepo subproject', t => {
+  const root = fixture(t);
+  for (const [path, content] of Object.entries(manifests.expo)) file(root, `apps/mobile/${path}`, content);
+  assert.equal(detectProjectFramework(root), undefined);
+  assert.equal(detectProjectFramework(join(root, 'apps/mobile')), 'expo');
+});
 
 test('Swift accepts an existing nested Xcode project without rewriting it', t => {
   const root = fixture(t);

@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { Store } from '../dist/store.js';
-import { loadConfig } from '../dist/config.js';
-import { nextTurn } from '../dist/runner.js';
+import { Store } from '../dist/state/store.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { nextTurn } from '../dist/workflow/runner.js';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
 const product = JSON.parse(readFileSync(new URL('../examples/luggage.json', import.meta.url)));
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
-const storeModule = new URL('../dist/store.js', import.meta.url).href;
+const storeModule = new URL('../dist/state/store.js', import.meta.url).href;
 const digest = 'a'.repeat(64);
 const policyA = { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] };
 const policyB = { ...policyA, checks: [[process.execPath, '-e', 'process.exit(23)']] };
@@ -20,7 +20,7 @@ const policyB = { ...policyA, checks: [[process.execPath, '-e', 'process.exit(23
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-admin-transition-'));
   const path = join(root, 'config.json');
-  const input = { ...example, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), verification: policyA };
+  const input = { ...example, projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), verification: policyA }
   writeFileSync(path, JSON.stringify(input));
   const config = loadConfig(path);
   const store = new Store(config.stateDir);

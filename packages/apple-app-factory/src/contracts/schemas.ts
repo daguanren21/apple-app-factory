@@ -1,0 +1,280 @@
+import { z } from 'zod';
+import { dirname, isAbsolute, resolve, win32 } from 'node:path';
+import { lstatSync } from 'node:fs';
+import { AppleReceiptSchema } from './apple-types.js';
+import { validateMyGoPackaging } from './mygo-build.js';
+import { MAX_INPUT_BYTES, minimumNodeResultBytes, minimumReviewBytes } from './input-limits.js';
+import { NotificationConfigSchema, NotificationDeliverySchema } from './notification-types.js';
+import { UiQualitySchema, minimumUiQualityBytes } from './ui-quality.js';
+
+const text = z.string().min(1).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
+const count = z.number().int().nonnegative().safe();
+const positive = z.number().positive().finite();
+const command = z.array(text).min(1);
+/** Decision-log stage/role labels may be empty because apphx decide defaults omitted fields to ''. */
+const decisionLabel = z.string().refine(value => !value.includes('\0') && (value === '' || value.trim().length > 0), 'Expected text without NUL characters');
+/** Decision rationale is a non-empty, longer text so every recorded verdict stays attributable. */
+const decisionRationale = z.string().min(1).max(100000).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
+
+function relativeProjectPath(value: string, allowRoot = false): boolean {
+  if (allowRoot && value === '.') return true;
+  return !isAbsolute(value) && !win32.isAbsolute(value) && !/[\\:*?\[\]]/.test(value)
+    && value.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+}
+
+export const FrameworkSchema = z.enum(['flutter', 'android-java', 'swift', 'react-native', 'expo', 'uni-app', 'mygo']);
+export type Framework = z.infer<typeof FrameworkSchema>;
+export const PlatformSchema = z.enum(['ios', 'android', 'macos']);
+export type Platform = z.infer<typeof PlatformSchema>;
+export const ChannelSchema = z.enum(['local', 'app-store', 'google-play']);
+export type Channel = z.infer<typeof ChannelSchema>;
+export const PrioritySchema = z.enum(['P0', 'P1', 'P2']);
+export type Priority = z.infer<typeof PrioritySchema>;
+export const PackageTargetSchema = z.enum(['simulator', 'ipa', 'apk', 'aab', 'app', 'dmg']);
+export type PackageTarget = z.infer<typeof PackageTargetSchema>;
+export const AppleSpecSchema = z.strictObject({
+  appId: text.optional(), bundleId: text.optional(), buildNumber: text.optional(), locale: text.optional(),
+  description: text.optional(), keywords: text.optional(), supportUrl: text.optional(), privacyPolicyUrl: text.optional(), reviewNotes: text.optional(),
+  copyright: text.optional(), whatsNew: text.optional(), storefrontCountry: text.optional(), manualSetupConfirmed: z.boolean().optional(),
+  contact: z.strictObject({ firstName: text.optional(), lastName: text.optional(), email: text.optional(), phone: text.optional() }).optional(),
+});
+export type AppleSpec = z.infer<typeof AppleSpecSchema>;
+const SpecObject = z.strictObject({
+  id: text.regex(/^[a-z][a-z0-9-]{1,62}$/), name: text, purpose: text, audience: text,
+  framework: FrameworkSchema, platform: PlatformSchema, channel: ChannelSchema.default('local'), version: text.default('1.0.0'),
+  priority: PrioritySchema.default('P1'),
+  project: z.strictObject({ sourceDir: text.optional(), directory: text.refine(value => relativeProjectPath(value, true), 'project.directory must be a relative in-root directory without traversal').default('.') }).optional(),
+  screenshotsDir: text.optional(), differentiators: z.array(text).min(1), acceptance: z.array(text).min(1),
+  constraints: z.array(text).optional(),
+  designRef: text.url().describe('Design reference URL (e.g. Figma link); the build\'s ui-designer role must reproduce the referenced design faithfully').optional(),
+  apple: AppleSpecSchema.optional(),
+  authorEmail: z.string().email().optional(),
+  hiddenFeatures: z.literal(false).optional(), reviewBypass: z.literal(false).optional(),
+});
+function refineSpec(value: z.infer<typeof SpecObject>, context: z.RefinementCtx): void {
+  if (value.framework === 'android-java' && value.platform !== 'android') context.addIssue({ code: 'custom', path: ['platform'], message: 'android-java requires platform=android' });
+  if (value.framework === 'swift' && value.platform !== 'ios') context.addIssue({ code: 'custom', path: ['platform'], message: 'swift requires platform=ios' });
+  if (value.framework === 'mygo' && value.platform !== 'macos') context.addIssue({ code: 'custom', path: ['platform'], message: 'mygo requires platform=macos' });
+  if (value.platform === 'macos' && value.framework !== 'mygo') context.addIssue({ code: 'custom', path: ['framework'], message: 'macos currently requires framework=mygo' });
+  if (value.platform === 'macos' && value.channel !== 'local') context.addIssue({ code: 'custom', path: ['channel'], message: 'macos currently supports local delivery only' });
+  if (value.channel === 'app-store' && value.platform !== 'ios') context.addIssue({ code: 'custom', path: ['channel'], message: 'app-store requires platform=ios' });
+  if (value.channel === 'google-play' && value.platform !== 'android') context.addIssue({ code: 'custom', path: ['channel'], message: 'google-play requires platform=android' });
+}
+export const SpecSchema = SpecObject.superRefine(refineSpec);
+export type Spec = z.infer<typeof SpecSchema>;
+export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optional() }).superRefine((value, context) => {
+  refineSpec(value, context);
+  if (value.baseJobId && value.project?.sourceDir) context.addIssue({ code: 'custom', path: ['project', 'sourceDir'], message: 'project.sourceDir and baseJobId are mutually exclusive' });
+});
+
+export const ObfuscationConfigSchema = z.strictObject({
+  command: z.array(command.element).min(1).default(['obfuscator']),
+  /** Obfuscator rules file resolved against the factory config directory; must be a regular file. */
+  configPath: text.optional(),
+  /** Inline obfuscator rules (same shape as the rules file); validated by the bundled obfuscator at run time. */
+  options: z.record(z.string(), z.unknown()).optional(),
+  seed: text.optional(),
+}).superRefine((value, context) => {
+  if (!value.configPath && !value.options) context.addIssue({ code: 'custom', path: [], message: 'obfuscation needs configPath or inline options; set one of them' });
+  if (value.configPath && value.options) context.addIssue({ code: 'custom', path: [], message: 'obfuscation accepts configPath or inline options, not both' });
+});
+export type ObfuscationConfig = z.infer<typeof ObfuscationConfigSchema>;
+
+/**
+ * One advisory role seat. Accepts the legacy plain-name form or a pinned seat
+ * object ({ name, provider?, fresh? }); provider pins the seat to a model
+ * family and fresh=true requires a brand-new context.
+ */
+export const RoleSeatSchema = z.union([
+  text,
+  z.strictObject({ name: text, provider: text.optional(), fresh: z.boolean().default(false) }),
+]);
+export type RoleSeat = z.infer<typeof RoleSeatSchema>;
+
+/**
+ * Role assignments per host stage. Names are free-form so teams can add agents
+ * (e.g. security-review, performance-analyst); the host adopts every returned
+ * role via native delegation. Assignments do not change eligibility or budgets;
+ * receipt separately opts into a review evidence gate. Missing assignments stay
+ * absent for model planning; legacy host packets supply their own default team.
+ */
+export const RolesConfigSchema = z.strictObject({
+  research: z.array(RoleSeatSchema).optional(),
+  build: z.array(RoleSeatSchema).optional(),
+  review: z.array(RoleSeatSchema).optional(),
+  /** Owner opt-in: review completion requires a fresh decision-log receipt for every review seat. */
+  receipt: z.boolean().default(false),
+});
+export type RolesConfig = z.infer<typeof RolesConfigSchema>;
+
+
+/** Presence opts a factory into model-planned, durable host work graphs. */
+export const WorkflowConfigSchema = z.strictObject({
+  maxNodes: count.min(1).max(256).default(64),
+  maxParallel: count.min(1).max(32).default(4),
+  maxReplans: count.max(32).default(4),
+});
+export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
+
+export const ConfigSchema = z.strictObject({
+  configPath: text.optional(), stateDir: text, workspaceRoot: text,
+  projectMode: z.enum(['project', 'isolated']).default('project'), projectRoot: text.optional(),
+  allowLocalExecution: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
+  autopilot: z.boolean().optional(),
+  executionEnv: z.array(text.regex(/^[A-Z][A-Z0-9_]*$/).refine(value => !/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value), 'Publisher credentials must not be passed to host or verification tools')).default([]),
+  isolation: z.strictObject({ mode: z.literal('macos-sandbox'), readOnlyPaths: z.array(text).default([]), network: z.enum(['deny', 'allow']).default('deny') }).optional(),
+  timeoutMs: positive.default(900000), maxAttempts: positive.int().default(8), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
+  retryDelayMs: positive.default(30000), pollMs: positive.default(300000),
+  inbox: z.strictObject({ directory: text, pollMs: positive.default(2000) }).optional(),
+  verification: z.strictObject({ prerequisites: z.array(command).default([]), checks: z.array(command).min(1), runtime: z.array(command).min(1) }),
+  toolchain: z.strictObject({ flutterSdk: text }).optional(),
+  apple: z.strictObject({ exportOptionsPlist: text.optional() }).optional(),
+  packageTarget: PackageTargetSchema, executionWarning: text.optional(),
+  obfuscation: ObfuscationConfigSchema.optional(),
+  notifications: NotificationConfigSchema.optional(),
+  roles: RolesConfigSchema.optional(),
+  workflow: WorkflowConfigSchema.optional(),
+  uiQuality: z.boolean().optional(),
+  packaging: z.strictObject({ commands: z.array(command).min(1), artifactPath: text.refine(value => relativeProjectPath(value), 'artifactPath must be an exact project-relative file or directory without traversal or wildcards'), provider: z.enum(['local', 'cloud']).default('local') }).optional(),
+}).superRefine((value, context) => {
+  if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) context.addIssue({ code: 'custom', path: ['allowCloudBuild'], message: 'Cloud packaging requires explicit allowCloudBuild=true' });
+  if (value.workflow) for (const stage of ['research', 'build', 'review'] as const) {
+    const seats = value.roles?.[stage] ?? [];
+    if (seats.length > value.workflow.maxNodes) context.addIssue({ code: 'custom', path: ['roles', stage], message: `Required seats exceed workflow.maxNodes (${value.workflow.maxNodes})` });
+    for (const [index, seat] of seats.entries()) {
+      if ((typeof seat === 'string' ? seat : seat.name).length > 200 || typeof seat !== 'string' && (seat.provider?.length ?? 0) > 200) context.addIssue({ code: 'custom', path: ['roles', stage, index], message: 'Dynamic role and provider names must fit the 200-character workflow node bound' });
+    }
+  }
+});
+export type Config = z.infer<typeof ConfigSchema>;
+export function validateJobConfig(spec: Spec, config: Config): void {
+  if (config.autopilot === true && !config.allowLocalExecution) throw new Error('autopilot requires allowLocalExecution=true: the owner must pre-authorize deterministic local execution before unattended mode');
+  if (config.uiQuality && (!spec.screenshotsDir || !relativeProjectPath(spec.screenshotsDir) || !/^(build|dist|unpackage)\//.test(spec.screenshotsDir) || /(?:^|\/)(?:node_modules|\.git|\.factory-cache)(?:\/|$)/.test(spec.screenshotsDir))) throw new Error('UI quality requires screenshotsDir under generated app output, for example build/screenshots, and actual narrow/wide platform captures from the runtime checks');
+  // Admission must not freeze requirements whose smallest valid verdict cannot
+  // cross the same bounded JSON transport used to submit the requirement.
+  const reviewBytes = minimumReviewBytes(spec.acceptance) + (config.uiQuality ? minimumUiQualityBytes(spec.screenshotsDir!) : 0);
+  const minimumResultBytes = config.workflow ? minimumNodeResultBytes(['x'], reviewBytes) : reviewBytes;
+  if (minimumResultBytes > MAX_INPUT_BYTES) throw new Error(`Acceptance requires at least ${minimumResultBytes} completion bytes, exceeding the ${MAX_INPUT_BYTES}-byte input limit; split the requirement into independently deliverable products before enqueueing`);
+  const targets: Record<Platform, readonly Config['packageTarget'][]> = { ios: ['simulator', 'ipa'], android: ['apk', 'aab'], macos: ['app', 'dmg'] };
+  if (!targets[spec.platform].includes(config.packageTarget)) throw new Error(`packageTarget=${config.packageTarget} does not match platform=${spec.platform}`);
+  if (spec.channel === 'google-play' && config.packageTarget !== 'aab') throw new Error('Google Play requires packageTarget=aab');
+  if (config.toolchain && spec.framework !== 'flutter') throw new Error('toolchain.flutterSdk is only supported for framework=flutter');
+  if (spec.framework !== 'flutter' && !config.packaging) throw new Error(`${spec.framework} requires owner-configured packaging.commands and packaging.artifactPath`);
+  if (config.packaging?.provider === 'cloud' && !config.allowCloudBuild) throw new Error('Cloud packaging requires explicit allowCloudBuild=true');
+  if (spec.platform === 'macos' && (config.allowCloudBuild || config.packaging?.provider === 'cloud')) throw new Error('macos currently supports local build-only delivery; notarization and uploads are not part of this tool');
+  if (spec.framework === 'mygo') validateMyGoPackaging(config, spec.screenshotsDir);
+}
+export const StageSchema = z.enum(['research', 'build', 'obfuscate', 'verify', 'review', 'package']);
+export type Stage = z.infer<typeof StageSchema>;
+export const StatusSchema = z.enum(['queued', 'running', 'waiting', 'blocked', 'failed', 'needs-owner', 'ready', 'built']);
+export type Status = z.infer<typeof StatusSchema>;
+export const ToolchainSchema = z.strictObject({ source: text, frameworkRevision: text, engineRevision: text, ready: z.boolean() });
+export type Toolchain = z.infer<typeof ToolchainSchema>;
+export const ProcessIdentitySchema = z.strictObject({ token: text });
+export type ProcessIdentity = z.infer<typeof ProcessIdentitySchema>;
+export const CommandMetadataSchema = z.strictObject({ deadline: z.number().finite(), identity: ProcessIdentitySchema, termAt: z.number().finite().optional(), killAt: z.number().finite().optional() });
+export type CommandMetadata = z.infer<typeof CommandMetadataSchema>;
+export const PrerequisiteSchema = z.strictObject({ argv: z.array(text).optional(), reason: text, path: text.optional() });
+export type Prerequisite = z.infer<typeof PrerequisiteSchema>;
+export const ResearchSchema = z.strictObject({
+  viable: z.boolean(), distinctness: text, risks: z.array(text).optional(), plan: z.array(text).min(1),
+});
+export type Research = z.infer<typeof ResearchSchema>;
+export const ReviewSchema = z.strictObject({ approved: z.boolean(), findings: z.array(text), acceptanceEvidence: z.array(z.strictObject({ requirement: text, evidence: text })), uiQuality: UiQualitySchema.optional() });
+export type Review = z.infer<typeof ReviewSchema>;
+export const ArtifactSchema = z.strictObject({ kind: z.enum(['ios-simulator', 'ipa', 'apk', 'aab', 'macos-app', 'dmg']), path: text, digest: text.regex(/^[a-f0-9]{64}$/), createdAt: z.iso.datetime() });
+export type Artifact = z.infer<typeof ArtifactSchema>;
+export const InboxEntrySchema = z.strictObject({
+  source: text, digest: text.nullable(), status: z.enum(['accepted', 'error']), jobId: text.nullable(),
+  error: z.string().nullable(), observedAt: z.number().finite(),
+});
+export type InboxEntry = z.infer<typeof InboxEntrySchema>;
+export const HostStageSchema = z.enum(['research', 'build', 'review']);
+export type HostStage = z.infer<typeof HostStageSchema>;
+export const HostTurnSchema = z.strictObject({
+  id: z.uuid(), stage: HostStageSchema, createdAt: z.number().finite(), contextDigest: text.regex(/^[a-f0-9]{64}$/),
+  /** Number of decision entries present when this host turn was claimed. */
+  decisionsLengthAtClaim: count.optional(),
+  /** Stable owner process for the host session; absent on legacy turns. */
+  ownerPid: count.positive().optional(),
+  ownerIdentity: text.optional(),
+  kind: z.enum(['plan', 'node']).optional(), nodeId: text.optional(), planRevision: count.optional(),
+});
+export type HostTurn = z.infer<typeof HostTurnSchema>;
+
+const workflowNodeId = text.regex(/^[a-z][a-z0-9_-]{0,63}$/, 'Expected a lowercase workflow node identifier');
+const workflowPath = text.refine(value => relativeProjectPath(value, true), 'Expected a project-relative file or directory, or .');
+export const WorkflowNodeSchema = z.strictObject({
+  id: workflowNodeId, role: text.max(200), instructions: text.max(20000),
+  dependsOn: z.array(workflowNodeId).max(256).default([]),
+  readPaths: z.array(workflowPath).max(256).default(['.']),
+  writePaths: z.array(workflowPath).max(256).default([]),
+  acceptance: z.array(text.max(2000)).min(1).max(64),
+  provider: text.max(200).optional(), fresh: z.boolean().default(false),
+});
+export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;
+export const WorkflowPlanSchema = z.strictObject({
+  rationale: text.max(20000), nodes: z.array(WorkflowNodeSchema).min(1).max(256),
+  final: workflowNodeId, invalidate: z.array(workflowNodeId).max(256).default([]),
+});
+export type WorkflowPlan = z.infer<typeof WorkflowPlanSchema>;
+export const WorkflowNodeResultSchema = z.strictObject({
+  outcome: z.enum(['passed', 'failed']), summary: text.max(20000),
+  evidence: z.array(z.strictObject({ requirement: text.max(2000), evidence: text.max(20000) })).max(64),
+  result: z.unknown().optional(),
+});
+export type WorkflowNodeResult = z.infer<typeof WorkflowNodeResultSchema>;
+export const WorkflowNodeStateSchema = z.strictObject({
+  definition: WorkflowNodeSchema, status: z.enum(['pending', 'running', 'passed', 'failed']),
+  attempts: count.default(0), turn: HostTurnSchema.nullable().default(null),
+  result: WorkflowNodeResultSchema.optional(), completedAt: z.number().finite().optional(),
+  decisionsLengthAtClaim: count.optional(),
+});
+export type WorkflowNodeState = z.infer<typeof WorkflowNodeStateSchema>;
+export const WorkflowPhaseSchema = z.strictObject({
+  status: z.enum(['planning', 'running', 'complete']), revision: count.default(0), reason: text,
+  final: workflowNodeId.optional(), nodes: z.array(WorkflowNodeStateSchema).max(256).default([]),
+  history: z.array(z.strictObject({ revision: count.positive(), at: z.number().finite(), reason: text, plan: WorkflowPlanSchema })).default([]),
+  decisionsLengthAtClaim: count.optional(),
+  proofDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(),
+});
+export type WorkflowPhase = z.infer<typeof WorkflowPhaseSchema>;
+export const WorkflowStateSchema = z.strictObject({
+  cancelled: z.boolean().default(false),
+  phases: z.strictObject({ research: WorkflowPhaseSchema.optional(), build: WorkflowPhaseSchema.optional(), review: WorkflowPhaseSchema.optional() }),
+});
+export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
+export const JobSchema = z.object({
+  id: text, spec: SpecSchema, requestSpec: SpecSchema.nullable(), requestSpecError: text.nullable().default(null), config: ConfigSchema, stage: StageSchema, status: StatusSchema,
+  createdAt: z.number().finite(), updatedAt: z.number().finite(), nextAt: z.number().finite(),
+  attempts: z.partialRecord(StageSchema, count), hostTurns: count, turn: HostTurnSchema.nullable().optional(), groups: z.array(z.number().int()),
+  workflow: WorkflowStateSchema.optional(),
+  decisions: z.array(z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale })).default([]),
+  commands: z.record(z.string(), CommandMetadataSchema).default({}), receipt: AppleReceiptSchema, logs: z.array(text), workspace: text, projectRoot: text,
+  projectDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(), projectDependencyDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  baseJobId: z.uuid().optional(), baseDigest: text.regex(/^[a-f0-9]{64}$/).optional(), basePrepared: z.boolean().optional(),
+  automaticBase: z.literal(true).optional(),
+  sourceDirectory: text.refine(isAbsolute, 'sourceDirectory must be absolute').optional(), importDigest: text.regex(/^[a-f0-9]{64}$/).optional(), importPrepared: z.boolean().optional(), cloudBuildPending: z.boolean().optional(),
+  recoveryStage: StageSchema.optional(),
+  blockedReason: z.strictObject({ kind: z.literal('prerequisite'), stage: StageSchema, prerequisite: PrerequisiteSchema }).nullable().optional(),
+  manualRecovery: z.string().nullable().optional(), error: z.string().nullable().optional(), feedback: z.string().optional(),
+  research: ResearchSchema.optional(), policyEvidence: z.strictObject({ url: z.url(), fetchedAt: text, sha256: text }).optional(),
+  toolchain: ToolchainSchema.optional(), verifiedDigest: text.nullable().optional(), verifiedDependencyDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(), screenshotDigest: text.nullable().optional(), verifiedAt: text.optional(),
+  obfuscationBase: z.strictObject({ digest: text.regex(/^[a-f0-9]{64}$/), path: text }).optional(),
+  obfuscationDigest: text.regex(/^[a-f0-9]{64}$/).optional(),
+  obfuscationReport: z.strictObject({ changedFiles: count, transforms: z.record(text, count), skipped: z.strictObject({ generated: count, unsupported: count }) }).optional(),
+  review: ReviewSchema.nullable().optional(), ipaPath: text.nullable().optional(), archiveDigest: text.nullable().optional(), artifact: ArtifactSchema.nullable().optional(),
+  notifications: z.array(NotificationDeliverySchema).default([]),
+  externalChecks: z.unknown().optional(),
+}).passthrough();
+export type Job = z.infer<typeof JobSchema>;
+
+export const DecisionEntrySchema = z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale });
+export type DecisionEntry = z.infer<typeof DecisionEntrySchema>;
+export const DecisionInputSchema = z.strictObject({ stage: decisionLabel.default(''), role: decisionLabel.default(''), rationale: decisionRationale });
+export type DecisionInput = z.infer<typeof DecisionInputSchema>;
+
+export type FactoryError = Error & { code?: string; syscall?: string; prerequisite?: Prerequisite; httpStatus?: number | null; outcome?: string; transient?: boolean };
+export function toError(value: unknown): FactoryError {
+  return value instanceof Error ? value : new Error(String(value));
+}

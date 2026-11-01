@@ -5,23 +5,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, nextQueueTurn } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
-import { projectDirectory, sourceDigest } from '../dist/workspace.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, nextQueueTurn } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { projectDirectory, sourceDigest } from '../dist/projects/workspace.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const success = [process.execPath, '-e', 'process.exit(0)'];
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-queue-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    ...overrides,
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  ...overrides, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   return {
@@ -204,11 +202,9 @@ test('needs-owner jobs are terminal for the loop and retryable after owner input
   assert.equal(result.action, 'idle');
   assert.deepEqual(result.summary, { total: 1, built: 0, failed: 0, needsOwner: 1, blocked: 0, waiting: 0, queued: 0, running: 0 });
   const configPath = join(f.root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({
-    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-  }));
+  writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] }, }));
   const retried = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
   assert.equal(retried.status, 0, retried.stderr);
   assert.equal(JSON.parse(retried.stdout).status, 'queued');
@@ -227,7 +223,7 @@ test('retry refuses an exhausted budget and queues after the owner raises it', a
   const f = fixture(t);
   const job = f.store.update(f.enqueue('owner-deferred', 'build', 0).id, { status: 'needs-owner', attempts: { build: 8 }, error: 'Attempt budget exhausted; owner input is required to proceed: review rejected' });
   const configPath = join(f.root, 'factory.json');
-  const base = { stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true, pollMs: 25, verification: { prerequisites: [], checks: [success], runtime: [success] } };
+  const base = { projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true, pollMs: 25, verification: { prerequisites: [], checks: [success], runtime: [success] } }
   writeFileSync(configPath, JSON.stringify(base));
   const refused = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
   assert.equal(refused.status, 0, refused.stderr);
@@ -255,12 +251,10 @@ test('obfuscate stage persists base digest, transformed digest and the typed rep
   const root = mkdtempSync(join(tmpdir(), 'factory-obfuscate-'));
   const obConfigPath = join(root, 'obfuscator.json');
   writeFileSync(obConfigPath, JSON.stringify({ code: { removeComments: true } }));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    obfuscation: { configPath: obConfigPath, seed: 'queue-test-seed' },
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  obfuscation: { configPath: obConfigPath, seed: 'queue-test-seed' }, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue({
@@ -286,12 +280,10 @@ test('obfuscate stage persists base digest, transformed digest and the typed rep
 
 test('obfuscate stage accepts inline options and leaves no snapshot behind', async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-obfuscate-inline-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    obfuscation: { options: { code: { removeComments: true } }, seed: 'inline-seed' },
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  obfuscation: { options: { code: { removeComments: true } }, seed: 'inline-seed' }, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue({
@@ -316,7 +308,7 @@ test('obfuscate stage accepts inline options and leaves no snapshot behind', asy
 });
 
 test('obfuscation config requires exactly one of configPath or inline options', () => {
-  const base = { stateDir: '/tmp/obf-state', workspaceRoot: '/tmp/obf-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } };
+  const base = { projectMode: 'isolated', stateDir: '/tmp/obf-state', workspaceRoot: '/tmp/obf-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } }
   assert.throws(() => ConfigSchema.parse({ ...base, obfuscation: { seed: 'x' } }), /configPath or inline options/);
   assert.throws(() => ConfigSchema.parse({ ...base, obfuscation: { configPath: 'obfuscator.json', options: { code: {} } } }), /not both/);
   const parsed = ConfigSchema.parse({ ...base, obfuscation: { options: { code: { removeComments: true } } } });
@@ -328,11 +320,9 @@ test('next --any CLI picks the earliest-due task across the queue', async t => {
   f.enqueue('future', 'research', Date.now() + 3600000);
   const due = f.enqueue('due', 'research', 0);
   const configPath = join(f.root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({
-    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-  }));
+  writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] }, }));
   const result = spawnSync(process.execPath, [cli, 'next', '--any', '--config', configPath], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const parsed = JSON.parse(result.stdout);

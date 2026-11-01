@@ -7,13 +7,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
-import { transformCode, stripComments, encryptStringLiterals, renameIdentifiers, insertJunkCode, extractDeclaredIdentifiers, generateIdentifierMappings } from '../dist/code.js';
-import { walkProject } from '../dist/common.js';
-import { applyObfuscation } from '../dist/obfuscate.js';
-import { buildPNG, encodePNG, insertPngChunk, parsePNG } from '../dist/png.js';
-import { planResourceRenames, applyResourceRenames, perturbImageHashes, recolorImages } from '../dist/resources.js';
-import { renameProjectConfig, obfuscateDirectories, remapUuids } from '../dist/project.js';
-import { filterSensitiveWords, recolorSourceColors } from '../dist/content.js';
+import { transformCode, stripComments, encryptStringLiterals, renameIdentifiers, insertJunkCode, extractDeclaredIdentifiers, generateIdentifierMappings } from '../dist/transforms/code/code.js';
+import { walkProject } from '../dist/core/common.js';
+import { applyObfuscation } from '../dist/pipeline/obfuscate.js';
+import { buildPNG, encodePNG, insertPngChunk, parsePNG } from '../dist/transforms/resources/png.js';
+import { planResourceRenames, applyResourceRenames, perturbImageHashes, recolorImages } from '../dist/transforms/resources/resources.js';
+import { renameProjectConfig, obfuscateDirectories, remapUuids } from '../dist/transforms/project/project.js';
+import { filterSensitiveWords, recolorSourceColors } from '../dist/transforms/content/content.js';
 
 const dist = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 

@@ -8,8 +8,8 @@ import {
   colourDistance, colorAcquaintanceCompare, hexToRgb, pickReplacement,
   recolorImagesByMap, recolorImagesSolid, scaleImages, flattenTransparency,
   scalePixels, flattenPixels,
-} from '../dist/image-utils.js';
-import { buildPNG, parsePNG } from '../dist/png.js';
+} from '../dist/transforms/resources/image-utils.js';
+import { buildPNG, parsePNG } from '../dist/transforms/resources/png.js';
 
 function png(width, height, rgba) {
   return buildPNG({ width, height, pixels: Uint8Array.from(rgba) });

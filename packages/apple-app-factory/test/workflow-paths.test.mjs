@@ -6,8 +6,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorkflowNodeSchema, WorkflowPhaseSchema } from '../dist/schemas.js';
-import { readyWorkflowNodes, workflowNodeConflict } from '../dist/workflow.js';
+import { WorkflowNodeSchema, WorkflowPhaseSchema } from '../dist/contracts/schemas.js';
+import { readyWorkflowNodes, workflowNodeConflict } from '../dist/workflow/graph.js';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'apphx-workflow-paths-'));

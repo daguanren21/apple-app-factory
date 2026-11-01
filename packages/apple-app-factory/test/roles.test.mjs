@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigSchema, RoleSeatSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn } from '../dist/runner.js';
+import { ConfigSchema, RoleSeatSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn } from '../dist/workflow/runner.js';
 
 const success = [process.execPath, '-e', 'process.exit(0)'];
 
@@ -17,12 +17,10 @@ const spec = {
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-roles-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    ...overrides,
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  ...overrides, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue(spec, config);
@@ -57,11 +55,9 @@ test('RoleSeatSchema accepts legacy strings and pinned objects with defaults', (
 });
 
 test('ConfigSchema accepts pinned object seats and keeps legacy strings', () => {
-  const config = ConfigSchema.parse({
-    stateDir: '/tmp/roles-config', workspaceRoot: '/tmp/roles-workspaces', packageTarget: 'simulator',
-    verification: { checks: [success], runtime: [success] },
-    roles: { build: [{ name: 'developer', provider: 'grok', fresh: true }, 'ui-designer'] },
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: '/tmp/roles-config', workspaceRoot: '/tmp/roles-workspaces', packageTarget: 'simulator',
+  verification: { checks: [success], runtime: [success] },
+  roles: { build: [{ name: 'developer', provider: 'grok', fresh: true }, 'ui-designer'] }, });
   assert.deepEqual(config.roles.build, [{ name: 'developer', provider: 'grok', fresh: true }, 'ui-designer']);
 });
 

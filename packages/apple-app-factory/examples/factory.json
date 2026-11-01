@@ -1,4 +1,5 @@
 {
+  "projectMode": "isolated",
   "stateDir": ".factory",
   "workspaceRoot": "workspaces",
   "inbox": { "directory": "requirements", "pollMs": 2000 },

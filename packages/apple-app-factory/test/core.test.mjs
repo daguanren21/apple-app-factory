@@ -4,12 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Store } from '../dist/store.js';
-import { run, executionEnvironment } from '../dist/process.js';
-import { expandArgv, loadConfig, inside } from '../dist/config.js';
-import { executeStep, nextTurn } from '../dist/runner.js';
-import { sourceDigest } from '../dist/workspace.js';
-import { dependencyDigest } from '../dist/dependencies.js';
+import { Store } from '../dist/state/store.js';
+import { run, executionEnvironment } from '../dist/execution/process.js';
+import { expandArgv, loadConfig, inside } from '../dist/configuration/config.js';
+import { executeStep, nextTurn } from '../dist/workflow/runner.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
 
 const cli = resolve('dist/cli.js');
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
@@ -19,7 +19,7 @@ function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'apphx-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, 'factory.json');
-  writeFileSync(path, JSON.stringify({ ...example, ...overrides, packageTarget: overrides.packageTarget ?? (overrides.allowSubmit ? 'ipa' : example.packageTarget) }));
+  writeFileSync(path, JSON.stringify({ ...example, projectMode: 'isolated', ...overrides, packageTarget: overrides.packageTarget ?? (overrides.allowSubmit ? 'ipa' : example.packageTarget) }));
   return { root, path, config: loadConfig(path) };
 }
 

@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn, driveQueue } from '../dist/runner.js';
-import { inspectProcess, processGroupAlive, signalOwnedProcessGroup } from '../dist/process.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn, driveQueue } from '../dist/workflow/runner.js';
+import { inspectProcess, processGroupAlive, signalOwnedProcessGroup } from '../dist/execution/process.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const spec = {
@@ -46,11 +46,9 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
         child.disconnect();
       });
       setInterval(()=>{},1000);`;
-    const config = ConfigSchema.parse({
-      stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
-      timeoutMs: 15000, retryDelayMs: 1,
-      verification: { prerequisites: [], checks: [[process.execPath, '-e', command]], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
-    });
+    const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
+    timeoutMs: 15000, retryDelayMs: 1,
+    verification: { prerequisites: [], checks: [[process.execPath, '-e', command]], runtime: [[process.execPath, '-e', 'process.exit(0)']] }, });
     const configPath = join(root, 'factory.json');
     writeFileSync(configPath, JSON.stringify(config));
     const store = new Store(config.stateDir);
@@ -128,7 +126,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 test('an already-aborted drive cannot claim native work', async t => {
   const root = mkdtempSync(join(tmpdir(), 'apphx-drive-aborted-'));
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', verification: { checks: [[process.execPath, '--version']], runtime: [[process.execPath, '--version']] } });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', verification: { checks: [[process.execPath, '--version']], runtime: [[process.execPath, '--version']] } });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue(spec, config);

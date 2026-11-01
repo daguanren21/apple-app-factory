@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { deriveHash, seededRandom, walkProject } from '../dist/common.js';
+import { deriveHash, seededRandom, walkProject } from '../dist/core/common.js';
 import {
   analyzeDartClassLine,
   analyzeDartMethodLine,
@@ -33,7 +33,7 @@ import {
   rewriteDartResourceReferences,
   rewriteYamlResourceReferences,
   splitCamel,
-} from '../dist/flutter.js';
+} from '../dist/transforms/flutter.js';
 
 const opts = normalizeFlutterOptions();
 

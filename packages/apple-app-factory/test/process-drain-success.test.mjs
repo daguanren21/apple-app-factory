@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { run } from '../dist/process.js';
+import { run } from '../dist/execution/process.js';
 
 const posix = { skip: process.platform === 'win32' };
 

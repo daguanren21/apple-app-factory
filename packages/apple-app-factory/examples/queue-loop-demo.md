@@ -7,10 +7,12 @@ loopx 风格的 agent loop 在 apphx 中的完整走法：一个宿主会话（�
 输出不同），不作为任何运行证据。真实验收需要 macOS、完整 Xcode 与模拟器/设备，
 商店提交始终是工具之外的人工工作。
 
+本例显式使用 isolated 工厂模式，把三个独立产品放入隔离工作区。日常新建/修改项目的默认模式不同：在会话选定根目录运行 init，或用 --project 指定可读项目目录；已有项目不复制成另一份 UUID 工程。
+
 ## 1. 控制项目与三个需求
 
 ```sh
-apphx init --framework flutter --platform ios --package-target simulator
+apphx init --isolated --framework flutter --platform ios --package-target simulator
 # 按项目校准 factory.json：真实验收命令、allowLocalExecution 等（见 Skill/README）
 apphx doctor
 ```
@@ -46,9 +48,9 @@ loop:
   host + turn.kind=plan → 模型调查后生成依赖/角色/读写范围/验收 DAG → complete <id> <turn> plan.json
   host + turn.kind=node → 按唯一节点 packet 派工 → complete <id> <turn> node-result.json
   host 无 kind → 仅旧静态配置按原阶段协议处理
-  step → 继续 drive（本轮确定性步骤已执行）；built → notify --any
+  step → 继续 drive（本轮确定性步骤已执行）；built → 查看宿主通知包
   wait 且仍有本会话 worker → 收集结果、complete，再 drive；没有 owned work 才按 nextDueAt 退出
-  done → 读 summary 做终局审计，report 每个 built 作业并 notify --any
+  done → 读 summary 做终局审计，report 每个 built 作业；仅在有 owner 目标和宿主连接器时领取并执行通知
 ```
 
 ## 3. 逐轮示意
@@ -70,7 +72,7 @@ loop:
     模型规划只读、fresh 的 review DAG；final 汇总逐项产品证据，不能复用失效的验证或回执。
 
 #5  drive → step（package）→ built + artifact kind/path/digest
-    report 收集需求 checklist、节点结果和历史；notify …01 仅对门禁通过的作业发信。
+    report 收集需求 checklist、节点结果和历史；notify …01 只列通知包，由获准宿主连接器发送并记录回执。
 
 #6  同一队列继续 …02、…03；P0 的 live 节点不会阻塞其他 eligible 作业。
     wait 时仍有 owned worker 就先收集它们，不能重复派发同一个显式 next token。
@@ -110,7 +112,7 @@ cron/Hermes 每次唤醒只注入这一段，不带任何任务细节（job id�
 ```text
 在控制项目目录循环执行 apphx drive --once --config factory.json --build-only：
 host → 按 turn.kind 处理模型计划或唯一节点，以严格 JSON 完成对应 token；无 kind 的旧配置按原阶段处理；
-step → 再 drive；built → report 与 notify --any；
+step → 再 drive；built → report 并检查 notify --any，按授权领取、调用宿主工具、回写结果；
 wait → 先收集、完成本会话仍在运行的 worker 并继续 drive；只有没有 owned work 时才按 nextDueAt 安排唤醒并退出；
 done → 读 summary 审计 built/failed/needs-owner，汇报后退出。不得把 blocked/waiting/running 当成完成。
 ```
@@ -120,23 +122,20 @@ cron 模板要求其 `PATH` 中有支持 `flock -n <file> <command>` 的可执�
 同一状态目录、同一宿主共用锁，执行结束或进程退出后释放。路径及提示词按各格式语法转义，勿手工删掉转义或引号。
 
 
-`factory.json` 中的邮件配置（密码只在发送时从环境变量读取，不落盘、不打日志）：
+`factory.json` 只保存所有者批准的通知目的地；凭据和连接器属于宿主。以下目标值是配置示例，必须替换成实际已授权的收件人/频道：
 
-```jsonc
+```json
 {
-  "notify": {
-    "email": {
-      "from": "factory@example.org",
-      "to": "author@example.org",      // 默认收件人；需求里 authorEmail 可覆盖
-      "smtpHost": "smtp.example.org",
-      "smtpPort": 465,
-      "secure": true,
-      "user": "factory@example.org",
-      "passwordEnv": "SMTP_PASSWORD"   // 环境变量名，不是密码本身
-    }
+  "notifications": {
+    "targets": [
+      { "id": "owner-mail", "channel": "email", "destination": "owner@example.invalid" },
+      { "id": "build-channel", "channel": "slack", "destination": "OWNER_APPROVED_CHANNEL_ID" }
+    ]
   }
 }
 ```
+
+`apphx notify --any` 不发送。宿主先 `notify claim JOB_ID TARGET_ID`，再使用已接入的工具，并用 `notify complete JOB_ID CLAIM_ID result.json` 保存真实 provider/messageId。没有配置目标就仅在当前会话交付；缺能力或确认未发送记 failed，结果不明记 unknown，外部协调后才可 reconcile。通知失败不改变 built。需求中的 authorEmail 不授予外发权限，上传源码/产物另需批准。
 
 ## 6. 边界
 

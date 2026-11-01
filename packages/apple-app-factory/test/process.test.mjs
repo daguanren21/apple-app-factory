@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { run, processGroupAlive, inspectProcessGroup, signalOwnedProcessGroup } from '../dist/process.js';
+import { run, processGroupAlive, inspectProcessGroup, signalOwnedProcessGroup } from '../dist/execution/process.js';
 
 const posix = { skip: process.platform === 'win32', timeout: 15000 };
 
@@ -150,8 +152,46 @@ test('tracked exec resolves PATH relative to cwd and preserves executable failur
   await assert.rejects(f.start([missingInterpreter]).promise, error => error.code === 'ENOENT' && error.syscall === `spawn ${missingInterpreter}`);
   const invalidExecutable = join(f.root, 'invalid-executable');
   writeFileSync(invalidExecutable, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0]), { mode: 0o700 });
-  const outcome = promise => promise.then(result => ({ result }), error => ({ error: { code: error.code, errno: error.errno, syscall: error.syscall, path: error.path, spawnargs: error.spawnargs } }));
+  const outcome = promise => promise.then(result => ({ result }), error => ({ error: { message: error.message, code: error.code, errno: error.errno, syscall: error.syscall, path: error.path, spawnargs: error.spawnargs } }));
   assert.deepEqual(await outcome(f.start([invalidExecutable]).promise), await outcome(run([invalidExecutable], { timeoutMs: 5000 })));
+});
+
+test('startup errors let the trusted bootstrap exit before group cleanup', posix, async t => {
+  const f = fixture(t), missing = join(f.root, 'missing'), preload = join(f.root, 'exit-gate.cjs');
+  // Gate the real bootstrap's error-send completion, not its native payload spawn.
+  writeFileSync(preload, `const send = process.send.bind(process);
+process.send = (message, callback) => {
+  process.once('message', () => callback());
+  return send(message);
+};
+`);
+  const originalSpawn = childProcess.spawn, originalKill = process.kill;
+  const signals = [];
+  let bootstrap, exit;
+  childProcess.spawn = (executable, args, options) => {
+    const child = originalSpawn(executable, ['--require', preload, ...args], options);
+    bootstrap = child;
+    exit = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+    child.once('message', () => setImmediate(() => {
+      if (child.connected) child.send({ releaseStartupError: true }, () => {});
+    }));
+    return child;
+  };
+  process.kill = (pid, signal) => {
+    if (pid === -bootstrap?.pid && signal !== 0) signals.push(signal);
+    return originalKill(pid, signal);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.start([missing]).promise, error => error.code === 'ENOENT' && error.path === missing);
+    assert.deepEqual(signals, [], 'A startup-error report must not terminate the exiting bootstrap');
+    assert.deepEqual(await exit, { code: 1, signal: null });
+    assert.equal(processGroupAlive(bootstrap.pid), false);
+  } finally {
+    childProcess.spawn = originalSpawn;
+    process.kill = originalKill;
+    syncBuiltinESMExports();
+  }
 });
 
 test('supervised and untracked commands do not depend on optional execve support', { timeout: 10000 }, async t => {

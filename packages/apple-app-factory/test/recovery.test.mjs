@@ -6,11 +6,11 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Store } from '../dist/store.js';
-import { run, processGroupAlive, signalOwnedProcessGroup } from '../dist/process.js';
+import { Store } from '../dist/state/store.js';
+import { run, processGroupAlive, signalOwnedProcessGroup } from '../dist/execution/process.js';
 
-const processModule = new URL('../dist/process.js', import.meta.url).href;
-const storeModule = new URL('../dist/store.js', import.meta.url).href;
+const processModule = new URL('../dist/execution/process.js', import.meta.url).href;
+const storeModule = new URL('../dist/state/store.js', import.meta.url).href;
 const posix = { skip: process.platform === 'win32', timeout: 15000 };
 
 async function until(action, timeoutMs = 7000) {
@@ -25,7 +25,7 @@ async function until(action, timeoutMs = 7000) {
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-recovery-'));
-  const config = { stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator', pollMs: 25, verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } };
+  const config = { projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator', pollMs: 25, verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } }
   const stores = [], workers = [], groups = new Map(), pending = [];
   t.after(async () => {
     for (const worker of workers) {

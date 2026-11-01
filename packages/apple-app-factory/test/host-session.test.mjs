@@ -4,9 +4,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inspectProcess, processIsAlive } from '../dist/process.js';
+import { inspectProcess, processIsAlive } from '../dist/execution/process.js';
 
-const hostModule = new URL('../dist/host-session.js', import.meta.url).href;
+const hostModule = new URL('../dist/hosts/session.js', import.meta.url).href;
 const posix = { skip: !['darwin', 'linux'].includes(process.platform), timeout: 30000 };
 
 function fixture(t) {

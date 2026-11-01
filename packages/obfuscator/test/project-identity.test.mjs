@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { walkProject } from '../dist/common.js';
+import { walkProject } from '../dist/core/common.js';
 import {
   createMissImageName,
   getIdDestinationMissName,
@@ -17,7 +17,7 @@ import {
   replaceImageNameLine,
   replaceProjectNameInLine,
   replaceStringKeywords,
-} from '../dist/project-identity.js';
+} from '../dist/transforms/project/identity.js';
 
 function tempProject(t, files) {
   const root = mkdtempSync(join(tmpdir(), 'obfuscator-identity-'));

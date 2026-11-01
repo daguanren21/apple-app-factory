@@ -1,6 +1,6 @@
 {
-  "stateDir": ".factory",
-  "workspaceRoot": "workspaces",
+  "projectMode": "project",
+  "projectRoot": "/absolute/path/to/existing-repository",
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "aab",

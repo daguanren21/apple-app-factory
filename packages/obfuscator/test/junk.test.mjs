@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { walkProject } from '../dist/common.js';
+import { walkProject } from '../dist/core/common.js';
 import {
   cleanUnusedResources,
   createJunkFiles,
@@ -24,7 +24,7 @@ import {
   objcGetMissObjName,
   resourceNameFromPath,
   swiftGetMissObjName,
-} from '../dist/junk.js';
+} from '../dist/transforms/code/junk.js';
 
 function tempProject(t, files) {
   const root = mkdtempSync(join(tmpdir(), 'obfuscator-junk-'));

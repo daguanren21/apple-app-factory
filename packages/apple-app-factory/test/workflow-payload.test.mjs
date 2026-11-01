@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
-import { MAX_INPUT_BYTES } from '../dist/input-limits.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { MAX_INPUT_BYTES } from '../dist/contracts/input-limits.js';
 
 const plan = (id, acceptance = ['Fixture inspected']) => ({ rationale: 'One bounded node before the policy checkpoint', nodes: [{ id, role: id, instructions: 'Inspect the controlled fixture', acceptance, fresh: true }], final: id });
 const passed = (acceptance, result) => ({ outcome: 'passed', summary: 'Controlled contract fixture', evidence: acceptance.map(requirement => ({ requirement, evidence: 'x' })), ...(result === undefined ? {} : { result }) });
@@ -15,7 +15,7 @@ const passed = (acceptance, result) => ({ outcome: 'passed', summary: 'Controlle
 test('final review plan admission counts combined node and immutable product evidence before consuming its token', async t => {
   const root = mkdtempSync(join(tmpdir(), 'apphx-combined-payload-'));
   const check = [process.execPath, '-e', 'require("node:assert/strict").equal(require("node:fs").readFileSync("main.dart","utf8"),"void main() {}")'];
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'work'), packageTarget: 'simulator', allowLocalExecution: true,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'work'), packageTarget: 'simulator', allowLocalExecution: true,
     workflow: { maxReplans: 0 }, maxHostTurns: 6, verification: { checks: [check], runtime: [check] } });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });

@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { Store } from '../dist/store.js';
-import { loadConfig } from '../dist/config.js';
-import { inspectProcess } from '../dist/process.js';
+import { Store } from '../dist/state/store.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { inspectProcess } from '../dist/execution/process.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const product = {
@@ -22,8 +22,8 @@ function fixture(t, overrides = {}) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const configPath = join(root, 'factory.json');
   const f = { root, configPath };
-  ok(f, 'init');
-  changeConfig(f, { retryDelayMs: 1, ...overrides });
+  ok(f, 'init', '--project', root, '--isolated');
+  changeConfig(f, { stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), uiQuality: false, retryDelayMs: 1, ...overrides });
   return f;
 }
 
@@ -134,7 +134,7 @@ test('new init defaults to a persisted native planner without granting execution
   const inspected = ok(f, 'next', id);
   assert.equal(inspected.turn.id, planner.turn.id);
   assert.equal(status(f, id).hostTurns, 1);
-  const duplicateInit = spawnSync(process.execPath, [cli, 'init', '--config', f.configPath], { encoding: 'utf8' });
+  const duplicateInit = spawnSync(process.execPath, [cli, 'init', '--project', f.root, '--isolated', '--config', f.configPath], { encoding: 'utf8' });
   assert.notEqual(duplicateInit.status, 0);
   assert.equal(readFileSync(f.configPath, 'utf8'), configBytes);
 });

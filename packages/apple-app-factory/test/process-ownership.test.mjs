@@ -5,8 +5,8 @@ import fs, { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../dist/store.js';
-import { inspectProcess, processIsAlive } from '../dist/process.js';
+import { Store } from '../dist/state/store.js';
+import { inspectProcess, processIsAlive } from '../dist/execution/process.js';
 
 const posix = { skip: process.platform !== 'linux' && process.platform !== 'darwin', timeout: 15000 };
 

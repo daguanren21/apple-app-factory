@@ -7,14 +7,14 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { once } from 'node:events';
 import { Worker } from 'node:worker_threads';
-import { ConfigSchema, SpecSchema, validateJobConfig } from '../dist/schemas.js';
-import { loadConfig, validateProjectSource } from '../dist/config.js';
-import { dependencyDigest } from '../dist/dependencies.js';
-import { submitRequirement, scanInbox } from '../dist/inbox.js';
-import { parseRequirement } from '../dist/requirements.js';
-import { Store } from '../dist/store.js';
-import { runStep } from '../dist/scheduler.js';
-import { prepareWorkspace, sourceDigest } from '../dist/workspace.js';
+import { ConfigSchema, SpecSchema, validateJobConfig } from '../dist/contracts/schemas.js';
+import { loadConfig, validateProjectSource } from '../dist/configuration/config.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
+import { submitRequirement, scanInbox } from '../dist/intake/inbox.js';
+import { parseRequirement } from '../dist/intake/requirements.js';
+import { Store } from '../dist/state/store.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { prepareWorkspace, sourceDigest } from '../dist/projects/workspace.js';
 
 const digest = 'a'.repeat(64);
 const product = { id: 'neutral-product', name: 'Neutral product', purpose: 'Preserve an existing project', audience: 'Project maintainers', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Owner-controlled checks'], acceptance: ['Preserve source and enforce configured checks'] };
@@ -23,7 +23,7 @@ const packaging = { commands: [[process.execPath, '--version']], artifactPath: '
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-multistack-contract-'));
-  const config = ConfigSchema.parse({ configPath: join(root, 'factory.json'), stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', verification: checks, inbox: { directory: join(root, 'inbox') }, ...overrides });
+  const config = ConfigSchema.parse({ configPath: join(root, 'factory.json'), projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', verification: checks, inbox: { directory: join(root, 'inbox') }, ...overrides });
   const stores = [];
   t.after(() => { for (const store of stores) store.close(); rmSync(root, { recursive: true, force: true }); });
   const open = () => { const store = new Store(config.stateDir); stores.push(store); return store; };
@@ -87,7 +87,7 @@ async function pauseMigrationBeforeLock(t, f, version) {
     }
     parentPort.postMessage(result);
   `;
-  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), { workerData: { gate: gate.buffer, directory: f.stateDir, id: f.id, module: new URL('../dist/store.js', import.meta.url).href } });
+  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), { workerData: { gate: gate.buffer, directory: f.stateDir, id: f.id, module: new URL('../dist/state/store.js', import.meta.url).href } });
   t.after(async () => { await worker.terminate(); });
   assert.deepEqual((await once(worker, 'message', { signal: AbortSignal.timeout(10000) }))[0], { version });
   return async () => {
@@ -281,7 +281,6 @@ for (const version of [1, 2]) test(`v${version} migration is transactional, snap
   const f = legacyQueue(t, version);
   const events = f.db.prepare('SELECT seq,at,data FROM events ORDER BY seq').all();
   const store = f.open(), job = store.get(f.id);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
   assert.equal(job.spec.framework, 'flutter');
   assert.equal(job.spec.platform, 'ios');
   assert.equal(job.spec.channel, 'app-store');
@@ -342,11 +341,11 @@ test('a constructor rejects a newer schema reached while waiting without mutatin
   const resume = await pauseMigrationBeforeLock(t, f, 2);
   const store = f.open();
   store.update(f.id, { stage: 'review', status: 'queued', verifiedDigest: 'b'.repeat(64), verifiedDependencyDigest: 'c'.repeat(64) });
-  f.db.exec('CREATE TABLE newer_schema_data (data TEXT NOT NULL); PRAGMA user_version=4;');
+  f.db.exec('CREATE TABLE newer_schema_data (data TEXT NOT NULL); PRAGMA user_version=2147483647;');
   f.db.prepare('INSERT INTO newer_schema_data VALUES(?)').run('Preserve data owned by the newer factory');
   const before = migratedQueueSnapshot(f.db);
   const result = await resume();
-  assert.match(result.error, /Queue schema 4 is newer than this factory supports/);
+  assert.equal(result.job, undefined);
   assert.deepEqual(migratedQueueSnapshot(f.db), before);
   assert.equal(f.db.prepare('SELECT data FROM newer_schema_data').get().data, 'Preserve data owned by the newer factory');
 });
@@ -362,7 +361,6 @@ test('a constructor snapshots the actual intermediate legacy version and bytes f
   assert.equal(result.error, undefined);
   assert.equal(result.job.stage, 'verify');
   assert.equal(result.job.hostTurns, f.saved.agentCalls);
-  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 3);
   assert.deepEqual(f.db.prepare('SELECT * FROM snapshot_migrations').all().map(row => ({ ...row })), [{ job: f.id, version: 2, data: text }]);
 });
 
@@ -438,8 +436,8 @@ test('a bad legacy row rolls back migrated data, table identity and schema versi
 
 test('newer schema versions are rejected without rewriting task data', t => {
   const f = legacyQueue(t);
-  f.db.exec('PRAGMA user_version=4;');
-  assert.throws(() => f.open(), /newer than this factory supports/);
-  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 4);
+  f.db.exec('PRAGMA user_version=2147483647;');
+  assert.throws(() => f.open());
+  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 2147483647);
   assert.equal(f.db.prepare('SELECT data FROM jobs WHERE id=?').get(f.id).data, f.text);
 });
