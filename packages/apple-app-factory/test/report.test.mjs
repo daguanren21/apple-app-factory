@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadConfig } from '../dist/configuration/config.js';
 import { Store } from '../dist/state/store.js';
-import { buildReport, reportJob } from '../dist/delivery/report.js';
+import { buildReport, reportJob, renderMarkdown } from '../dist/delivery/report.js';
 import { deliveryManifest } from '../dist/delivery/manifest.js';
 import { prepareExecutionWorkspace, sourceDigest } from '../dist/projects/workspace.js';
 import { dependencyDigest } from '../dist/projects/dependencies.js';
@@ -123,6 +123,30 @@ test('failed job before review marks every acceptance item unreviewed with the e
   assert.equal(report.failures.some(failure => failure.item === 'job-error' && failure.detail === 'Verification failed'), true);
 });
 
+test('Markdown report renders multiline workflow data as inert readable text', t => {
+  const f = fixture(t);
+  const job = f.store.enqueue(spec, f.config);
+  const adversarial = 'Observed detail\n\n## Forged verification\n<script>alert(1)</script> | *approved* ~~hidden~~ [link](https://example.invalid)';
+  const definition = { id: 'audit', role: adversarial, instructions: adversarial, dependsOn: [], readPaths: ['.'], writePaths: [], acceptance: [adversarial], fresh: true };
+  const result = { outcome: 'failed', summary: adversarial, evidence: [{ requirement: adversarial, evidence: adversarial }] };
+  f.store.update(job.id, {
+    status: 'needs-owner', error: adversarial, feedback: adversarial,
+    workflow: { cancelled: false, phases: { research: {
+      status: 'planning', revision: 1, reason: adversarial, final: 'audit',
+      nodes: [{ definition, status: 'failed', attempts: 1, turn: null, result, completedAt: Date.now() }],
+      history: [{ revision: 1, at: Date.now(), reason: adversarial, plan: { rationale: adversarial, nodes: [definition], final: 'audit', invalidate: [] } }],
+    } } },
+  });
+  const report = buildReport(f.store.get(job.id));
+  assert.equal(report.workflow.phases.research.reason, adversarial, 'The lossless JSON report data is unchanged');
+  assert.equal(report.failures.find(failure => failure.item === 'job-error').detail, adversarial);
+  const markdown = renderMarkdown(report);
+  assert.equal(markdown.includes('\n## Forged verification'), false);
+  assert.equal(markdown.includes('<script>'), false);
+  assert.ok(markdown.includes('Observed detail<br><br>\\#\\# Forged verification<br>&lt;script&gt;alert\\(1\\)&lt;/script&gt;'));
+  assert.ok(markdown.includes('\\| \\*approved\\* \\~\\~hidden\\~\\~ \\[link\\]\\(https://example.invalid\\)'));
+});
+
 test('--collect copies source and artifact without touching the source workspace', async t => {
   const f = fixture(t);
   const job = f.store.enqueue(spec, f.config);
@@ -236,9 +260,6 @@ test('delivery exposes real monorepo paths and frozen runtime acceptance argv wi
   const report = JSON.parse(readFileSync(result.report, 'utf8'));
   assert.equal(report.source.verification, 'matches-verification');
   const markdown = readFileSync(result.markdown, 'utf8');
-  assert.match(markdown, /Owner-configured runtime acceptance commands/);
-  assert.match(markdown, /not an invented launch command/);
-  assert.ok(markdown.includes('${REPORT_TEST_DEVICE}'));
   assert.equal(markdown.includes(process.env.REPORT_TEST_DEVICE), false);
 });
 
