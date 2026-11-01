@@ -498,14 +498,14 @@ async function main(): Promise<void> {
       arity(args, 1, 1, 'report <id> [--out <dir>] [--collect] [--build-only] [--config <file>]');
       print(reportJob(store, args[0], { out: values.out, collect: values.collect, buildOnly, config }));
     } else if (command === 'next') {
-      const { ownerPid, ownerIdentity } = resolveHostOwner(values['host-pid']);
+      const resolveOwner = () => resolveHostOwner(values['host-pid']);
       if (values.any) {
         arity(args, 0, 0, 'next --any');
-        const result = await nextQueueTurn(store, { buildOnly, ownerPid, ownerIdentity });
+        const result = await nextQueueTurn(store, { buildOnly, resolveOwner });
         print('job' in result ? hostActionTransport(result) : result);
       } else {
         arity(args, 1, 1, 'next <id>');
-        const result = await nextTurn(store, args[0], { buildOnly, ownerPid, ownerIdentity });
+        const result = await nextTurn(store, args[0], { buildOnly, resolveOwner });
         print(hostActionTransport(result));
         if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
@@ -513,15 +513,15 @@ async function main(): Promise<void> {
       arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--host-pid <pid>] [--build-only] [--config <file>]');
       const maxRounds = values['max-rounds'] === undefined ? undefined : Number(values['max-rounds']);
       if (maxRounds !== undefined && (!Number.isSafeInteger(maxRounds) || maxRounds <= 0)) throw new Error('--max-rounds must be a positive integer');
-      const { ownerPid, ownerIdentity } = resolveHostOwner(values['host-pid']);
+      const resolveOwner = () => resolveHostOwner(values['host-pid']);
       const controller = new AbortController();
       const stop = (): void => controller.abort();
       process.on('SIGINT', stop);
       process.on('SIGTERM', stop);
       try {
-        const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid, ownerIdentity, signal: controller.signal });
+        const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, resolveOwner, signal: controller.signal });
         print(result);
-        if (values.strict && result.failed?.length) process.exitCode = 2;
+        if (values.strict && (result.failed?.length || result.omitted?.failed)) process.exitCode = 2;
       } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
     } else if (command === 'complete') {
       arity(args, 2, 3, 'complete <id> <turn-id> [result.json|-]');

@@ -95,7 +95,8 @@ for (const [framework, platform, target] of profiles) {
     const configPath = join(f.root, 'factory.json');
     writeFileSync(configPath, JSON.stringify(f.config));
     async function invoke(args, value) {
-      const result = await run([process.execPath, cli, ...args, '--config', configPath], { input: value === undefined ? undefined : JSON.stringify(value) });
+      const owner = args[0] === 'next' ? ['--host-pid', String(process.pid)] : [];
+      const result = await run([process.execPath, cli, ...args, ...owner, '--config', configPath], { input: value === undefined ? undefined : JSON.stringify(value) });
       assert.equal(result.code, 0, result.stderr || result.stdout);
       return JSON.parse(result.stdout);
     }

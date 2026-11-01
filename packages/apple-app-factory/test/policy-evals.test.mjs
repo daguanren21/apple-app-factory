@@ -36,7 +36,7 @@ function complete(root, job, value, expectedStatus = 0) {
   return result;
 }
 function next(root) {
-  const result = runHost(root, 'next');
+  const result = runHost(root, 'next', ['--host-pid', String(process.pid)]);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return JSON.parse(result.stdout);
 }

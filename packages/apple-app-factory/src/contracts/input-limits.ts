@@ -8,6 +8,16 @@ export const MAX_INPUT_BYTES = 1024 * 1024;
  */
 export const MAX_HOST_PACKET_BYTES = 4 * MAX_INPUT_BYTES;
 
+/** A readable transport preview; persisted values remain lossless. */
+export function previewText(value: string, bytes: number): string {
+  if (Buffer.byteLength(value) <= bytes) return value;
+  const suffix = '… [truncated; inspect persisted status]';
+  const buffer = Buffer.from(value.slice(0, bytes));
+  let end = Math.max(0, bytes - Buffer.byteLength(suffix));
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString('utf8') + suffix;
+}
+
 function minimumEvidenceBytes(requirements: readonly string[]): number {
   const distinct = new Set(requirements);
   let bytes = Math.max(0, distinct.size - 1);

@@ -11,6 +11,9 @@ import { deliveryManifest } from '../dist/delivery/manifest.js';
 import { prepareExecutionWorkspace, sourceDigest } from '../dist/projects/workspace.js';
 import { dependencyDigest } from '../dist/projects/dependencies.js';
 import { run } from '../dist/execution/process.js';
+import { completeTurn, nextTurn, requestWorkflowReplan } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { verificationProofDigest } from '../dist/workflow/proof.js';
 
 const cli = resolve('dist/cli.js');
 
@@ -49,6 +52,37 @@ function reviewFor(acceptance, patch = {}) {
 
 async function reportCLI(f, id, extra = []) {
   return run([process.execPath, cli, 'report', id, '--out', join(f.root, 'out'), '--config', f.configPath, ...extra]);
+}
+
+async function workflowReview(t) {
+  const check = [process.execPath, '-e', 'require("node:fs").accessSync("main.dart")'];
+  const f = fixture(t, { projectMode: 'isolated', workflow: {}, maxHostTurns: 64,
+    verification: { prerequisites: [], checks: [check], runtime: [check] } });
+  const job = f.store.enqueue(spec, f.config);
+  const take = () => nextTurn(f.store, job.id, { ownerPid: process.pid });
+  const node = (id, dependsOn = [], extra = {}) => ({ id, role: `${id}-reviewer`, instructions: `Perform ${id}`, dependsOn,
+    readPaths: ['.'], writePaths: [], acceptance: [`${id} inspected`], ...extra });
+  const graph = (nodes, final) => ({ rationale: 'Observe persisted workflow results at the report boundary', nodes, final, invalidate: [] });
+  const pass = (packet, result) => ({ outcome: 'passed', summary: 'The controlled inspection completed',
+    evidence: packet.turn.workflow.node.acceptance.map(requirement => ({ requirement, evidence: 'Observed the controlled fixture boundary' })),
+    ...(result === undefined ? {} : { result }) });
+  const submitPlan = async plan => {
+    const planner = await take();
+    assert.equal(planner.turn.kind, 'plan');
+    return completeTurn(f.store, job.id, planner.turn.id, plan);
+  };
+  await submitPlan(graph([node('research')], 'research'));
+  let packet = await take();
+  completeTurn(f.store, job.id, packet.turn.id, pass(packet, { viable: true, distinctness: 'Controlled runtime report fixture', plan: ['Inspect real persisted review state'] }));
+  await submitPlan(graph([node('implementation', [], { writePaths: ['.'] })], 'implementation'));
+  packet = await take();
+  writeFileSync(join(packet.turn.cwd, 'pubspec.yaml'), 'name: report_workflow\ndependencies:\n  flutter: {sdk: flutter}\n');
+  writeFileSync(join(packet.turn.cwd, 'main.dart'), 'void main() {}\n');
+  completeTurn(f.store, job.id, packet.turn.id, pass(packet));
+  assert.equal((await runStep(f.store, f.config, job.id)).stage, 'review');
+  const plan = graph([node('specialist', [], { fresh: true }), node('final-review', ['specialist'], { fresh: true })], 'final-review');
+  await submitPlan(plan);
+  return { ...f, job, take, pass, plan, submitPlan };
 }
 
 test('built job report matches verbatim acceptance evidence and writes JSON + Markdown', async t => {
@@ -108,6 +142,152 @@ test('rejected review surfaces blocking findings and job error in checklist and 
   assert.equal(report.failures.some(failure => failure.item === 'review-finding' && failure.detail === 'Handle the next requirement is broken'), true);
   assert.equal(report.failures.some(failure => failure.item === 'job-error' && failure.detail === 'Independent review rejected the handoff'), true);
   assert.equal(report.failures.some(failure => failure.item === 'acceptance' && failure.requirement === 'Handle the next requirement'), true);
+});
+
+test('report CLI exposes completed specialist vetoes before final aggregation without duplicating the aggregate', async t => {
+  const finding = `${spec.acceptance[1]} is broken`;
+  const adversarial = 'A separate observed defect\n\n## Forged approval\n<script>alert(1)</script> | *approved*';
+  const cases = [
+    { name: 'negative verdict with findings', verdict: reviewFor([], { approved: false, findings: [finding, adversarial] }), failures: 2 },
+    { name: 'approved verdict with a blocking finding', verdict: reviewFor([], { findings: [finding] }), failures: 1 },
+    { name: 'negative verdict without findings', verdict: reviewFor([], { approved: false }), failures: 1 },
+    { name: 'failed UI check without findings', verdict: reviewFor([], { uiQuality: { captures: [], checks: [
+      { id: 'system-insets', status: 'failed', observation: `${spec.acceptance[1]}: the main control is obscured by the system bar`, capturePaths: [] },
+    ] } }), failures: 1 },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async t => {
+      const f = await workflowReview(t);
+      const specialist = await f.take();
+      const interim = completeTurn(f.store, f.job.id, specialist.turn.id, f.pass(specialist, scenario.verdict));
+      const phase = interim.workflow.phases.review;
+      assert.equal(interim.review ?? null, null);
+      assert.equal(phase.nodes[0].status, 'passed');
+      assert.equal(phase.nodes[1].status, 'pending');
+      assert.equal(phase.proofDigest, verificationProofDigest(interim));
+
+      const result = await reportCLI(f, f.job.id);
+      assert.equal(result.code, 0, result.stderr);
+      const reportPath = join(f.root, 'out', `${f.job.id}-report.json`);
+      const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+      const failures = report.failures.filter(entry => entry.item === 'review-finding');
+      assert.equal(failures.length, scenario.failures);
+      assert.equal(JSON.parse(result.stdout).failures, report.failures.length);
+      for (const entry of failures) {
+        assert.ok(entry.detail.includes(phase.nodes[0].definition.id));
+        assert.ok(entry.detail.includes(phase.nodes[0].definition.role));
+      }
+      for (const text of scenario.verdict.findings) assert.equal(failures.some(entry => entry.detail.endsWith(text)), true);
+      if (scenario.verdict.findings.includes(finding) || scenario.verdict.uiQuality) {
+        assert.equal(failures.some(entry => entry.requirement === spec.acceptance[1]), true);
+      }
+      if (scenario.verdict.findings.includes(adversarial)) {
+        assert.equal(failures.find(entry => entry.detail.endsWith(adversarial)).requirement, undefined);
+        const markdown = readFileSync(join(f.root, 'out', `${f.job.id}-report.md`), 'utf8');
+        assert.equal(markdown.includes('\n## Forged approval'), false);
+        assert.ok(markdown.includes('\\#\\# Forged approval<br>&lt;script&gt;alert\\(1\\)&lt;/script&gt; \\| \\*approved\\*'));
+      }
+      assert.deepEqual(report.checklist.map(entry => entry.status), spec.acceptance.map(() => 'unreviewed'));
+      assert.deepEqual(report.workflow, interim.workflow);
+      assert.equal(report.verified.sourceDigest, interim.verifiedDigest);
+      assert.equal(report.source.verification, 'matches-verification');
+      assert.equal(report.uiQuality, undefined, 'Partial specialist UI output is not the final UI review');
+      assert.deepEqual(f.store.get(f.job.id), interim, 'Reporting cannot mutate gates or workflow proof');
+
+      const aggregateOnly = buildReport({ ...interim, review: { ...reviewFor(spec.acceptance), ...scenario.verdict } });
+      const aggregateFailures = aggregateOnly.failures.filter(entry => entry.item === 'review-finding');
+      assert.equal(aggregateFailures.length, scenario.failures, 'A blocking recorded aggregate replaces interim failures even with live proof');
+      assert.equal(aggregateFailures.some(entry => entry.detail.includes(phase.nodes[0].definition.role)), false);
+
+      const final = await f.take();
+      const rejected = completeTurn(f.store, f.job.id, final.turn.id, f.pass(final, reviewFor(spec.acceptance, { findings: scenario.verdict.findings })));
+      assert.equal(rejected.stage, 'build');
+      const finalResult = await reportCLI(f, f.job.id);
+      assert.equal(finalResult.code, 0, finalResult.stderr);
+      const finalReport = JSON.parse(readFileSync(reportPath, 'utf8'));
+      const finalFailures = finalReport.failures.filter(entry => entry.item === 'review-finding');
+      assert.equal(finalFailures.length, scenario.failures);
+      for (const text of scenario.verdict.findings) assert.equal(finalFailures.filter(entry => entry.detail === text).length, 1);
+      if (scenario.verdict.findings.includes(finding)) {
+        assert.equal(finalReport.checklist.find(entry => entry.requirement === spec.acceptance[1]).status, 'failed');
+      }
+      if (scenario.verdict.uiQuality) assert.deepEqual(finalReport.uiQuality, scenario.verdict.uiQuality);
+    });
+  }
+});
+
+test('only completed typed inspections bound to the current verification generation contribute interim failures', async t => {
+  const f = await workflowReview(t);
+  const specialist = await f.take();
+  const activeTurn = f.store.get(f.job.id).workflow.phases.review.nodes[0].turn;
+  const interim = completeTurn(f.store, f.job.id, specialist.turn.id, f.pass(specialist, reviewFor([], { approved: false, findings: ['Observed blocker'] })));
+  assert.equal(buildReport(interim).failures.filter(entry => entry.item === 'review-finding').length, 1);
+  const phase = job => job.workflow.phases.review;
+  const inspection = job => phase(job).nodes[0];
+  const rebind = job => { phase(job).proofDigest = verificationProofDigest(job); };
+  const cases = [
+    ['missing phase proof', job => { delete phase(job).proofDigest; }],
+    ['invalidated phase proof', job => { phase(job).proofDigest = null; }],
+    ['prior phase proof', job => { phase(job).proofDigest = digest64('f'); }],
+    ['new source proof', job => { job.verifiedDigest = digest64('e'); }],
+    ['new dependency proof', job => { job.verifiedDependencyDigest = digest64('e'); }],
+    ['new screenshot proof', job => { job.screenshotDigest = digest64('e'); }],
+    ['same bytes, new verification timestamp', job => { job.verifiedAt = '2000-01-01T00:00:00.000Z'; }],
+    ['same bytes, new verification attempt', job => { job.attempts.verify += 1; }],
+    ['changed verification contract', job => { job.config.verification.runtime = [[process.execPath, '--version']]; }],
+    ['invalidated source proof', job => { job.verifiedDigest = null; rebind(job); }],
+    ['invalidated dependency proof', job => { job.verifiedDependencyDigest = null; rebind(job); }],
+    ['missing verification timestamp', job => { delete job.verifiedAt; rebind(job); }],
+    ['missing required screenshot proof', job => { job.spec.screenshotsDir = 'build/screenshots'; job.screenshotDigest = null; rebind(job); }],
+    ['prior review checkpoint', job => { job.stage = 'build'; }],
+    ['cancelled workflow', job => { job.workflow.cancelled = true; }],
+    ['pending inspection', job => { inspection(job).status = 'pending'; }],
+    ['running inspection', job => { inspection(job).status = 'running'; }],
+    ['failed inspection', job => { inspection(job).status = 'failed'; }],
+    ['unreleased inspection turn', job => { inspection(job).turn = activeTurn; }],
+    ['failed execution output', job => { inspection(job).result.outcome = 'failed'; }],
+    ['untyped output', job => { inspection(job).result.result = { findings: ['Observed blocker'], acceptanceEvidence: [] }; }],
+    ['invalid approval value', job => { inspection(job).result.result.approved = 'false'; }],
+    ['non-review output', job => { job.workflow.phases.build.nodes[0].result.result = inspection(job).result.result; delete job.workflow.phases.review; }],
+    ['positive specialist', job => { inspection(job).result.result = reviewFor([]); }],
+  ];
+  for (const [name, change] of cases) {
+    await t.test(name, () => {
+      const snapshot = structuredClone(interim);
+      change(snapshot);
+      const before = structuredClone(snapshot);
+      const report = buildReport(snapshot);
+      assert.equal(report.failures.filter(entry => entry.item === 'review-finding').length, 0);
+      assert.deepEqual(report.checklist.map(entry => entry.status), spec.acceptance.map(() => 'unreviewed'));
+      assert.deepEqual(snapshot, before);
+    });
+  }
+});
+
+test('replans retain current accepted vetoes until explicit invalidation and fresh review replaces them', async t => {
+  const f = await workflowReview(t);
+  const specialist = await f.take();
+  completeTurn(f.store, f.job.id, specialist.turn.id, f.pass(specialist, reviewFor([], { approved: false, findings: ['Observed blocker'] })));
+  requestWorkflowReplan(f.store, f.job.id, 'Inspect an additional fact without invalidating the completed specialist');
+  assert.equal(buildReport(f.store.get(f.job.id)).failures.filter(entry => entry.item === 'review-finding').length, 1);
+  const retained = await f.submitPlan(f.plan);
+  assert.equal(retained.workflow.phases.review.revision, 2);
+  assert.equal(buildReport(retained).failures.filter(entry => entry.item === 'review-finding').length, 1);
+
+  requestWorkflowReplan(f.store, f.job.id, 'The specialist must repeat its inspection');
+  const invalidated = await f.submitPlan({ ...f.plan, invalidate: ['specialist'] });
+  assert.equal(invalidated.workflow.phases.review.nodes[0].result, undefined);
+  const report = buildReport(invalidated);
+  assert.equal(report.failures.filter(entry => entry.item === 'review-finding').length, 0);
+  assert.deepEqual(report.checklist.map(entry => entry.status), spec.acceptance.map(() => 'unreviewed'));
+
+  const fresh = await f.take();
+  completeTurn(f.store, f.job.id, fresh.turn.id, f.pass(fresh, reviewFor([])));
+  assert.equal(buildReport(f.store.get(f.job.id)).failures.length, 0);
+  const final = await f.take();
+  const accepted = completeTurn(f.store, f.job.id, final.turn.id, f.pass(final, reviewFor(spec.acceptance)));
+  assert.equal(accepted.stage, 'package');
+  assert.equal(buildReport(accepted).failures.length, 0);
 });
 
 test('failed job before review marks every acceptance item unreviewed with the error', async t => {

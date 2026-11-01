@@ -10,8 +10,8 @@ export function runHost(caseDirectory, command, args = []) {
   const root = canonicalRoot(caseDirectory);
   const descriptor = json(ownedPath(root, 'control/host.json'));
   if (!['next', 'complete', 'step', 'status', 'events', 'abandon'].includes(command)) throw new Error('Allowed actions: next, complete, step, status, events, abandon');
-  const expected = command === 'complete' ? [1, 2] : command === 'abandon' ? [1] : [0];
-  if (!expected.includes(args.length)) throw new Error('complete requires TURN_ID [result.json]; abandon requires TURN_ID; other actions take no extra arguments');
+  const expected = command === 'complete' ? [1, 2] : command === 'abandon' ? [1] : command === 'next' ? [0, 2] : [0];
+  if (!expected.includes(args.length) || command === 'next' && args.length === 2 && args[0] !== '--host-pid') throw new Error('complete requires TURN_ID [result.json]; abandon requires TURN_ID; next accepts --host-pid CONTROLLER_PID; other actions take no extra arguments');
   let payload = null;
   const forwarded = [...args];
   if (command === 'complete' && args[1]) {

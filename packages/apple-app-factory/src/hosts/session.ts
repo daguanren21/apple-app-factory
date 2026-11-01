@@ -83,7 +83,7 @@ function processKind(info: ProcessInfo): 'host' | 'wrapper' | 'shell' | 'unknown
     // Node options and overwritten npm process titles are not proof of a wrapper.
     if (node && info.argv[1]?.startsWith('-') && info.argv.slice(2).some(value => managerName(value) || corepackEntrypoint(value))) return 'unknown';
     if (/^(?:pnpm|npm|npx|yarn|corepack)(?: |$)/.test(name)) return 'unknown';
-    return 'host';
+    return node ? 'unknown' : 'host';
   }
   const command = info.command;
   if (!command) return 'unknown';
@@ -104,11 +104,9 @@ function processKind(info: ProcessInfo): 'host' | 'wrapper' | 'shell' | 'unknown
         if (command.startsWith(prefix)) return rawExecution(manager, command.slice(prefix.length)) ? 'wrapper' : 'unknown';
       }
     }
-    // Only the executable/script position can identify a launcher. A stable Node
-    // host may mention pnpm in a test name or other argument without being pnpm.
-    const invocation = [executable, name].find(value => command.startsWith(`${value} `));
-    const remainder = invocation ? command.slice(invocation.length + 1) : command;
-    if (/^(?:[^\r\n]*\/)?(?:pnpm(?:-native|\.[cm]?js)?|npm(?:-cli\.js|\.mjs)?|npx(?:-cli\.js|\.mjs)?|yarn(?:pkg|(?:-\d[\w.-]*)?\.[cm]?js)?|corepack(?:\.[cm]?js)?)(?: |$)/.test(remainder)) return 'unknown';
+    // An arbitrary Node script can be a transient launcher. Its lifetime is
+    // not established by its executable name; require an explicit controller.
+    return 'unknown';
   }
   return 'host';
 }

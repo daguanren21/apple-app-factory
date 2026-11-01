@@ -27,9 +27,16 @@ function fixture(t, overrides = {}) {
   return f;
 }
 
+function cliEnvironment() {
+  const env = { ...process.env };
+  delete env.APPHX_HOST_PID;
+  return env;
+}
+
 function invoke(f, ...args) {
-  const result = spawnSync(process.execPath, [cli, ...args, '--config', f.configPath, '--build-only'], {
-    encoding: 'utf8', timeout: 30000,
+  const owner = ['next', 'drive'].includes(args[0]) && !args.includes('--host-pid') ? ['--host-pid', String(process.pid)] : [];
+  const result = spawnSync(process.execPath, [cli, ...args, ...owner, '--config', f.configPath, '--build-only'], {
+    encoding: 'utf8', timeout: 30000, env: cliEnvironment(),
   });
   assert.ifError(result.error);
   assert.equal(result.signal, null, result.stderr);
@@ -39,7 +46,7 @@ function invoke(f, ...args) {
 function ok(f, ...args) {
   // init deliberately does not accept --build-only.
   const result = args[0] === 'init'
-    ? spawnSync(process.execPath, [cli, ...args, '--config', f.configPath], { encoding: 'utf8', timeout: 30000 })
+    ? spawnSync(process.execPath, [cli, ...args, '--config', f.configPath], { encoding: 'utf8', timeout: 30000, env: cliEnvironment() })
     : invoke(f, ...args);
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -442,7 +449,11 @@ test('next/drive host-pid accepts only live ancestry and explicit flags override
   const f = fixture(t);
   const id = enqueue(f);
   rejectUnchanged(f, id, 'next', id, '--host-pid', '0');
-  rejectUnchanged(f, id, 'drive', '--once', '--host-pid', '1');
+  const beforeInvalidOwner = status(f, id);
+  const deferred = ok(f, 'drive', '--once', '--host-pid', '1');
+  assert.equal(deferred.action, 'wait');
+  assert.match(deferred.pendingErrors.find(error => error.id === id).error, /PID 1/);
+  assert.deepEqual(status(f, id), beforeInvalidOwner);
   const explicit = spawnSync(process.execPath, [cli, 'next', id, '--host-pid', String(process.pid), '--config', f.configPath], {
     env: { ...process.env, APPHX_HOST_PID: 'invalid' }, encoding: 'utf8', timeout: 30000,
   });
@@ -485,14 +496,16 @@ test('actual installed pnpm wrappers cannot orphan or replay concurrent native c
   assert.ifError(automatic.error);
   assert.equal(automatic.signal, null, automatic.stderr);
   let left;
-  if (automatic.status === 0) {
-    left = JSON.parse(automatic.stdout);
+  const automaticResult = automatic.status === 0 ? JSON.parse(automatic.stdout) : undefined;
+  if (automaticResult?.action === 'host') {
+    left = automaticResult;
     const owner = active(status(f, id)).find(node => node.turn.id === left.turn.id);
     assert.equal(owner.turn.ownerPid, process.pid, 'Automatic wrapper recognition must reach the persistent controller');
     assert.equal(owner.turn.ownerIdentity, inspectProcess(process.pid).identity);
   } else {
-    // Ambiguous launchers may refuse; they must never commit an ephemeral owner.
-    assert.match(automatic.stderr, /--host-pid/);
+    // An unrecognized Node controller requires an explicit PID; lazy drive
+    // reports that refusal in pendingErrors without creating an orphan claim.
+    assert.match(automaticResult?.pendingErrors?.[0]?.error ?? automatic.stderr, /--host-pid/);
     assert.deepEqual(status(f, id), before);
   }
   const claim = () => {

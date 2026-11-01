@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, opendirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { HostStageSchema, WorkflowPlanSchema } from '../contracts/schemas.js';
-import type { HostStage, Job, RoleSeat, WorkflowNode, WorkflowNodeState, WorkflowPhase } from '../contracts/schemas.js';
+import type { Config, HostStage, Job, RoleSeat, WorkflowNode, WorkflowNodeState, WorkflowPhase } from '../contracts/schemas.js';
 import { verificationProofDigest } from './proof.js';
 import { MAX_INPUT_BYTES, minimumNodeResultBytes, minimumReviewBytes } from '../contracts/input-limits.js';
 import { minimumUiQualityBytes } from '../contracts/ui-quality.js';
 
 const stages = HostStageSchema.options;
+const RESOURCE_SCAN_BUDGET = 4096;
 
 export function newWorkflowPhase(reason: string): WorkflowPhase {
   return { status: 'planning', revision: 0, reason, nodes: [], history: [] };
@@ -54,7 +55,7 @@ function seatMatches(seat: RoleSeat, node: WorkflowNode): boolean {
     && (!seat.fresh || node.fresh);
 }
 
-function validateSeats(seats: RoleSeat[], nodes: WorkflowNode[]): void {
+function validateSeats(seats: readonly RoleSeat[], nodes: readonly WorkflowNode[]): void {
   const assignments = new Map<number, number>();
   function assign(seatIndex: number, visited: Set<number>): boolean {
     for (let index = 0; index < nodes.length; index++) {
@@ -71,6 +72,12 @@ function validateSeats(seats: RoleSeat[], nodes: WorkflowNode[]): void {
   for (let index = 0; index < seats.length; index++) {
     if (!assign(index, new Set())) throw new Error('Workflow must include a distinct matching node for every owner-configured role seat and pin');
   }
+}
+
+export function validateWorkflowConstraints(config: Config, stage: HostStage, nodes: readonly WorkflowNode[]): void {
+  if (!config.workflow) throw new Error('Dynamic workflow is not configured for this job');
+  if (nodes.length > config.workflow.maxNodes) throw new Error('Workflow node limit reached');
+  validateSeats(config.roles?.[stage] ?? [], nodes);
 }
 
 export function workflowTurnBudget(job: Job, stage: HostStage): { consumed: number; remaining: number; reserved: number } {
@@ -93,7 +100,7 @@ export function applyWorkflowPlan(job: Job, stage: HostStage, input: unknown, no
   if (revision > limits.maxReplans + 1) throw new Error('Workflow replan limit reached');
   if (!Number.isFinite(now)) throw new Error('Workflow plan timestamp must be finite');
   const plan = WorkflowPlanSchema.parse(input);
-  if (plan.nodes.length > limits.maxNodes) throw new Error('Workflow node limit reached');
+  validateWorkflowConstraints(job.config, stage, plan.nodes);
   const definitions = validateGraph(plan.nodes, plan.final);
   for (const node of plan.nodes) {
     if (stage !== 'build' && node.writePaths.length) throw new Error(`${stage} workflow nodes must be read-only`);
@@ -104,7 +111,6 @@ export function applyWorkflowPlan(job: Job, stage: HostStage, input: unknown, no
     const minimumBytes = minimumNodeResultBytes(node.acceptance, resultBytes);
     if (minimumBytes > MAX_INPUT_BYTES) throw new Error(`Workflow node ${node.id} requires at least ${minimumBytes} completion bytes, exceeding the ${MAX_INPUT_BYTES}-byte input limit; revise the plan without weakening frozen product acceptance`);
   }
-  validateSeats(job.config.roles?.[stage] ?? [], plan.nodes);
 
   const previous = new Map(current.nodes.map(node => [node.definition.id, node]));
   for (const revision of current.history) {
@@ -185,9 +191,12 @@ function resourcePathOverlap(workspace?: string): (left: string, right: string) 
   // These observations live for one claim boundary only, never across workspace changes.
   const resources = new Map<string, PathResource | null>();
   const trees = new Map<string, Set<string> | null>();
+  // Count entry reads, including EOF, across every tree in this claim calculation.
+  let remainingScanReads = RESOURCE_SCAN_BUDGET;
   let root: string | undefined;
   function inspect(path: string): PathResource | null {
     if (resources.has(path)) return resources.get(path)!;
+    resources.set(path, null);
     let resource: PathResource | null = null;
     try {
       if (root === undefined) {
@@ -223,28 +232,34 @@ function resourcePathOverlap(workspace?: string): (left: string, right: string) 
   function descendants(resource: PathResource): Set<string> | null {
     const directory = resource.directory!;
     if (trees.has(directory)) return trees.get(directory)!;
+    // Partial observations can never establish independence, even on a later comparison.
+    trees.set(directory, null);
     const identities = new Set([resource.identity]);
     const directories = [directory];
     try {
       while (directories.length) {
+        if (!remainingScanReads) return null;
         const current = directories.pop()!;
-        for (const name of readdirSync(current)) {
-          const child = join(current, name);
-          const info = lstatSync(child, { bigint: true });
-          // Source proof rejects symlinks; do not traverse unknown trees to grant parallelism.
-          if (!info.isDirectory() && !info.isFile()) {
-            trees.set(directory, null);
-            return null;
+        const entries = opendirSync(current, { bufferSize: 32 });
+        try {
+          for (;;) {
+            if (!remainingScanReads) return null;
+            remainingScanReads--;
+            const entry = entries.readSync();
+            if (entry === null) break;
+            const child = join(current, entry.name);
+            const info = lstatSync(child, { bigint: true });
+            // Source proof rejects symlinks; do not traverse unknown trees to grant parallelism.
+            if (!info.isDirectory() && !info.isFile()) return null;
+            const identity = `${info.dev}:${info.ino}`;
+            if (info.isDirectory() && !identities.has(identity)) directories.push(child);
+            identities.add(identity);
           }
-          const identity = `${info.dev}:${info.ino}`;
-          if (info.isDirectory() && !identities.has(identity)) directories.push(child);
-          identities.add(identity);
-        }
+        } finally { entries.closeSync(); }
       }
       trees.set(directory, identities);
       return identities;
     } catch {
-      trees.set(directory, null);
       return null;
     }
   }

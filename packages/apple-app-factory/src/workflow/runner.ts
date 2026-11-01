@@ -22,11 +22,14 @@ import { validateMyGoPackaging, validateMyGoCommand } from '../contracts/mygo-bu
 import { invalidateVerification, verificationProofDigest } from './proof.js';
 import { scanInbox } from '../intake/inbox.js';
 import { prepareIsolatedCommand, type IsolatedCommand, type IsolationCapabilities } from '../execution/isolation.js';
-import { activeWorkflowNodes, applyWorkflowPlan, newWorkflowPhase, readyWorkflowNodes, workflowTurnBudget, workflowTurnDigest } from './graph.js';
+import { activeWorkflowNodes, applyWorkflowPlan, newWorkflowPhase, readyWorkflowNodes, workflowTurnBudget, workflowTurnDigest, validateWorkflowConstraints } from './graph.js';
 import { deliveryManifest, type DeliveryManifest } from '../delivery/manifest.js';
 import { listNotifications, type NotificationPacket } from '../delivery/notifications.js';
 import { combineUiQuality, uiQualityInstructions, validateUiQuality } from '../projects/ui-quality.js';
 import { MAX_HOST_PACKET_BYTES, MAX_INPUT_BYTES } from '../contracts/input-limits.js';
+import { boundedDriveResult, MAX_HOST_ACTION_BYTES } from './transport.js';
+
+const skillDiscoveryGuide = fileURLToPath(new URL('../../skills/apphx/resources/skill-discovery.md', import.meta.url));
 
 function requireDependencyProof(job: Job): void {
   if (!job.verifiedDependencyDigest) throw Object.assign(new Error('Dependency resolution proof is missing; retry this stopped task to re-run verification'), { code: 'SETUP_REQUIRED' });
@@ -38,10 +41,10 @@ function taskPrompt(job: Job): string {
   const autopilot = job.config.autopilot === true
     ? `AUTOPILOT MODE — owner-preauthorized execution within frozen scope, permissions and budgets. Do not ask routine confirmation questions for already authorized work. Let the model plan the work graph, record material decisions, and execute only claimed nodes. When a local deterministic check fails, inspect its recorded evidence and repair the cause through the returned build planner; never weaken checks or replay the same failure blindly. Wait for due work and collect this controller's live workers before exiting. Missing prerequisites, permissions, independent-review capability, uncertain external effects, cancellation or exhausted budgets are honest stopped states: report them and continue other eligible jobs. Only an explicit owner action can change configuration/budgets or retry stopped work. Never re-enqueue the same requirement as a new version to reset its limits. Review must use a genuinely fresh non-implementer context; a disclosure or a self-reported identity is not a substitute. Never fabricate results, screenshots, model identity or completion, and never publish or expand permissions.\n`
     : '';
-  return `${autopilot}You are the native host of an embedded multi-stack app Harness. Use your own context, tools and native delegation in ${hostProjectDirectory(job)}; never launch another coding-agent CLI. The persistent user project is ${sourceProjectDirectory(job)}. Research and implementation belong to that existing project context; never create another UUID project or replace its architecture. Review inspects the returned execution directory and its recorded proof, which may be an isolated obfuscation copy. Preserve the requested framework and existing architecture. Implement only this product. Never hide functionality from users or reviewers. Do not upload, submit, push, read publisher credentials or change factory state. Remote build commands belong only to the explicitly authorized Harness packaging profile, not host turns. The workspace is not a security sandbox. Complete real implementations, not placeholders.\nImmutable product requirements:\n${JSON.stringify(job.spec, null, 2)}\nPrevious verification/review failure (repair the mechanism, never weaken acceptance):\n${job.feedback ?? job.error ?? 'none'}\nPersisted execution logs:\n${JSON.stringify(job.logs.slice(-3))}\nContinue existing work. Only actual deterministic checks performed by the Harness establish verification; host claims do not.\n`;
+  return `${autopilot}You are the native host of an embedded multi-stack app Harness. Use your own context, tools and native delegation in ${hostProjectDirectory(job)}; never launch another coding-agent CLI. The persistent user project is ${sourceProjectDirectory(job)}. Research and implementation belong to that existing project context; never create another UUID project or replace its architecture. Review inspects the returned execution directory and its recorded proof, which may be an isolated obfuscation copy. Preserve the requested framework and existing architecture. Implement only this product. Never hide functionality from users or reviewers. Do not upload, submit, push, read publisher credentials or change factory state. Remote build commands belong only to the explicitly authorized Harness packaging profile, not host turns. The workspace is not a security sandbox. Complete real implementations, not placeholders.\nRead the host-native skill discovery protocol at ${skillDiscoveryGuide}. Derive specialist responsibilities and skill searches from this actual task; use the host's find-skills or equivalent discovery capability, prefer suitable installed skills, read candidates before selection, and never assume a fixed role-to-skill mapping. Put chosen skill identifiers, purpose and capability limits in existing node instructions; workers load them in their own context and report actual use. Discovery grants no installation, hook, paid-service or permission authority. Report unavailable optional skills honestly; defer only work that truly requires a missing capability.\nImmutable product requirements:\n${JSON.stringify(job.spec, null, 2)}\nPrevious verification/review failure (repair the mechanism, never weaken acceptance):\n${job.feedback ?? job.error ?? 'none'}\nPersisted execution logs:\n${JSON.stringify(job.logs.slice(-3))}\nContinue existing work. Only actual deterministic checks performed by the Harness establish verification; host claims do not.\n`;
 }
 
-export interface TurnOptions { buildOnly?: boolean; ownerPid?: number; ownerIdentity?: string; resumeActive?: boolean }
+export interface TurnOptions { buildOnly?: boolean; ownerPid?: number; ownerIdentity?: string; resolveOwner?: () => { ownerPid: number; ownerIdentity: string }; resumeActive?: boolean }
 export interface HostAction {
   job: Job;
   action: 'host' | 'step' | 'wait' | 'done';
@@ -49,7 +52,7 @@ export interface HostAction {
     kind?: 'plan' | 'node'; workflow?: { phase: HostStage; revision: number; nodeId?: string; node?: WorkflowNode; dependencies?: Array<{ id: string; result?: WorkflowNodeResult }>; planSchema?: unknown } };
 }
 
-export interface DriveOptions { once?: boolean; maxRounds?: number; strict?: boolean; buildOnly?: boolean; ownerPid?: number; ownerIdentity?: string; signal?: AbortSignal }
+export interface DriveOptions extends Pick<TurnOptions, 'buildOnly' | 'ownerPid' | 'ownerIdentity' | 'resolveOwner'> { once?: boolean; maxRounds?: number; strict?: boolean; signal?: AbortSignal }
 export type JobView = {
   id: string; product: string; framework: string; platform: string; channel: string; version: string;
   priority: Job['spec']['priority']; stage: Job['stage']; status: Job['status']; hostTurns: number;
@@ -70,6 +73,10 @@ export interface DriveResult {
   intake?: { accepted: number; errors?: Array<{ source: string; error: string }> };
   /** Host-owned communication work; never sends messages or changes the build outcome. */
   notifications?: NotificationPacket[];
+  /** Counts omitted from this response; exact data remains in status/inbox/notify. */
+  omitted?: { failed?: number; pendingErrors?: number; intakeErrors?: number; notifications?: number; job?: number; result?: number };
+  /** Oversized non-host summaries are retrieved losslessly via status/report. */
+  references?: { job?: string; result?: string };
 }
 
 function jobView(job: Job): JobView {
@@ -131,8 +138,14 @@ function hostOwner(ownerPid: number, expectedIdentity?: string): Pick<HostTurn, 
   return { ownerPid, ownerIdentity: after.identity };
 }
 
-function requestedHostOwner(options: Pick<TurnOptions, 'ownerPid' | 'ownerIdentity'>): Pick<HostTurn, 'ownerPid' | 'ownerIdentity'> {
-  return hostOwner(options.ownerPid ?? process.pid, options.ownerIdentity);
+function requestedHostOwner(options: Pick<TurnOptions, 'ownerPid' | 'ownerIdentity' | 'resolveOwner'>): Pick<HostTurn, 'ownerPid' | 'ownerIdentity'> {
+  const requested = options.resolveOwner?.() ?? options;
+  return hostOwner(requested.ownerPid ?? process.pid, requested.ownerIdentity);
+}
+
+function ownsHostTurn(turn: HostTurn, options: TurnOptions): boolean {
+  const owner = requestedHostOwner(options);
+  return turn.ownerPid === owner.ownerPid && turn.ownerIdentity === owner.ownerIdentity;
 }
 
 
@@ -141,7 +154,7 @@ function liveHostTurn(turn: NonNullable<Job['turn']>): boolean {
 }
 
 /** Adopt a dead/legacy host claim without incrementing host-turn or attempt budgets. */
-function adoptHostTurn(store: Store, job: Job, options: Pick<TurnOptions, 'ownerPid' | 'ownerIdentity'>): Job {
+function adoptHostTurn(store: Store, job: Job, options: TurnOptions): Job {
   const turnId = job.turn?.id;
   if (!turnId) return job;
   return store.transition(job.id, current => {
@@ -150,7 +163,9 @@ function adoptHostTurn(store: Store, job: Job, options: Pick<TurnOptions, 'owner
       throw new Error('Active host turn context changed; abandon its token before requesting another turn');
     }
     if (liveHostTurn(current.turn)) return {};
-    return { turn: { ...current.turn, ...requestedHostOwner(options) } };
+    const patch = { turn: { ...current.turn, ...requestedHostOwner(options) } };
+    checkedHostAction(hostAction(store, { ...current, ...patch }));
+    return patch;
   });
 }
 
@@ -306,11 +321,14 @@ function workflowAction(store: Store, job: Job, claim: HostTurn, node?: Workflow
   return serializableWorkflowHostAction({ job, action: 'host', turn: { id: claim.id, stage: claim.stage, kind: node ? 'node' : 'plan', prompt: `${taskPrompt(job)}${policy}\n${instruction}`, cwd: hostProjectDirectory(job), environment: hostEnvironment(job), role: [node?.definition.role ?? 'workflow-planner'], workflow: { phase: claim.stage, revision: phase.revision, ...(node ? { nodeId: node.definition.id, node: node.definition, dependencies } : { planSchema: z.toJSONSchema(WorkflowPlanSchema) }) } } });
 }
 
-function checkedWorkflowAction(store: Store, job: Job, claim: HostTurn, node?: WorkflowNodeState): HostAction {
-  const action = workflowAction(store, job, claim, node);
+function checkedHostAction(action: HostAction): HostAction {
   const bytes = Buffer.byteLength(JSON.stringify(hostActionTransport(action), null, 2));
-  if (bytes > MAX_HOST_PACKET_BYTES) throw new Error(`Workflow host packet requires ${bytes} bytes, exceeding the ${MAX_HOST_PACKET_BYTES}-byte output limit; reduce the requirement or replan through bounded aggregation nodes`);
+  if (bytes > MAX_HOST_ACTION_BYTES) throw new Error(`Workflow host packet requires ${bytes} bytes, exceeding the ${MAX_HOST_ACTION_BYTES}-byte action limit (the ${MAX_HOST_PACKET_BYTES}-byte response reserves room for queue diagnostics); reduce the requirement or replan through bounded aggregation nodes`);
   return action;
+}
+
+function checkedWorkflowAction(store: Store, job: Job, claim: HostTurn, node?: WorkflowNodeState): HostAction {
+  return checkedHostAction(workflowAction(store, job, claim, node));
 }
 
 function nextWorkflowTurn(store: Store, initial: Job, options: TurnOptions): HostAction {
@@ -320,6 +338,9 @@ function nextWorkflowTurn(store: Store, initial: Job, options: TurnOptions): Hos
   if (initial.manualRecovery || initial.status === 'blocked' && initial.blockedReason?.kind !== 'prerequisite' || initial.nextAt > Date.now()) return { job: initial, action: 'wait' };
   const stage = initial.stage as HostStage;
   if (!initial.workflow?.phases[stage] || !existsSync(hostProjectDirectory(initial)) || initial.baseJobId && !initial.basePrepared || initial.sourceDirectory && !initial.importPrepared) {
+    // Preparation can copy source and persist import/predecessor checkpoints.
+    // Validate the native controller first, then revalidate at claim commit.
+    requestedHostOwner(options);
     try { prepareWorkspace(store, initial); store.withProjectWrite(initial.id, current => mkdirSync(hostProjectDirectory(current), { recursive: true, mode: 0o700 })); }
     catch (cause) { return { job: store.update(initial.id, { status: 'blocked', error: toError(cause).message }), action: 'wait' }; }
   }
@@ -339,17 +360,24 @@ function nextWorkflowTurn(store: Store, initial: Job, options: TurnOptions): Hos
       const proofDigest = verificationProofDigest(current);
       if (phase.proofDigest !== proofDigest) phase = { ...phase, status: 'planning', reason: 'Plan independent review against the current verification proof', proofDigest, nodes: phase.nodes.map(pendingWorkflowNode), decisionsLengthAtClaim: undefined };
     }
+    if (phase.status === 'running') {
+      try { validateWorkflowConstraints(current.config, stage, phase.nodes.map(node => node.definition)); }
+      catch (cause) {
+        if (current.turn || phase.nodes.some(node => node.turn)) throw cause;
+        phase = { ...phase, status: 'planning', reason: `Owner workflow constraints changed: ${toError(cause).message}`, nodes: phase.nodes.map(pendingWorkflowNode), decisionsLengthAtClaim: undefined };
+      }
+    }
     if (phase.status === 'complete') phase = { ...phase, status: 'planning', reason: current.feedback ?? `Replan ${stage} after a policy checkpoint requested repair`, decisionsLengthAtClaim: undefined };
     if (current.turn) {
       if (current.turn.kind !== 'plan' || current.turn.stage !== stage || current.turn.contextDigest !== workflowTurnDigest(current, stage, phase)) throw new Error('Workflow planner context changed; abandon its stale token before continuing');
-      if (options.resumeActive === false && liveHostTurn(current.turn)) return {};
+      if (liveHostTurn(current.turn) && (options.resumeActive === false || !ownsHostTurn(current.turn, options))) return {};
       const turn = liveHostTurn(current.turn) ? current.turn : { ...current.turn, ...requestedHostOwner(options) };
       const patch = { turn, workflow: workflowState(current, stage, phase), status: 'running' as const };
       selectedAction = checkedWorkflowAction(store, { ...current, ...patch } as Job, turn);
       return patch;
     }
     const active = phase.nodes.filter(node => node.turn);
-    const resumable = active.find(node => options.resumeActive !== false || !liveHostTurn(node.turn!));
+    const resumable = active.find(node => !liveHostTurn(node.turn!) || options.resumeActive !== false && ownsHostTurn(node.turn!, options));
     if (resumable) {
       const claim = resumable.turn!;
       if (claim.stage !== stage || claim.planRevision !== phase.revision || claim.contextDigest !== workflowTurnDigest(current, stage, phase, resumable)) throw new Error('Workflow node context changed; abandon its stale token before continuing');
@@ -398,14 +426,8 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
     if (job.config.workflow && ['research', 'build', 'review'].includes(job.stage)) return nextWorkflowTurn(store, job, options);
     if (job.turn) {
       const ownerLive = liveHostTurn(job.turn);
-      if (options.resumeActive === false) {
-        if (ownerLive) return { job, action: 'wait' };
-        const ownerPid = options.ownerPid ?? process.pid;
-        job = adoptHostTurn(store, job, options);
-        if (!job.turn || job.turn.ownerPid !== ownerPid || options.ownerIdentity !== undefined && job.turn.ownerIdentity !== options.ownerIdentity) return { job, action: 'wait' };
-      } else if (!ownerLive) {
-        job = adoptHostTurn(store, job, options);
-      }
+      if (ownerLive && (options.resumeActive === false || !ownsHostTurn(job.turn, options))) return { job, action: 'wait' };
+      if (!ownerLive) job = adoptHostTurn(store, job, options);
       if (!job.turn || job.status !== 'running' || job.stage !== job.turn.stage || contextDigest(job) !== job.turn.contextDigest) throw new Error('Active host turn context changed; abandon its token before requesting another turn');
       if (deadlineExpired(job)) {
         const claimed = job.turn;
@@ -416,7 +438,7 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
         });
         return { job, action: 'done' };
       }
-      return hostAction(store, job);
+      return checkedHostAction(hostAction(store, job));
     }
     if (job.groups.length && !job.manualRecovery) return { job, action: 'step' };
     if (['failed', 'needs-owner', 'ready', 'built'].includes(job.status)) return { job, action: 'done' };
@@ -430,6 +452,7 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
       });
       return { job, action: 'done' };
     }
+    requestedHostOwner(options);
     try {
       if (job.stage === 'review') requireReviewProof(job);
       prepareWorkspace(store, job);
@@ -452,7 +475,9 @@ export async function nextTurn(store: Store, id: string, options: TurnOptions = 
         id: randomUUID(), stage: current.stage as HostStage, createdAt: Date.now(), contextDigest: contextDigest(current),
         decisionsLengthAtClaim: current.decisions.length, ...requestedHostOwner(options),
       };
-      return { turn, hostTurns: current.hostTurns + 1, attempts: { ...current.attempts, [current.stage]: (current.attempts[current.stage] ?? 0) + 1 }, status: 'running', blockedReason: null, error: null };
+      const patch = { turn, hostTurns: current.hostTurns + 1, attempts: { ...current.attempts, [current.stage]: (current.attempts[current.stage] ?? 0) + 1 }, status: 'running' as const, blockedReason: null, error: null };
+      checkedHostAction(hostAction(store, { ...current, ...patch }));
+      return patch;
     });
     return job.turn ? hostAction(store, job) : { job, action: 'done' };
   } finally { store.release(); }
@@ -465,8 +490,8 @@ export type QueueTurn =
 export type QueueSummary = { total: number; built: number; failed: number; needsOwner: number; blocked: number; waiting: number; queued: number; running: number };
 
 type QueuePick =
-  | { action: 'host'; job: Job; turn: NonNullable<HostAction['turn']> }
-  | { action: 'step'; job: Job }
+  | { action: 'host'; job: Job; turn: NonNullable<HostAction['turn']>; pendingErrors: Array<{ id: string; error: string }> }
+  | { action: 'step'; job: Job; pendingErrors: Array<{ id: string; error: string }> }
   | { action: 'idle'; nextAt: number | null; pendingErrors: Array<{ id: string; error: string }>; summary: QueueSummary };
 
 async function pickQueueTurn(store: Store, options: TurnOptions = {}): Promise<QueuePick> {
@@ -482,8 +507,8 @@ async function pickQueueTurn(store: Store, options: TurnOptions = {}): Promise<Q
       // The queue-only mode performs the live-owner check after acquiring the
       // short worker lock, so a concurrent initial claim cannot be replayed.
       const action = await nextTurn(store, job.id, queueOptions);
-      if (action.action === 'host' && action.turn) return { action: 'host', job: action.job, turn: action.turn };
-      if (action.action === 'step') return { action: 'step', job: action.job };
+      if (action.action === 'host' && action.turn) return { action: 'host', job: action.job, turn: action.turn, pendingErrors };
+      if (action.action === 'step') return { action: 'step', job: action.job, pendingErrors };
     } catch (cause) {
       pendingErrors.push({ id: job.id, error: toError(cause).message });
     }
@@ -569,6 +594,7 @@ function queueFailures(store: Store, failed: Array<{ id: string; error: string |
 export async function driveQueue(store: Store, config: Config, options: DriveOptions = {}): Promise<DriveResult> {
   const maxRounds = options.once ? 1 : options.maxRounds;
   const failed: Array<{ id: string; error: string | null }> = [];
+  const pendingErrors = new Map<string, { id: string; error: string }>();
   // Intake belongs to the loop (loopx-style frontier ingestion): every drive
   // sweeps the configured inbox first so submitted requirements join the
   // queue without the host remembering a separate scan command. Per-entry
@@ -580,13 +606,14 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
     intake = { accepted: scan.entries.filter(entry => entry.status === 'accepted').length, ...(errors.length ? { errors } : {}) };
   }
   let rounds = 0;
-  const communication = (): Pick<DriveResult, 'notifications'> => {
+  const communication = (): Pick<DriveResult, 'notifications' | 'pendingErrors'> => {
     const notifications = listNotifications(store).filter(packet => packet.status !== 'accepted');
-    return notifications.length ? { notifications } : {};
+    return { ...(notifications.length ? { notifications } : {}), ...(pendingErrors.size ? { pendingErrors: [...pendingErrors.values()] } : {}) };
   };
   let lastResult: Job | undefined;
   while ((maxRounds === undefined || rounds < maxRounds) && !options.signal?.aborted) {
-    const pick = await pickQueueTurn(store, { buildOnly: options.buildOnly, ownerPid: options.ownerPid, ownerIdentity: options.ownerIdentity });
+    const pick = await pickQueueTurn(store, { buildOnly: options.buildOnly, ownerPid: options.ownerPid, ownerIdentity: options.ownerIdentity, resolveOwner: options.resolveOwner });
+    for (const error of pick.pendingErrors) pendingErrors.set(error.id, error);
     if (options.signal?.aborted) {
       if (pick.action === 'host') abandonTurn(store, pick.job.id, pick.turn.id, { buildOnly: options.buildOnly });
       break;
@@ -595,20 +622,19 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
       const jobs = store.list();
       const pending = jobs.filter(job => !['built', 'failed', 'needs-owner'].includes(job.status)).length;
       const allFailed = queueFailures(store, failed);
-      return {
+      return boundedDriveResult({
         action: pending ? 'wait' : 'done',
         nextDueAt: pick.nextAt ?? undefined,
         rounds,
         ...(allFailed.length ? { failed: allFailed } : {}),
-        ...(pick.pendingErrors.length ? { pendingErrors: pick.pendingErrors } : {}),
         summary: pick.summary,
         ...(intake ? { intake } : {}),
         ...communication(),
-      };
+      });
     }
     if (pick.action === 'host') {
       const allFailed = queueFailures(store, failed);
-      return { action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}), ...communication() };
+      return boundedDriveResult({ action: 'host', job: jobView(pick.job), turn: pick.turn, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}), ...communication() });
     }
     let result: Job | undefined;
     store.acquire();
@@ -628,7 +654,7 @@ export async function driveQueue(store: Store, config: Config, options: DriveOpt
     if (result.status === 'failed' || result.status === 'needs-owner') failed.push({ id: result.id, error: result.error ?? null });
   }
   const allFailed = queueFailures(store, failed);
-  return { action: options.signal?.aborted ? 'wait' : 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}), ...communication() };
+  return boundedDriveResult({ action: options.signal?.aborted ? 'wait' : 'step', job: lastResult ? jobView(lastResult) : undefined, result: lastResult ? jobView(lastResult) : undefined, rounds, ...(allFailed.length ? { failed: allFailed } : {}), ...(intake ? { intake } : {}), ...communication() });
 }
 
 function missingReviewReceipts(job: Job, boundary = job.turn?.decisionsLengthAtClaim): string[] {
@@ -686,6 +712,7 @@ function completeWorkflowTurn(store: Store, job: Job, token: string, value: unkn
   store.event(job.id, { completedWorkflowNode: node.definition.id, token, revision: phase.revision, outcome: result.outcome });
   if (node.definition.id === phase.final && result.outcome === 'passed' && phase.status === 'running') {
     if (!nodes.every(current => current.status === 'passed' && !current.turn)) throw new Error('The workflow final node cannot bypass unfinished work');
+    validateWorkflowConstraints(job.config, stage, nodes.map(current => current.definition));
     const finished = { ...nextPhase, status: 'complete' as const };
     let finalResult = result.result;
     if (stage === 'review') {
@@ -744,7 +771,16 @@ export function cancelWorkflow(store: Store, id: string, reason: string): Job {
 
 /** Called only after the existing owner retry permission and budget checks pass. */
 export function workflowRetryPatch(job: Job, resumedConfig: Config): Partial<Job> {
-  if (!job.workflow?.cancelled) return {};
+  if (!job.workflow) return {};
+  if (!job.workflow.cancelled) {
+    const review = job.workflow.phases.review;
+    const changed = JSON.stringify(job.config.roles?.review) !== JSON.stringify(resumedConfig.roles?.review)
+      || job.config.workflow?.maxNodes !== resumedConfig.workflow?.maxNodes;
+    if (!review || !changed) return {};
+    return { review: null, reviewPolicyContextDigest: null, artifact: null, workflow: { ...job.workflow, phases: { ...job.workflow.phases,
+      review: { ...review, status: 'planning', reason: 'Owner review seats or graph limits changed; plan fresh independent review', nodes: review.nodes.map(pendingWorkflowNode), decisionsLengthAtClaim: undefined },
+    } } };
+  }
   if (!resumedConfig.workflow) throw new Error('Keep dynamic workflow mode enabled when retrying a cancelled task');
   const phases = { ...job.workflow.phases };
   const review = phases.review;

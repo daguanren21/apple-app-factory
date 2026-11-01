@@ -11,7 +11,7 @@ import { artifactOutputPath, projectDirectory } from './workspace.js';
 const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const JPEG_FRAME_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
-const impeccableGuide = fileURLToPath(new URL('../../skills/apphx/resources/impeccable/README.md', import.meta.url));
+const uiGuide = fileURLToPath(new URL('../../skills/apphx/resources/ui-design-guide.md', import.meta.url));
 const platformGuide = fileURLToPath(new URL('../../skills/apphx/resources/platform-ui.md', import.meta.url));
 
 export function uiQualityInstructions(job: Pick<Job, 'spec' | 'config'>): string {
@@ -32,7 +32,7 @@ export function uiQualityInstructions(job: Pick<Job, 'spec' | 'config'>): string
     ? 'Desktop: exercise native chrome/title-bar clearance, minimum and wide window sizes, high DPI/text scale, pointer and keyboard focus/shortcuts, scrolling and dialogs; do not merely enlarge a phone layout.'
     : 'Mobile: exercise status/navigation bars, display cutout and home-indicator/gesture insets, keyboard/IME, small/narrow/tall viewports and supported orientations, large system text, scrolling and reachable tap targets. Never hard-code status-bar pixel padding.';
   const guidance = [
-    `Read the bundled offline guides: ${impeccableGuide} and ${platformGuide}. These are reference assets, not evidence that an external engine ran.`,
+    `Read the apphx UI handoff and platform evidence guides: ${uiGuide} and ${platformGuide}. Discover specialist skills through the host for the actual task; these local guides do not bundle or activate an external design skill.`,
     design, platform, stack[spec.framework],
     'Motion: use purposeful feedback/continuity, interruptible/reversible transitions and reduced-motion behavior; preserve focus and never depend on animation-end for correctness. Observe the running app or record it; screenshots alone cannot prove motion and no unmeasured 60fps claim is permitted.',
   ];

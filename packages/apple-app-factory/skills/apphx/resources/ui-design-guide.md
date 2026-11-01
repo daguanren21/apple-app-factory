@@ -1,6 +1,6 @@
 # apphx UI 设计指南
 
-本指南适用于当前 UI 工作的宿主执行者，不要求固定的设计角色团队，也不依赖用户级 skill。apphx 已内置 [Impeccable 离线设计参考](impeccable/README.md)；先读其 apphx 集成契约，再按任务读取实际随包提供的文档。它不是上游 engine/detector/CLI，不会自动安装工具、启用 hooks 或调用付费图片服务。
+本指南只规定 apphx 的 UI 设计交接与验收边界，不是一套内置专家 skill。按 [宿主技能发现协议](skill-discovery.md)，从当前任务和平台出发，通过宿主的 find-skills 或等价能力搜索、评估并加载适用技能。先复用已安装且匹配的能力，不固定设计师与某个 skill 的映射，也不复制整套外部文档。
 
 所有移动端和桌面 UI 工作同时读取 [platform-ui.md](platform-ui.md)：该文档负责各栈的安全区、键盘、窗口、文字缩放、减弱动态效果和真实画面验收；本指南负责设计权威、产品表达和设计交接。
 
@@ -18,13 +18,13 @@
 
 先明确：谁在什么设备和环境下完成什么任务、主信息和主操作、成功与失败结果、需保留的行为、真实资产与内容、支持的窗口/设备及可访问性要求。仓库或工具能回答的事先查，不把例行决定反复交回用户。
 
-使用 [new-work](impeccable/reference/new-work.md) 的视觉权威和方向方法，以及 [craft floor](impeccable/reference/craft-floor.md) 的完成度标准。**只采用设计方法，不执行其中的 concept-seed、comp-led 引擎、随机方向分配或外部服务流程**；这些不是本包能力，集成入口已明确替换其执行要求。
+需要额外设计方法时，按实际任务搜索并阅读候选技能的真实说明，确认其平台、工具、输入输出及权限适用性，再将所选来源和用途交给负责的 agent。搜索结果不代表已安装；不会使用的技能不得记为已使用。Impeccable 可以辅助合适的设计工作，但只是动态候选，不随 apphx 内置或强制启用。
 
 按当前界面的用户任务选择模式：
 
-- 操作型应用：读 [Operate](impeccable/reference/mode-operate.md) 和 [operate](impeccable/reference/operate.md)。用清楚的信息层级、熟悉的原生交互和精确细节建立品质，不把设置/表单做成广告页。
-- 阅读型页面：读 [Read](impeccable/reference/mode-read.md)，优先阅读顺序、行宽、缩放和定位。
-- 需求确实包含营销或作品体验时：读 [Persuade/Experience](impeccable/reference/mode-persuade.md)，表达也必须基于真实内容，不能编造客户、指标或产品能力。
+- 操作型应用：优先清楚的信息层级、熟悉的原生交互和精确细节，不把设置/表单做成广告页。
+- 阅读型页面：优先阅读顺序、行宽、缩放和定位。
+- 需求确实包含营销或作品体验时，表达也必须基于真实内容，不能编造客户、指标或产品能力。
 
 在现有设计产物或任务交接中简要写清一个连贯方向：主任务、第一屏主次关系、组件和色彩语义、内容密度、关键状态、平台适配、一个有理由的视觉/交互特征。已给定方向不重开选型；局部修改不做全产品风格探索。不要求固定数量方案、付费素材、新字体或新动画库。
 
@@ -51,7 +51,7 @@
 
 ## 4. 平台适配不是网页缩放
 
-读取 [platform-ui.md](platform-ui.md) 中实际栈的部分：Flutter、Java Android、Swift、React Native、Expo、uni-app 或 MyGo。原生移动端补充 [adapt.native](impeccable/reference/adapt.native.md) 和目标 [iOS](impeccable/reference/ios.md)/[Android](impeccable/reference/android.md)；真正的 WebView 内容才使用 [adapt](impeccable/reference/adapt.md) 的网页细节。
+读取 [platform-ui.md](platform-ui.md) 中实际栈的部分：Flutter、Java Android、Swift、React Native、Expo、uni-app 或 MyGo。额外技能也必须匹配真实渲染平台；不能用网页建议代替原生适配，不能为使用某个技能而换框架。
 
 - 移动端：处理状态栏、刘海/挖孔、底部手势/主屏指示器、键盘/IME、窄屏和实际支持的方向、多窗口及大字号。一个边只有一个 inset 所有者；禁止硬编码状态栏像素、重复补偿安全区或让键盘挡住提交按钮。
 - 桌面：按实际内容窗口处理标题栏、红黄绿按钮/原生 chrome、最小尺寸、宽窗、滚动、弹层、文字/显示缩放、高 DPI、指针、键盘焦点和快捷键。不是把手机页面放大；MyGo 原生 UI 与 WKWebView 都必须在真实 macOS 窗口中观察。
@@ -59,7 +59,7 @@
 
 ## 5. 动效有目的、有退路、有运行证据
 
-读取 [animate](impeccable/reference/animate.md) 和 [平台动效契约](platform-ui.md#motion-contract)。为每个实质过渡明确：触发条件、反馈/状态/空间连续性的目的、使用频率、起止状态、打断/反转方式、焦点、减弱动态效果的等价行为。
+按 [平台动效契约](platform-ui.md#motion-contract)，为每个实质过渡明确：触发条件、反馈/状态/空间连续性的目的、使用频率、起止状态、打断/反转方式、焦点、减弱动态效果的等价行为。需要专家方法时按任务发现相关技能，不固定动画库或技能名单。
 
 高频操作立即响应；日常操作不等待入场表演。不盲目增加动画数量，不让成功状态只依赖动画结束回调；快速开→关→开、页面离开和取消仍应到达正确状态。优先已有或原生能力，约束滤镜/阴影/同时动画开销。系统 Reduce Motion / `prefers-reduced-motion` 要真正改变不必要的空间运动，同时保留清楚的状态反馈和焦点。
 
@@ -67,7 +67,7 @@
 
 ## 6. 有界评审、真实证据和交付
 
-一版连贯实现后，用 [critique](impeccable/reference/critique.md) 的设计维度找出具体问题；用 [audit.native](impeccable/reference/audit.native.md) 或 WebView 的 [audit](impeccable/reference/audit.md) 检查技术可用性。它们的 engine、detector 和固定子代理流程不适用于本离线包。用 [polish](impeccable/reference/polish.md) 保留方向修补，用 [harden](impeccable/reference/harden.md) 处理真实内容边界；[optimize](impeccable/reference/optimize.md) 只针对已观察的性能问题。
+一版连贯实现后，围绕实际画面、任务成功、可访问性、状态边界和性能观察提出具体问题。需要设计 critique、技术审计或定点 polish 时按任务选择已授权的宿主技能；不得因技能说明自行启动引擎、安装 hooks、调用付费服务或组建固定团队。性能修复只针对已观察的问题。
 
 按用户后果排序：阻断任务/错误结果 → 状态与恢复 → 可访问性和平台适配 → 层级/组件一致性 → 动效与细节。批量修复并复看受影响场景，不为分数或泛泛“更精致”无限迭代；最多两批具体修复后仍有实质问题时交给集成所有者决策，绝不将其当成通过。最终独立评审不能由实现者自评代替。
 
@@ -80,4 +80,4 @@
 - 运行的平台/设备、视口、文字与动作设置、观察结果及证据路径；
 - 未解决的实质问题、未验证环境，以及哪些结论只有源代码依据。
 
-离线参考文件齐全、代码能编译或截图文件存在，都不等于用户已经看见并能操作一个合格界面。工具或原生运行环境不可用时明确报告缺口，不伪造验收或设计还原结果。
+读取过技能、代码能编译或截图文件存在，都不等于用户已经看见并能操作一个合格界面。可选技能不可用时如实说明，现有能力足够则继续；原生运行环境或必需设计来源缺失时报告准确前提，不伪造验收或设计还原结果。

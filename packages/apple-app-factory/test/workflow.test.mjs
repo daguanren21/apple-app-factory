@@ -7,7 +7,7 @@ import { JobSchema, WorkflowNodeSchema, WorkflowPhaseSchema } from '../dist/cont
 import { Store } from '../dist/state/store.js';
 import { completeTurn, nextTurn } from '../dist/workflow/runner.js';
 import {
-  activeWorkflowNodes, applyWorkflowPlan, newWorkflowPhase, readyWorkflowNodes,
+  activeWorkflowNodes, applyWorkflowPlan, newWorkflowPhase, readyWorkflowNodes, validateWorkflowConstraints,
   workflowNodeConflict, workflowProgress, workflowTurnBudget, workflowTurnDigest,
 } from '../dist/workflow/graph.js';
 
@@ -343,6 +343,56 @@ test('one node cannot satisfy multiple identical provider-pinned review seats', 
     node('final', { role: 'auditor', provider: 'independent', fresh: true, dependsOn: ['first'] }),
   ]));
   assert.equal(accepted.nodes.length, 2);
+});
+
+test('accepted definitions can be revalidated against current owner limits without mutating readonly inputs', () => {
+  for (const stage of ['research', 'build', 'review']) {
+    const job = fixture({ workflow: { maxNodes: 3 }, roles: { [stage]: ['auditor'] } });
+    const accepted = applyWorkflowPlan(job, stage, plan([
+      node('audit', { role: 'auditor', fresh: true }),
+      node('other', { fresh: true }),
+      node('final', { fresh: true, dependsOn: ['audit', 'other'] }),
+    ]));
+    const definitions = freeze(accepted.nodes.map(current => current.definition));
+    const config = freeze(job.config);
+    const before = structuredClone({ config, definitions });
+    assert.doesNotThrow(() => validateWorkflowConstraints(config, stage, definitions), 'the exact maxNodes bound is admitted');
+    const reduced = freeze(fixture({ workflow: { maxNodes: 2 }, roles: { [stage]: ['auditor'] } }).config);
+    assert.throws(() => validateWorkflowConstraints(reduced, stage, definitions), /node limit/);
+    const changed = freeze(fixture({ workflow: { maxNodes: 3 }, roles: { [stage]: ['auditor', 'new-owner-seat'] } }).config);
+    assert.throws(() => validateWorkflowConstraints(changed, stage, definitions), /distinct matching node/);
+    assert.throws(() => validateWorkflowConstraints(fixture({ workflow: undefined }).config, stage, definitions), /not configured/);
+    assert.deepEqual({ config, definitions }, before);
+  }
+});
+
+test('constraint revalidation preserves stage-specific seat multiplicity and overlapping provider and freshness pins', () => {
+  for (const stage of ['research', 'build', 'review']) {
+    const definitions = freeze([
+      node('pinned', { role: 'auditor', provider: 'independent', fresh: true }),
+      node('flexible', { role: 'auditor', provider: 'other', fresh: true }),
+    ]);
+    const config = freeze(fixture({ roles: { [stage]: [
+      { name: 'auditor', fresh: true }, { name: 'auditor', provider: 'independent' },
+    ] } }).config);
+    assert.doesNotThrow(() => validateWorkflowConstraints(config, stage, definitions), 'pin assignment must not reject a valid non-greedy match');
+    for (const seats of [
+      ['auditor', 'auditor', 'auditor'],
+      [{ name: 'auditor', provider: 'independent' }, { name: 'auditor', provider: 'independent' }],
+      [{ name: 'auditor', provider: 'missing-provider' }],
+      ['missing-role'],
+    ]) {
+      const changed = freeze(fixture({ roles: { [stage]: seats } }).config);
+      assert.throws(() => validateWorkflowConstraints(changed, stage, definitions), /distinct matching node/);
+    }
+    assert.throws(() => validateWorkflowConstraints(config, stage, definitions.slice(0, 1)), /distinct matching node/);
+    const notFresh = freeze(definitions.map(definition => ({ ...definition, fresh: false })));
+    assert.throws(() => validateWorkflowConstraints(config, stage, notFresh), /distinct matching node/);
+    for (const other of ['research', 'build', 'review'].filter(value => value !== stage)) {
+      const unrelated = freeze(fixture({ roles: { [other]: ['unrelated-seat'] } }).config);
+      assert.doesNotThrow(() => validateWorkflowConstraints(unrelated, stage, definitions), 'only the admitted stage owns these seats');
+    }
+  }
 });
 
 test('replanning preserves independent passed definitions, results, attempts and completion evidence', () => {

@@ -36,9 +36,12 @@ function owner(result) {
   return JSON.parse(result.stdout);
 }
 
-test('direct CLI defaults to its live parent incarnation, not a more distant Node ancestor', posix, t => {
+test('an arbitrary Node parent requires explicit persistent-controller ownership', posix, t => {
   const f = fixture(t);
-  const result = owner(invoke(f));
+  const automatic = invoke(f);
+  assert.equal(automatic.status, 1);
+  assert.match(automatic.stderr, /--host-pid/);
+  const result = owner(invoke(f, [String(process.pid)]));
   assert.equal(result.parentPid, process.pid);
   assert.equal(result.ownerPid, process.pid);
   assert.equal(result.ownerIdentity, inspectProcess(process.pid).identity);

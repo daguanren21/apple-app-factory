@@ -391,7 +391,7 @@ test('next --any CLI picks the earliest-due task across the queue', async t => {
   writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
   allowLocalExecution: true, pollMs: 25,
   verification: { prerequisites: [], checks: [success], runtime: [success] }, }));
-  const result = spawnSync(process.execPath, [cli, 'next', '--any', '--config', configPath], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [cli, 'next', '--any', '--host-pid', String(process.pid), '--config', configPath], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.action, 'host');

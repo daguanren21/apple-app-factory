@@ -1,6 +1,7 @@
 import { ResearchSchema } from '../contracts/schemas.js';
 import type { Job, Spec } from '../contracts/schemas.js';
 import { uiQualityInstructions } from '../projects/ui-quality.js';
+import { previewText } from '../contracts/input-limits.js';
 
 export function parseResearch(text: string, channel: Spec['channel']) {
   const content = text.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '');
@@ -11,7 +12,12 @@ export function parseResearch(text: string, channel: Spec['channel']) {
 }
 
 export function researchPrompt(job: Job, portfolio: Array<Pick<Spec, 'id' | 'purpose' | 'audience' | 'differentiators'>>): string {
-  const siblings = `Other same-channel products ${JSON.stringify(portfolio)}; earlier versions of this same app are its source baseline, not competing products.`;
+  const selected = portfolio.slice(0, 64).map(peer => ({
+    id: peer.id, purpose: previewText(peer.purpose, 1024), audience: previewText(peer.audience, 512),
+    differentiators: peer.differentiators.slice(0, 8).map(value => previewText(value, 512)),
+    ...(peer.differentiators.length > 8 ? { omittedDifferentiators: peer.differentiators.length - 8 } : {}),
+  }));
+  const siblings = `Same-channel product previews ${JSON.stringify({ total: portfolio.length, omitted: portfolio.length - selected.length, products: selected })}. These are bounded previews, not complete research: inspect persisted status for exact sibling requirements when needed, including omitted products; do not infer no conflicts from truncated or omitted text. Earlier versions of this same app are its source baseline, not competing products.`;
   return `Research only with your own host tools. Preserve the requested ${job.spec.framework} ${job.spec.platform} project and its existing architecture. ${siblings} Assess technical feasibility, dependencies, licensing, privacy and real acceptance for this local package. Return typed JSON {"viable":boolean,"distinctness":"specific honest differentiation","risks":["..."],"plan":["concrete implementation and device acceptance step"]}. Do not promise store approval and do not add unrequested features.`;
 }
 

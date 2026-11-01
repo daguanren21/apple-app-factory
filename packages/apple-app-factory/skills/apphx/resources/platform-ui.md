@@ -1,6 +1,6 @@
 # Platform UI: native adaptation and real-surface evidence
 
-Use with the [UI design guide](ui-design-guide.md) and [embedded Impeccable integration](impeccable/README.md). This guide owns platform correctness; the actual Figma reference, repository design intent and executable component/token system own visual intent. It is not permission to change framework, install a library, enable an upstream engine or alter the frozen apphx verification contract.
+Use with the [UI design guide](ui-design-guide.md) and [host-native skill discovery](skill-discovery.md). This guide owns platform correctness; the actual Figma reference, repository design intent and executable component/token system own visual intent. Optional specialist skills are selected through the host for the actual task, not copied or fixed by apphx. This is not permission to change framework, install a library or alter the frozen verification contract.
 
 ## Scope and invariants
 
@@ -84,7 +84,7 @@ Preserve exactly the project's supported mode: Go-only native UI (`go.mod` and `
 
 ## Motion contract
 
-Use [the bundled animate reference](impeccable/reference/animate.md) as design vocabulary, not a mandate to add effects. For each material transition name its trigger, purpose (feedback/state/continuity/explanation), frequency, from/to state, spatial relationship, existing semantic token or native transition, interruption/reversal behavior, focus ownership and reduced-motion equivalent.
+For each material transition name its trigger, purpose (feedback/state/continuity/explanation), frequency, from/to state, spatial relationship, existing semantic token or native transition, interruption/reversal behavior, focus ownership and reduced-motion equivalent. Discover an appropriate specialist skill only when its expertise helps this task; no named provider or effects library is mandatory.
 
 - Prefer immediate feedback for high-frequency actions; a small coherent transition beats repeated entrance choreography. Keep content and controls available without waiting for animation.
 - Retarget/cancel obsolete motion on rapid intent changes. Open→close→open, navigation away, cancellation and reduced motion must all reach the correct state. Business state must not depend solely on `animationend`, an animator completion listener or a delayed timer.

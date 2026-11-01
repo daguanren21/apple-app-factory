@@ -42,11 +42,11 @@
 
 研究/实现使用 live source；混淆需要时另建内部执行副本，验证、评审和打包证明绑定实际使用的那份代码。`delivery.sourcePath` 是用户下一次继续开发的位置，`executionPath` 是执行位置。`report --collect` 默认写入外部 stateDir/results，收集副本标为 `secondary-source-snapshot`；源码后来变化会标为未验证，不冒充旧产物的证明。自定义命令和规则仍需可信，复制目录不等于 OS 沙箱。
 
-## 平台 UI 与内置 Impeccable
+## 平台 UI 与动态技能选择
 
 新 `init` 默认启用 `uiQuality: true`。移动端要求实际检查状态栏/刘海/底部手势安全区、键盘、大字体和不同屏幕；MyGo 桌面检查原生标题栏、窗口缩放、键盘焦点与高 DPI，不能仅把手机页面放大。动效须有明确用途，支持打断/反向与减少动态效果；不能用两张截图宣称流畅或 60fps。
 
-有 Figma 时以实际可读取的设计为准；没有 Figma 时先复用项目现有设计，只为全新项目选择视觉方向。[内置 Impeccable](packages/apple-app-factory/skills/apphx/resources/impeccable/README.md) 固定上游版本，随 skill 安装完整离线参考文档和许可，不运行或安装上游引擎、检测器、hooks，也不要求付费图片服务。
+有 Figma 时以实际可读取的设计为准；没有 Figma 时先复用项目现有设计，只为全新项目选择视觉方向。规划器根据任务决定是否需要产品、架构、设计等职责，再通过宿主的 `find-skills` 或等价发现能力搜索、评估并选用技能，优先复用已有适用能力。所选来源、用途和限制写入现有节点指令，执行 agent 在自己的上下文中按需加载；Impeccable 是可能的设计辅助，不内置整包文档、不固定角色映射。发现不等于安装授权，不自动新增全局工具、hooks 或付费服务，缺少必需能力时如实阻塞相关工作。见 [技能发现协议](packages/apple-app-factory/skills/apphx/resources/skill-discovery.md)。
 
 最终批准需要六类 `uiQuality` 观察及实际捕获文件：安全区、响应式、键盘焦点、文字缩放、动效、视觉设计。证据保存在需求的 `screenshotsDir`（如 `build/screenshots`），在验证冻结前生成；路径、哈希、图片尺寸、两种几何和动效视频/trace 由 CLI 校验，子评审失败不能被汇总隐藏，打包前再次核对。审美和真实平台表现仍须独立评审，门禁不伪装成自动美学认证。具体协议见 [平台 UI 指南](packages/apple-app-factory/skills/apphx/resources/platform-ui.md)。
 
@@ -122,4 +122,4 @@ pnpm run package:pack
 
 ## License
 
-[MIT](LICENSE)。内置 Impeccable 参考资料遵循其 [Apache-2.0 许可及第三方 MIT 声明](packages/apple-app-factory/skills/apphx/resources/impeccable/README.md#attribution-provenance-and-inventory)。
+[MIT](LICENSE)。

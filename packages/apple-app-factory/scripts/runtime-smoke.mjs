@@ -81,7 +81,7 @@ async function workflow(name, profile, environment, prepare = () => {}) {
   const configPath = join(control, 'factory.json'), specPath = join(control, 'requirement.json');
   writeFileSync(configPath, JSON.stringify(config, null, 2)); writeFileSync(specPath, JSON.stringify(spec, null, 2));
   const transitions = [];
-  function invoke(argv) { const value = JSON.parse(command([process.execPath, cli, ...argv, '--config', configPath, '--build-only'], { cwd: control, env: environment })); transitions.push({ argv, value }); writeFileSync(join(control, 'transitions.json'), JSON.stringify(transitions, null, 2)); return value; }
+  function invoke(argv) { const owner = argv[0] === 'next' ? ['--host-pid', String(process.pid)] : []; const value = JSON.parse(command([process.execPath, cli, ...argv, ...owner, '--config', configPath, '--build-only'], { cwd: control, env: environment })); transitions.push({ argv, value }); writeFileSync(join(control, 'transitions.json'), JSON.stringify(transitions, null, 2)); return value; }
   const job = invoke(['enqueue', specPath]);
   let turn = invoke(['next', job.id]);
   const research = join(control, 'research.json');

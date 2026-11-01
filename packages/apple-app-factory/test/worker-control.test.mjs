@@ -42,7 +42,7 @@ function fixture(t, overrides = {}) {
     rmSync(root, { recursive: true, force: true });
   });
   return { root, path, config, store,
-    invoke(...args) { return run([process.execPath, cli, ...args, '--config', path]); },
+    invoke(...args) { return run([process.execPath, cli, ...args, ...(args[0] === 'next' ? ['--host-pid', String(process.pid)] : []), '--config', path]); },
     start(id) {
       const child = spawn(process.execPath, [cli, 'step', id, '--build-only', '--config', path], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '', stderr = '';

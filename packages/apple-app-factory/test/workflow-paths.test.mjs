@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+  chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
   rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkflowNodeSchema, WorkflowPhaseSchema } from '../dist/contracts/schemas.js';
@@ -61,6 +63,52 @@ function snapshot(root) {
   }
   visit('.');
   return entries;
+}
+
+function populate(directory, count) {
+  mkdirSync(directory, { recursive: true });
+  for (let index = 0; index < count; index++) writeFileSync(join(directory, `entry-${index}`), '');
+}
+
+function observeScan(observe) {
+  const originals = { readdirSync: fs.readdirSync, lstatSync: fs.lstatSync, opendirSync: fs.opendirSync };
+  const work = { reads: 0, entries: 0, largestArray: 0, stats: 0, opened: 0, closed: 0, peakOpen: 0, attempts: new Map() };
+  fs.readdirSync = function (...args) {
+    const entries = originals.readdirSync.apply(this, args);
+    work.largestArray = Math.max(work.largestArray, entries.length);
+    work.entries += entries.length;
+    return entries;
+  };
+  fs.lstatSync = function (...args) {
+    work.stats++;
+    return originals.lstatSync.apply(this, args);
+  };
+  fs.opendirSync = function (path, ...args) {
+    work.attempts.set(path, (work.attempts.get(path) ?? 0) + 1);
+    const directory = originals.opendirSync.call(this, path, ...args);
+    work.opened++;
+    work.peakOpen = Math.max(work.peakOpen, work.opened - work.closed);
+    const read = directory.readSync.bind(directory), close = directory.closeSync.bind(directory);
+    directory.readSync = () => {
+      work.reads++;
+      const entry = read();
+      if (entry) work.entries++;
+      return entry;
+    };
+    directory.closeSync = () => {
+      const result = close();
+      work.closed++;
+      return result;
+    };
+    return directory;
+  };
+  syncBuiltinESMExports();
+  try {
+    return { result: observe(), work };
+  } finally {
+    Object.assign(fs, originals);
+    syncBuiltinESMExports();
+  }
 }
 
 test('future paths conservatively fold case and canonical Unicode without creating filesystem probes', t => {
@@ -203,4 +251,118 @@ test('unresolvable resource scopes serialize writes without blocking readers or 
   assertConflict(node('writer', { writePaths: ['first'] }), node('reader', { readPaths: ['second'] }), missingWorkspace);
   assertConflict(node('reader-a', { readPaths: ['first'] }), node('reader-b', { readPaths: ['second'] }), missingWorkspace, false);
   assert.deepEqual(snapshot(workspace), before);
+});
+
+test('wide scopes stream bounded ownership evidence, retain aliases and stop blocking after active work drains', t => {
+  const { workspace } = fixture(t);
+  const wide = join(workspace, 'wide');
+  populate(wide, 8192);
+  populate(join(workspace, 'other'), 1);
+  linkSync(join(wide, 'entry-8191'), join(workspace, 'other/alias'));
+  const definitions = [
+    node('writer', { writePaths: ['wide'] }),
+    node('reader', { readPaths: ['other/entry-0'] }),
+    node('other-writer', { writePaths: ['other/new'] }),
+    node('alias-reader', { readPaths: ['other/alias'] }),
+  ];
+  const phase = runningPhase(definitions);
+  const { result, work } = observeScan(() => readyWorkflowNodes(phase, workspace));
+  assert.deepEqual(result, [], 'incomplete ownership evidence must serialize even lexically disjoint scopes');
+  assert.ok(work.reads > 0 && work.reads <= 4096);
+  assert.ok(work.entries <= 4096);
+  assert.ok(work.stats <= 4096 + 2 * definitions.length);
+  assert.equal(work.largestArray, 0, 'a single wide directory must not allocate a readdir array');
+  assert.equal(work.attempts.get(realpathSync(wide)), 1, 'cache an exhausted tree for the rest of this claim calculation');
+  assert.equal(work.opened, work.closed, 'early exhaustion must close its directory handle');
+  assert.equal(work.peakOpen, 1);
+
+  const readers = observeScan(() => workflowNodeConflict(
+    node('reader-a', { readPaths: ['wide'] }), node('reader-b', { readPaths: ['other'] }), workspace));
+  assert.equal(readers.result, false);
+  assert.equal(readers.work.entries, 0, 'read/read independence requires no tree inspection');
+  const narrow = observeScan(() => workflowNodeConflict(
+    node('narrow-writer', { writePaths: ['wide/entry-0'] }), node('narrow-reader', { readPaths: ['other/entry-0'] }), workspace));
+  assert.equal(narrow.result, false);
+  assert.equal(narrow.work.entries, 0, 'narrow file ownership stays parallel even in a huge parent tree');
+
+  phase.nodes[0].status = 'passed';
+  phase.nodes[0].turn = null;
+  const drained = observeScan(() => readyWorkflowNodes(phase, workspace).map(current => current.definition.id));
+  assert.deepEqual(drained.result, ['reader', 'other-writer', 'alias-reader']);
+  assert.equal(drained.work.entries, 0, 'pending work can be claimed after active ownership drains');
+
+  rmSync(wide, { recursive: true });
+  populate(wide, 4095);
+  const refreshed = observeScan(() => readyWorkflowNodes(runningPhase(definitions), workspace).map(current => current.definition.id));
+  assert.deepEqual(refreshed.result, ['reader', 'other-writer', 'alias-reader'],
+    'a complete scan at the budget boundary is independent; an earlier exhausted observation must not persist');
+  assert.equal(refreshed.work.reads, 4096, 'the shared budget includes the EOF read that proves the tree complete');
+});
+
+test('all resource comparisons at one claim boundary share a single scan budget without blocking narrow siblings', t => {
+  const { workspace } = fixture(t);
+  populate(join(workspace, 'active'), 1);
+  const definitions = [node('active', { writePaths: ['active/entry-0'] })];
+  for (let index = 0; index < 6; index++) {
+    populate(join(workspace, `scope-${index}`), 1500);
+    definitions.push(node(`candidate-${index}`, { writePaths: [`scope-${index}`] }));
+  }
+  definitions.push(node('narrow', { writePaths: ['other/new'] }));
+  const { result, work } = observeScan(() => readyWorkflowNodes(runningPhase(definitions), workspace)
+    .map(current => current.definition.id));
+  assert.deepEqual(result, ['candidate-0', 'candidate-1', 'narrow']);
+  assert.ok(work.reads <= 4096 && work.entries <= 4096, 'the budget is not reset for each candidate directory');
+  assert.ok(work.stats <= 4096 + definitions.length + 1);
+  assert.equal(work.largestArray, 0);
+  assert.equal(work.opened, work.closed);
+});
+
+test('deep branching ownership trees stop at bounded work and close every directory before continuing', t => {
+  const { workspace } = fixture(t);
+  let directory = join(workspace, 'deep');
+  for (let depth = 0; depth < 256; depth++) {
+    populate(directory, 20);
+    directory = join(directory, 'd');
+  }
+  populate(join(workspace, 'other'), 1);
+  const { result, work } = observeScan(() => workflowNodeConflict(
+    node('deep-writer', { writePaths: ['deep'] }), node('reader', { readPaths: ['other'] }), workspace));
+  assert.equal(result, true, 'a partially observed deep tree cannot prove independence');
+  assert.ok(work.reads > 0 && work.reads <= 4096);
+  assert.ok(work.entries <= 4096 && work.stats <= 4096 + 2);
+  assert.ok(work.opened > 1);
+  assert.equal(work.opened, work.closed);
+  assert.equal(work.peakOpen, 1, 'deep ownership scanning must not retain a stack of open directory handles');
+  assert.equal(work.largestArray, 0);
+});
+
+test('unreadable directory evidence is cached conservatively within a claim and refreshed at the next boundary', t => {
+  const { workspace } = fixture(t);
+  const unreadable = join(workspace, 'unreadable');
+  populate(unreadable, 1);
+  const definitions = [
+    node('writer', { writePaths: ['unreadable'] }),
+    node('reader', { readPaths: ['first/new'] }),
+    node('other-writer', { writePaths: ['second/new'] }),
+  ];
+  chmodSync(unreadable, 0);
+  try {
+    let denied = false;
+    try {
+      const directory = fs.opendirSync(unreadable);
+      directory.closeSync();
+    } catch (error) {
+      if (!['EACCES', 'EPERM'].includes(error.code)) throw error;
+      denied = true;
+    }
+    if (!denied) {
+      t.skip('The current filesystem identity bypasses directory read permissions');
+      return;
+    }
+    const { result, work } = observeScan(() => readyWorkflowNodes(runningPhase(definitions), workspace));
+    assert.deepEqual(result, []);
+    assert.equal(work.attempts.get(realpathSync(unreadable)), 1, 'do not repeat an unreadable tree scan inside one calculation');
+  } finally { chmodSync(unreadable, 0o700); }
+  assert.deepEqual(readyWorkflowNodes(runningPhase(definitions), workspace).map(current => current.definition.id),
+    ['reader', 'other-writer']);
 });

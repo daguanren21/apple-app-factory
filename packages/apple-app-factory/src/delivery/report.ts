@@ -4,9 +4,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { canonicalPath, inside } from '../configuration/config.js';
 import { generatedModulePaths, isGeneratedPath } from '../projects/dependencies.js';
 import { deliveryManifest, type DeliveryManifest } from './manifest.js';
-import { toError, type Config, type Job } from '../contracts/schemas.js';
+import { ReviewSchema, toError, type Config, type Job, type Review } from '../contracts/schemas.js';
 import type { Store } from '../state/store.js';
 import { assertPinnedProjectRoots, sourceDigest, sourceProjectDirectory } from '../projects/workspace.js';
+import { verificationProofDigest } from '../workflow/proof.js';
 
 export type ChecklistStatus = 'passed' | 'failed' | 'uncovered' | 'unreviewed';
 export type FailureKind = 'review-finding' | 'job-error' | 'blocked' | 'acceptance';
@@ -123,7 +124,7 @@ function buildChecklist(job: Job): ChecklistEntry[] {
   }
   return job.spec.acceptance.map(requirement => {
     const matched = review.acceptanceEvidence.find(entry => entry.requirement === requirement);
-    const related = review.approved === false ? review.findings.filter(finding => relatedFinding(finding, requirement)) : [];
+    const related = review.findings.filter(finding => relatedFinding(finding, requirement));
     if (related.length > 0) return { requirement, status: 'failed' as const, evidence: matched?.evidence ?? null, reason: related.join('; ') };
     if (matched) {
       if (!job.verifiedDigest) return { requirement, status: 'unreviewed' as const, evidence: matched.evidence ?? null, reason: 'Source changed since verification; re-verification is required before this evidence can pass' };
@@ -137,13 +138,36 @@ function blockedReasonDetail(blockedReason: NonNullable<Job['blockedReason']>): 
   return `${blockedReason.kind} at ${blockedReason.stage}: ${blockedReason.prerequisite.reason}${blockedReason.prerequisite.path ? ` (${blockedReason.prerequisite.path})` : ''}`;
 }
 
+function appendReviewFailures(job: Job, review: Review, failures: FailureEntry[], source = ''): void {
+  const before = failures.length;
+  for (const finding of review.findings) {
+    const requirement = job.spec.acceptance.find(req => relatedFinding(finding, req));
+    failures.push({ item: 'review-finding', ...(requirement ? { requirement } : {}), detail: `${source}${finding}` });
+  }
+  for (const check of review.uiQuality?.checks ?? []) {
+    if (check.status !== 'failed') continue;
+    const finding = `UI check ${check.id} failed: ${check.observation}`;
+    const requirement = job.spec.acceptance.find(req => relatedFinding(finding, req));
+    failures.push({ item: 'review-finding', ...(requirement ? { requirement } : {}), detail: `${source}${finding}` });
+  }
+  if (!review.approved && failures.length === before) failures.push({ item: 'review-finding', detail: `${source}Review was not approved` });
+}
+
 function buildFailures(job: Job, checklist: ChecklistEntry[]): FailureEntry[] {
   const failures: FailureEntry[] = [];
-  const review = job.review;
-  if (review && review.approved === false) {
-    for (const finding of review.findings) {
-      const requirement = job.spec.acceptance.find(req => relatedFinding(finding, req));
-      failures.push({ item: 'review-finding', ...(requirement ? { requirement } : {}), detail: finding });
+  if (job.review) appendReviewFailures(job, job.review, failures);
+  const phase = job.workflow?.phases.review;
+  // A final blocking aggregate replaces node failures. Only accepted inspections
+  // bound to the current verification generation may contribute before it.
+  if (failures.length === 0 && job.stage === 'review' && !job.workflow?.cancelled
+    && job.verifiedDigest && job.verifiedDependencyDigest && job.verifiedAt
+    && (!job.spec.screenshotsDir || job.screenshotDigest)
+    && phase && phase.proofDigest === verificationProofDigest(job)) {
+    for (const node of phase.nodes) {
+      if (node.status !== 'passed' || node.turn || node.result?.outcome !== 'passed') continue;
+      const verdict = ReviewSchema.safeParse(node.result.result);
+      if (!verdict.success) continue;
+      appendReviewFailures(job, verdict.data, failures, `${node.definition.id} (${node.definition.role}): `);
     }
   }
   if (job.error != null) failures.push({ item: 'job-error', detail: job.error });

@@ -155,7 +155,7 @@ if (mode === '--correctness' && !report.errors.length) {
   try {
     // Exercise the native CLI boundary, consume all output, and preserve the exact claim.
     for (const job of jobs) {
-      const child = spawnSync(process.execPath, [join(dist, 'cli.js'), 'next', job.id, '--config', join(root, 'factory.json')], { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+      const child = spawnSync(process.execPath, [join(dist, 'cli.js'), 'next', job.id, '--host-pid', String(process.pid), '--config', join(root, 'factory.json')], { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
       assert.equal(child.status, 0, child.stderr);
       consume(JSON.parse(child.stdout), job, true);
       report.cliResumes = (report.cliResumes ?? 0) + 1;
