@@ -114,7 +114,7 @@ function processKind(info: ProcessInfo): 'host' | 'wrapper' | 'shell' | 'unknown
 }
 
 /** Resolve native work ownership without assigning it to a one-shot package manager. */
-export function resolveHostOwner(explicit?: string): { ownerPid: number; ownerIdentity?: string } {
+export function resolveHostOwner(explicit?: string): { ownerPid: number; ownerIdentity: string } {
   const requested = explicit ?? process.env.APPHX_HOST_PID;
   let target: number | undefined;
   if (requested !== undefined) {

@@ -11,7 +11,7 @@ import { run, executionEnvironment } from './process.js';
 import { resolveHostOwner } from './host-session.js';
 
 import { runStep } from './scheduler.js';
-import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue, requestWorkflowReplan, cancelWorkflow, workflowRetryPatch } from './runner.js';
+import { nextTurn, nextQueueTurn, completeTurn, abandonTurn, driveQueue, requestWorkflowReplan, cancelWorkflow, workflowRetryPatch, hostActionTransport } from './runner.js';
 import { hosts, installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from './integrations.js';
 import { submitRequirement, scanInbox } from './inbox.js';
 import { parseRequirement, readInputFile } from './requirements.js';
@@ -480,27 +480,28 @@ async function main(): Promise<void> {
       arity(args, 1, 1, 'report <id> [--out <dir>] [--collect] [--build-only] [--config <file>]');
       print(reportJob(store, args[0], { out: values.out, collect: values.collect, buildOnly, config }));
     } else if (command === 'next') {
-      const { ownerPid } = resolveHostOwner(values['host-pid']);
+      const { ownerPid, ownerIdentity } = resolveHostOwner(values['host-pid']);
       if (values.any) {
         arity(args, 0, 0, 'next --any');
-        print(await nextQueueTurn(store, { buildOnly, ownerPid }));
+        const result = await nextQueueTurn(store, { buildOnly, ownerPid, ownerIdentity });
+        print('job' in result ? hostActionTransport(result) : result);
       } else {
         arity(args, 1, 1, 'next <id>');
-        const result = await nextTurn(store, args[0], { buildOnly, ownerPid });
-        print(result);
+        const result = await nextTurn(store, args[0], { buildOnly, ownerPid, ownerIdentity });
+        print(hostActionTransport(result));
         if (result.job.status === 'blocked' || result.job.status === 'failed' || result.job.status === 'needs-owner') process.exitCode = 2;
       }
     } else if (command === 'drive') {
       arity(args, 0, 0, 'drive [--once] [--max-rounds <n>] [--strict] [--host-pid <pid>] [--build-only] [--config <file>]');
       const maxRounds = values['max-rounds'] === undefined ? undefined : Number(values['max-rounds']);
       if (maxRounds !== undefined && (!Number.isSafeInteger(maxRounds) || maxRounds <= 0)) throw new Error('--max-rounds must be a positive integer');
-      const { ownerPid } = resolveHostOwner(values['host-pid']);
+      const { ownerPid, ownerIdentity } = resolveHostOwner(values['host-pid']);
       const controller = new AbortController();
       const stop = (): void => controller.abort();
       process.on('SIGINT', stop);
       process.on('SIGTERM', stop);
       try {
-        const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid, signal: controller.signal });
+        const result = await driveQueue(store, config, { once: values.once, maxRounds, strict: values.strict, buildOnly, ownerPid, ownerIdentity, signal: controller.signal });
         print(result);
         if (values.strict && result.failed?.length) process.exitCode = 2;
       } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }

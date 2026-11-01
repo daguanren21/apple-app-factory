@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import fs, { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn, spawnSync } from 'node:child_process';
+import childProcess, { spawn, spawnSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { ConfigSchema } from '../dist/schemas.js';
 import { Store } from '../dist/store.js';
 import { nextTurn, nextQueueTurn } from '../dist/runner.js';
 import { runStep } from '../dist/scheduler.js';
+import { inspectProcess } from '../dist/process.js';
 import { projectDirectory, sourceDigest } from '../dist/workspace.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
@@ -70,6 +72,72 @@ test('nextQueueTurn drives a single-job queue exactly like next <id>', async t =
   const result = await nextQueueTurn(f.store);
   assert.equal(result.action, 'host');
   assert.equal(result.job.id, job.id);
+});
+
+test('a verified owner incarnation must still match inside the claim transaction', async t => {
+  const f = fixture(t);
+  const job = f.enqueue('owner-incarnation', 'research', 0);
+  const identity = inspectProcess(process.pid)?.identity;
+  assert.ok(identity);
+  const before = f.store.get(job.id);
+  await assert.rejects(nextTurn(f.store, job.id, { ownerPid: process.pid, ownerIdentity: `reused:${identity}` }), /incarnation changed/);
+  assert.deepEqual(f.store.get(job.id), before, 'A changed incarnation must not consume a turn or stage attempt');
+  const claimed = await nextTurn(f.store, job.id, { ownerPid: process.pid, ownerIdentity: identity });
+  assert.equal(claimed.action, 'host');
+  assert.equal(claimed.job.turn.ownerIdentity, identity);
+});
+
+test('an alive owner whose incarnation becomes unreadable cannot create a PID-only claim', async t => {
+  const f = fixture(t);
+  const job = f.enqueue('owner-inspection-loss', 'research', 0);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => { holder.once('spawn', resolve); holder.once('error', reject); });
+  t.after(() => { if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGTERM'); });
+  const identity = inspectProcess(holder.pid)?.identity;
+  assert.ok(identity);
+  const before = f.store.get(job.id);
+  const originalRead = fs.readFileSync, originalSpawn = childProcess.spawnSync;
+  try {
+    fs.readFileSync = function(path, ...args) {
+      if (String(path).startsWith(`/proc/${holder.pid}/`)) throw Object.assign(new Error('Inspection denied'), { code: 'EACCES' });
+      return originalRead.call(this, path, ...args);
+    };
+    childProcess.spawnSync = function(file, argv, ...args) {
+      if (file === '/bin/ps' && argv.includes(String(holder.pid))) return { error: Object.assign(new Error('Inspection denied'), { code: 'EACCES' }), status: null, stdout: '', stderr: '' };
+      return originalSpawn.call(this, file, argv, ...args);
+    };
+    syncBuiltinESMExports();
+    await assert.rejects(nextTurn(f.store, job.id, { ownerPid: holder.pid, ownerIdentity: identity }), /inspectable live process incarnation/);
+    assert.deepEqual(f.store.get(job.id), before);
+  } finally {
+    fs.readFileSync = originalRead;
+    childProcess.spawnSync = originalSpawn;
+    syncBuiltinESMExports();
+  }
+});
+
+test('dynamic claims and dead-turn adoption both require the resolved incarnation', async t => {
+  const dynamic = fixture(t, { workflow: {}, maxHostTurns: 16 });
+  const dynamicJob = dynamic.enqueue('dynamic-owner-incarnation', 'research', 0);
+  const identity = inspectProcess(process.pid)?.identity;
+  assert.ok(identity);
+  const dynamicBefore = dynamic.store.get(dynamicJob.id);
+  await assert.rejects(nextTurn(dynamic.store, dynamicJob.id, { ownerPid: process.pid, ownerIdentity: `reused:${identity}` }), /incarnation changed/);
+  assert.deepEqual(dynamic.store.get(dynamicJob.id), dynamicBefore);
+
+  const legacy = fixture(t);
+  const legacyJob = legacy.enqueue('adopt-owner-incarnation', 'research', 0);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => { holder.once('spawn', resolve); holder.once('error', reject); });
+  const holderIdentity = inspectProcess(holder.pid)?.identity;
+  assert.ok(holderIdentity);
+  await nextTurn(legacy.store, legacyJob.id, { ownerPid: holder.pid, ownerIdentity: holderIdentity });
+  const exited = new Promise(resolve => holder.once('exit', resolve));
+  holder.kill('SIGTERM');
+  await exited;
+  const beforeAdoption = legacy.store.get(legacyJob.id);
+  await assert.rejects(nextTurn(legacy.store, legacyJob.id, { ownerPid: process.pid, ownerIdentity: `reused:${identity}` }), /incarnation changed/);
+  assert.deepEqual(legacy.store.get(legacyJob.id), beforeAdoption);
 });
 
 test('nextQueueTurn returns step for the earliest-due deterministic stage', async t => {

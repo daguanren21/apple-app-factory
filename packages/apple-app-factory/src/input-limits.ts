@@ -1,6 +1,13 @@
 /** Shared byte ceiling for requirement, plan and completion JSON at CLI boundaries. */
 export const MAX_INPUT_BYTES = 1024 * 1024;
 
+/**
+ * A host turn combines several independently bounded inputs: the immutable
+ * requirement, current graph, dependency results and execution instructions.
+ * Keep the emitted packet bounded while leaving room for those four inputs.
+ */
+export const MAX_HOST_PACKET_BYTES = 4 * MAX_INPUT_BYTES;
+
 function minimumEvidenceBytes(requirements: readonly string[]): number {
   const distinct = new Set(requirements);
   let bytes = Math.max(0, distinct.size - 1);

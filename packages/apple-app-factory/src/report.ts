@@ -249,7 +249,13 @@ const STATUS_LABEL: Record<ChecklistStatus, string> = {
 };
 
 function md(value: unknown): string {
-  return String(value).replaceAll('|', '\\|');
+  return String(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replace(/([|`*_{}\[\]()#!~])/g, '\\$1')
+    .replace(/\r\n?|\n/g, '<br>');
 }
 
 function iso(ms: number): string {
@@ -258,7 +264,7 @@ function iso(ms: number): string {
 
 export function renderMarkdown(report: Report): string {
   const job = report.job;
-  const lines: string[] = [`# Handoff report — ${job.id}`, ''];
+  const lines: string[] = [`# Handoff report — ${md(job.id)}`, ''];
   lines.push('## Job', '', '| Field | Value |', '| --- | --- |');
   for (const [key, value] of [
     ['id', job.id], ['product', job.product], ['version', job.version], ['framework', job.framework],
@@ -284,15 +290,15 @@ export function renderMarkdown(report: Report): string {
     for (const stage of ['research', 'build', 'review'] as const) {
       const phase = report.workflow.phases[stage];
       if (!phase) continue;
-      lines.push('', `### ${stage} — revision ${phase.revision}`, '', `- **status**: ${phase.status}`, `- **reason**: ${md(phase.reason)}`, `- **final**: ${md(phase.final ?? 'Not planned')}`);
+      lines.push('', `### ${stage} — revision ${phase.revision}`, '', `- **status**: ${md(phase.status)}`, `- **reason**: ${md(phase.reason)}`, `- **final**: ${md(phase.final ?? 'Not planned')}`);
       lines.push('', '| Node | Role | Status | Attempts | Dependencies | Read paths | Write paths |', '| --- | --- | --- | --- | --- | --- | --- |');
       for (const node of phase.nodes) {
         const definition = node.definition;
-        lines.push(`| ${md(definition.id)} | ${md(definition.role)} | ${node.status} | ${node.attempts} | ${md(definition.dependsOn.join(', ') || 'None')} | ${md(definition.readPaths.join(', ') || 'None')} | ${md(definition.writePaths.join(', ') || 'None')} |`);
+        lines.push(`| ${md(definition.id)} | ${md(definition.role)} | ${md(node.status)} | ${node.attempts} | ${md(definition.dependsOn.join(', ') || 'None')} | ${md(definition.readPaths.join(', ') || 'None')} | ${md(definition.writePaths.join(', ') || 'None')} |`);
       }
       for (const node of phase.nodes) {
         const definition = node.definition;
-        lines.push('', `#### ${md(definition.id)} — ${node.status}`, '', `- **instructions**: ${md(definition.instructions)}`, `- **declared context**: ${definition.fresh ? 'fresh' : 'host-managed'}${definition.provider ? `; declared provider=${md(definition.provider)}` : ''} (host-executed; not identity attestation)`);
+        lines.push('', `#### ${md(definition.id)} — ${md(node.status)}`, '', `- **instructions**: ${md(definition.instructions)}`, `- **declared context**: ${definition.fresh ? 'fresh' : 'host-managed'}${definition.provider ? `; declared provider=${md(definition.provider)}` : ''} (host-executed; not identity attestation)`);
         if (node.turn) lines.push(`- **active turn**: ${md(node.turn.id)} (revision ${node.turn.planRevision ?? phase.revision})`);
         if (node.completedAt !== undefined) lines.push(`- **completedAt**: ${iso(node.completedAt)}`);
         if (node.result) lines.push(`- **result**: ${node.result.outcome} — ${md(node.result.summary)}`);
@@ -329,8 +335,8 @@ export function renderMarkdown(report: Report): string {
     lines.push('无');
   } else {
     for (const failure of report.failures) {
-      const requirement = failure.requirement ? `（${failure.requirement}）` : '';
-      lines.push(`- **${failure.item}**${requirement}：${failure.detail}`);
+      const requirement = failure.requirement ? `（${md(failure.requirement)}）` : '';
+      lines.push(`- **${md(failure.item)}**${requirement}：${md(failure.detail)}`);
     }
   }
   lines.push('');

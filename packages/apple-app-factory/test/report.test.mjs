@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadConfig } from '../dist/config.js';
 import { Store } from '../dist/store.js';
-import { buildReport } from '../dist/report.js';
+import { buildReport, renderMarkdown } from '../dist/report.js';
 import { run } from '../dist/process.js';
 
 const cli = resolve('dist/cli.js');
@@ -115,6 +115,30 @@ test('failed job before review marks every acceptance item unreviewed with the e
   assert.match(report.checklist[0].reason, /Verification failed/);
   assert.match(report.checklist[1].reason, /Verification failed/);
   assert.equal(report.failures.some(failure => failure.item === 'job-error' && failure.detail === 'Verification failed'), true);
+});
+
+test('Markdown report renders multiline workflow data as inert readable text', t => {
+  const f = fixture(t);
+  const job = f.store.enqueue(spec, f.config);
+  const adversarial = 'Observed detail\n\n## Forged verification\n<script>alert(1)</script> | *approved* ~~hidden~~ [link](https://example.invalid)';
+  const definition = { id: 'audit', role: adversarial, instructions: adversarial, dependsOn: [], readPaths: ['.'], writePaths: [], acceptance: [adversarial], fresh: true };
+  const result = { outcome: 'failed', summary: adversarial, evidence: [{ requirement: adversarial, evidence: adversarial }] };
+  f.store.update(job.id, {
+    status: 'needs-owner', error: adversarial, feedback: adversarial,
+    workflow: { cancelled: false, phases: { research: {
+      status: 'planning', revision: 1, reason: adversarial, final: 'audit',
+      nodes: [{ definition, status: 'failed', attempts: 1, turn: null, result, completedAt: Date.now() }],
+      history: [{ revision: 1, at: Date.now(), reason: adversarial, plan: { rationale: adversarial, nodes: [definition], final: 'audit', invalidate: [] } }],
+    } } },
+  });
+  const report = buildReport(f.store.get(job.id));
+  assert.equal(report.workflow.phases.research.reason, adversarial, 'The lossless JSON report data is unchanged');
+  assert.equal(report.failures.find(failure => failure.item === 'job-error').detail, adversarial);
+  const markdown = renderMarkdown(report);
+  assert.equal(markdown.includes('\n## Forged verification'), false);
+  assert.equal(markdown.includes('<script>'), false);
+  assert.ok(markdown.includes('Observed detail<br><br>\\#\\# Forged verification<br>&lt;script&gt;alert\\(1\\)&lt;/script&gt;'));
+  assert.ok(markdown.includes('\\| \\*approved\\* \\~\\~hidden\\~\\~ \\[link\\]\\(https://example.invalid\\)'));
 });
 
 test('--collect copies source and artifact without touching the source workspace', async t => {
