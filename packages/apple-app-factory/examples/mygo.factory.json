@@ -64,5 +64,8 @@
       ]
     ],
     "artifactPath": "build/darwin-arm64/MyGo App.app"
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

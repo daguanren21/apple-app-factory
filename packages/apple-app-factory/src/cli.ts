@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { canonicalPath, loadConfig, loadJSON, expandArgv, normalizeIsolationPaths, validateProjectSource, projectStorage } from './configuration/config.js';
+import { createPlatformProfile } from './configuration/profiles.js';
 import { Store } from './state/store.js';
 import { run, executionEnvironment } from './execution/process.js';
 import { resolveHostOwner } from './hosts/session.js';
@@ -17,8 +18,8 @@ import { submitRequirement, scanInbox } from './intake/inbox.js';
 import { parseRequirement, readInputFile } from './intake/requirements.js';
 import { MAX_INPUT_BYTES } from './contracts/input-limits.js';
 import { dispatchRemote } from './hosts/remote.js';
-import { FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './contracts/schemas.js';
-import type { Config, Framework, Job, Platform } from './contracts/schemas.js';
+import { ConfigSchema, FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './contracts/schemas.js';
+import type { Config, Framework, Job } from './contracts/schemas.js';
 import { assertProject, detectProjectFramework, hasProjectIndicators, doctorCommands } from './projects/profiles.js';
 import { closestOwnedGoWorkspace } from './projects/go-dependencies.js';
 import { validateMyGoCommand } from './contracts/mygo-build.js';
@@ -180,68 +181,6 @@ WantedBy=timers.target
   return { host: host.id, format: options.format, content, reentry, install };
 }
 
-function initialConfig(framework: Framework, platform: Platform, target: Config['packageTarget']): Record<string, unknown> {
-  if ((framework === 'mygo') !== (platform === 'macos')) throw new Error(`${framework} does not support ${platform}`);
-  if ((framework === 'android-java' && platform !== 'android') || (framework === 'swift' && platform !== 'ios')) throw new Error(`${framework} does not support ${platform}`);
-  const allowedTargets = platform === 'macos' ? ['app', 'dmg'] : platform === 'ios' ? ['simulator', 'ipa'] : ['apk', 'aab'];
-  if (!allowedTargets.includes(target)) throw new Error(`${target} does not match platform ${platform}`);
-  const template = JSON.parse(readFileSync(join(packageRoot, 'examples', `${framework}.factory.json`), 'utf8')) as Record<string, unknown>;
-  template.packageTarget = target;
-  template.workflow = {};
-  template.maxHostTurns = 64;
-  template.uiQuality = true;
-  if (framework === 'mygo') {
-    template.packaging = {
-      provider: 'local',
-      commands: [['go', 'tool', 'mygo', 'build', '-platform', 'darwin/arm64', '-sign', '-', '-skip-notarize', ...(target === 'app' ? ['-skip-dmg'] : []), '-o', 'build']],
-      artifactPath: target === 'app' ? 'build/darwin-arm64/MyGo App.app' : 'build/darwin-arm64/MyGo App 0.1.0.dmg',
-    };
-  } else if (framework === 'flutter') {
-    template.executionEnv = platform === 'ios' ? ['IOS_DEVICE_ID'] : ['ANDROID_DEVICE_ID'];
-    template.verification = {
-      prerequisites: platform === 'ios' ? [['xcodebuild', '-version']] : [['java', '-version'], ['adb', 'version']],
-      checks: [['flutter', 'analyze', '--fatal-infos'], ['flutter', 'test']],
-      runtime: [['flutter', 'drive', '--driver', 'test_driver/integration_test.dart', '--target', 'integration_test/app_test.dart', '-d', platform === 'ios' ? '${IOS_DEVICE_ID}' : '${ANDROID_DEVICE_ID}', '--no-pub']],
-    };
-  } else if (framework === 'expo') {
-    const device = platform === 'ios' ? 'IOS_DEVICE_ID' : 'ANDROID_DEVICE_ID';
-    const profile = target === 'simulator' ? 'simulator' : target === 'apk' ? 'apk' : 'production';
-    const output = target === 'simulator' ? 'build/simulator.tar.gz' : `build/app.${target}`;
-    template.executionEnv = [device, ...(platform === 'android' ? ['ANDROID_HOME'] : [])];
-    template.verification = {
-      prerequisites: [['node', '--version'], ['eas', '--version']],
-      checks: [['npm', 'run', 'lint'], ['npm', 'test', '--', '--runInBand']],
-      runtime: [['npm', 'run', 'test:e2e', '--', '--platform', platform, '--device', '${' + device + '}']],
-    };
-    template.packaging = {
-      provider: 'local',
-      commands: [['eas', 'build', '--platform', platform, '--profile', profile, '--local', '--non-interactive', '--output', output], ...(target === 'simulator' ? [['tar', '-xzf', output, '-C', 'build']] : [])],
-      artifactPath: target === 'simulator' ? 'build/App.app' : output,
-    };
-  } else if (platform === 'ios') {
-    const native = framework === 'swift' ? '.' : framework === 'uni-app' ? 'native/ios' : 'ios';
-    const project = framework === 'swift' ? ['-project', 'App.xcodeproj'] : ['-workspace', `${native}/App.xcworkspace`];
-    const base = ['xcodebuild', ...project, '-scheme', 'App'];
-    template.executionEnv = ['IOS_DEVICE_ID'];
-    template.verification = {
-      prerequisites: [['xcodebuild', '-version'], ...(framework === 'swift' ? [] : [['node', '--version'], ['npm', '--version']])],
-      checks: framework === 'swift' ? [[...base, 'build-for-testing', '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'lint'], ['npm', 'test', '--', '--runInBand']],
-      runtime: framework === 'swift' ? [[...base, 'test-without-building', '-destination', 'id=${IOS_DEVICE_ID}', '-derivedDataPath', 'build/DerivedData']] : [['npm', 'run', 'test:e2e', '--', '--platform', 'ios', '--device', '${IOS_DEVICE_ID}']],
-    };
-    template.packaging = target === 'simulator' ? {
-      commands: [[...base, 'build', '-configuration', 'Debug', '-destination', 'generic/platform=iOS Simulator', '-derivedDataPath', 'build/DerivedData']],
-      artifactPath: 'build/DerivedData/Build/Products/Debug-iphonesimulator/App.app', provider: 'local',
-    } : {
-      commands: [[...base, 'archive', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', 'build/App.xcarchive'], ['xcodebuild', '-exportArchive', '-archivePath', 'build/App.xcarchive', '-exportPath', 'build/export', '-exportOptionsPlist', 'ExportOptions.plist']],
-      artifactPath: 'build/export/App.ipa', provider: 'local',
-    };
-  } else if (target === 'apk') {
-    const packaging = template.packaging as { commands: string[][]; artifactPath: string };
-    packaging.commands = packaging.commands.map(argv => argv.map(arg => arg === ':app:bundleRelease' ? ':app:assembleRelease' : arg));
-    packaging.artifactPath = packaging.artifactPath.replace('bundle/release/app-release.aab', 'apk/release/app-release.apk');
-  }
-  return template;
-}
 
 const help = `apphx <command> [--config factory.json] [--build-only]
   hosts                         List supported agent hosts and activation commands
@@ -397,15 +336,14 @@ async function main(): Promise<void> {
     const platform = PlatformSchema.parse(values.platform ?? (framework === 'mygo' ? 'macos' : framework === 'android-java' ? 'android' : 'ios'));
     const target = values['package-target'] ?? (platform === 'macos' ? 'app' : platform === 'ios' ? framework === 'expo' ? 'ipa' : 'simulator' : 'apk');
     if (!packageTargets.includes(target as Config['packageTarget'])) throw new Error(`Unknown package target ${target}; choose ${packageTargets.join(', ')}`);
-    const template = initialConfig(framework as Framework, platform, target as Config['packageTarget']);
-    template.projectMode = values.isolated ? 'isolated' : 'project';
-    template.projectRoot = projectRoot;
-    Object.assign(template, projectStorage(projectRoot));
+    const template = { ...createPlatformProfile(framework as Framework, platform, target as Config['packageTarget']),
+      projectMode: values.isolated ? 'isolated' as const : 'project' as const, projectRoot, ...projectStorage(projectRoot) };
     if (values['allow-local-execution']) template.allowLocalExecution = true;
     if (values.autopilot) {
       template.allowLocalExecution = true;
       template.autopilot = true;
     }
+    ConfigSchema.parse(template);
     const destination = tokens.some(token => token.kind === 'option' && token.name === 'config') ? resolve(configPath) : join(projectRoot, 'factory.json');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(dirname(destination), { recursive: true });

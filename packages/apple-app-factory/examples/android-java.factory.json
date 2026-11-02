@@ -49,5 +49,8 @@
       ]
     ],
     "artifactPath": "app/build/outputs/bundle/release/app-release.aab"
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

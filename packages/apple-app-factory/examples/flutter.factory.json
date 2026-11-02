@@ -45,5 +45,8 @@
         "--no-pub"
       ]
     ]
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

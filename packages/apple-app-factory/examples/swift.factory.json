@@ -51,7 +51,6 @@
     ]
   },
   "packaging": {
-    "provider": "local",
     "commands": [
       [
         "xcodebuild",
@@ -68,6 +67,10 @@
         "build/DerivedData"
       ]
     ],
-    "artifactPath": "build/DerivedData/Build/Products/Debug-iphonesimulator/App.app"
-  }
+    "artifactPath": "build/DerivedData/Build/Products/Debug-iphonesimulator/App.app",
+    "provider": "local"
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

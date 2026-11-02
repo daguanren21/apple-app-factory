@@ -28,7 +28,9 @@
   "scripts": {
     "build": "tsdown && node scripts/bundle-obfuscator.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
+    "test": "node scripts/examples.mjs --check && node --test",
+    "examples:generate": "node scripts/examples.mjs --write",
+    "examples:check": "node scripts/examples.mjs --check",
     "prepack": "pnpm --workspace-root exec turbo run build typecheck --filter=apphx"
   },
   "dependencies": {

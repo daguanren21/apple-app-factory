@@ -119,6 +119,23 @@ pnpm run package:pack
 
 契约层不依赖运行流程、持久化或交付服务；历史通知迁移由 state 拥有，不反向调用发送服务。混淆器 core 不依赖变换/流水线，变换不反向调用流水线或 CLI。
 
+### Schema、平台 profile 与示例
+
+- `src/contracts/schemas.ts` 是配置、需求及结果契约的唯一来源，保留 Zod 的默认值、转换和跨字段校验；本次没有迁移到 pi-schema。
+- `src/configuration/profiles.ts` 按 framework/platform/target 创建全新的默认命令配置，不读文件、不运行 SDK。`apphx init` 使用 profile，固定项目/控制目录、应用所有者明确授权的选项，再经 schema 校验并独占写入配置；不会读取 `examples`。
+- 七个 `<framework>.factory.json` 是从 profile 生成的下游示例，部分 Android 示例选择 AAB 展示发布包，不代表 `init` 的默认目标。`factory.json` 的 isolated 场景、existing-project、MyGo Web 等定制示例继续独立维护，但必须通过既有配置/需求契约校验。角色约定和 Expo EAS 示例属于宿主/Expo 格式，不是 apphx 默认配置。
+
+修改默认命令时改 profile，构建后生成示例；不要反向修改示例来改变运行时：
+
+```sh
+pnpm --filter apphx build
+pnpm --filter apphx run examples:generate
+pnpm --filter apphx run examples:check
+```
+
+`pnpm test` 在已有构建/typecheck 流程后执行同一个只读检查器，拒绝示例漂移和非法的 apphx 配置/需求组合。生成和检查都不会执行示例命令；具体 scheme、原生工程路径、签名及实际运行验收仍需按用户项目校准。
+
+
 
 ## License
 
