@@ -50,3 +50,7 @@ apphx@2.6.0:
   intents:
     - loop-intake-wake
     - schedule-seat-receipts
+apphx@3.0.0:
+  dir: packages/apple-app-factory
+  intents:
+    - dynamic-workflows
