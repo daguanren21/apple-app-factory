@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseResearch } from '../dist/policy.js';
+import { parseResearch } from '../dist/workflow/policy.js';
 
 function research() {
   return {

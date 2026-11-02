@@ -7,13 +7,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
-import { transformCode, stripComments, encryptStringLiterals, renameIdentifiers, insertJunkCode, extractDeclaredIdentifiers, generateIdentifierMappings } from '../dist/code.js';
-import { walkProject } from '../dist/common.js';
-import { applyObfuscation } from '../dist/obfuscate.js';
-import { buildPNG, encodePNG, insertPngChunk, parsePNG } from '../dist/png.js';
-import { planResourceRenames, applyResourceRenames, perturbImageHashes, recolorImages } from '../dist/resources.js';
-import { renameProjectConfig, obfuscateDirectories, remapUuids } from '../dist/project.js';
-import { filterSensitiveWords, recolorSourceColors } from '../dist/content.js';
+import { transformCode, stripComments, encryptStringLiterals, renameIdentifiers, insertJunkCode, extractDeclaredIdentifiers, generateIdentifierMappings } from '../dist/transforms/code/code.js';
+import { walkProject } from '../dist/core/common.js';
+import { applyObfuscation } from '../dist/pipeline/obfuscate.js';
+import { buildPNG, encodePNG, insertPngChunk, parsePNG } from '../dist/transforms/resources/png.js';
+import { planResourceRenames, applyResourceRenames, perturbImageHashes, recolorImages } from '../dist/transforms/resources/resources.js';
+import { renameProjectConfig, obfuscateDirectories, remapUuids } from '../dist/transforms/project/project.js';
+import { filterSensitiveWords, recolorSourceColors } from '../dist/transforms/content/content.js';
 
 const dist = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 
@@ -448,6 +448,27 @@ test('CLI applies the config file and prints a JSON report', t => {
   const report = JSON.parse(result.stdout);
   assert.ok(report.changedFiles >= 5);
   assert.equal(typeof report.transforms.code, 'number');
+});
+
+test('CLI implicit seed is stable across equivalent config property order and defaults', t => {
+  const source = "export const message = 'Hello';\nexport function greet() { return message; }\n";
+  const configs = [
+    { code: { junkCode: {}, removeComments: true } },
+    { code: { removeComments: true, junkCode: { lines: 2 } } },
+  ];
+  const outputs = configs.map(config => {
+    const root = tempProject(t, { 'App.ts': source });
+    const configPath = join(root, 'config.json');
+    writeFileSync(configPath, JSON.stringify(config));
+    const result = spawnSync(process.execPath, ['--disallow-code-generation-from-strings', dist, '--project', root, '--config', configPath, '--framework', 'react-native'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.changedFiles, 1);
+    assert.equal(report.transforms.code, 1);
+    return readFileSync(join(root, 'App.ts'), 'utf8');
+  });
+  assert.notEqual(outputs[0], source);
+  assert.equal(outputs[0], outputs[1]);
 });
 
 test('CLI rejects unknown frameworks and invalid configs', t => {

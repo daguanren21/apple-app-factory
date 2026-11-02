@@ -1,6 +1,6 @@
 {
-  "stateDir": ".factory",
-  "workspaceRoot": "workspaces",
+  "projectMode": "project",
+  "projectRoot": ".",
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "aab",
@@ -12,8 +12,8 @@
     }
   },
   "executionEnv": [
-    "ANDROID_HOME",
-    "ANDROID_DEVICE_ID"
+    "ANDROID_DEVICE_ID",
+    "ANDROID_HOME"
   ],
   "verification": {
     "prerequisites": [
@@ -24,14 +24,6 @@
       [
         "eas",
         "--version"
-      ],
-      [
-        "java",
-        "-version"
-      ],
-      [
-        "adb",
-        "version"
       ]
     ],
     "checks": [
@@ -77,5 +69,8 @@
       ]
     ],
     "artifactPath": "build/app.aab"
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

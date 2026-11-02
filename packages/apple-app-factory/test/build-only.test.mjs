@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { loadConfig } from '../dist/config.js';
-import { Store } from '../dist/store.js';
-import { executeStep } from '../dist/runner.js';
-import { sourceDigest } from '../dist/workspace.js';
-import { dependencyDigest } from '../dist/dependencies.js';
-import { run } from '../dist/process.js';
-import { remoteCommand } from '../dist/remote.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { Store } from '../dist/state/store.js';
+import { executeStep } from '../dist/workflow/runner.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
+import { run } from '../dist/execution/process.js';
+import { remoteCommand } from '../dist/hosts/remote.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
@@ -20,7 +20,7 @@ function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-build-only-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const configPath = join(root, "worker ' ; configuration.json");
-  writeFileSync(configPath, JSON.stringify({ ...example, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] }, ...overrides }));
+  writeFileSync(configPath, JSON.stringify({ ...example, projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] }, ...overrides }));
   return { root, configPath, config: loadConfig(configPath) };
 }
 
@@ -69,7 +69,7 @@ test('build-only CLI rejects removed publication permissions in configuration be
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const configPath = join(root, 'factory.json');
   // Written raw: loadConfig is strict and must be the thing that rejects the legacy keys.
-  writeFileSync(configPath, JSON.stringify({ ...example, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] }, allowSubmit: true, allowRelease: false }));
+  writeFileSync(configPath, JSON.stringify({ ...example, projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] }, allowSubmit: true, allowRelease: false }));
   const result = await run([process.execPath, cli, 'enqueue', '-', '--build-only', '--config', configPath], { input: JSON.stringify(product) });
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /allowSubmit/);

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { run } from '../dist/process.js';
+import { run } from '../dist/execution/process.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const profile = JSON.parse(readFileSync(new URL('../examples/mygo.factory.json', import.meta.url)));
@@ -22,10 +22,7 @@ function fixture(t, project, allowLocalExecution = true) {
   writeFileSync(join(root, 'go.mod'), 'module example.com/control\n\ngo 1.27.1\n');
   writeFileSync(join(root, 'go.work'), 'go 1.27.1\nuse .\n');
   const configPath = join(root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({
-    ...profile, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'),
-    allowLocalExecution, executionEnv: ['GOWORK', 'GOENV', 'GOTOOLCHAIN', 'GOFLAGS'],
-  }));
+  writeFileSync(configPath, JSON.stringify({ ...profile, projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution, executionEnv: ['GOWORK', 'GOENV', 'GOTOOLCHAIN', 'GOFLAGS'], }));
   const specPath = join(root, 'requirement.json');
   writeFileSync(specPath, JSON.stringify({ ...requirement, ...(project ? { project } : {}) }));
   return {

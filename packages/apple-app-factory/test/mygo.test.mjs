@@ -3,20 +3,20 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ConfigSchema, SpecSchema, validateJobConfig } from '../dist/schemas.js';
-import { validateMacOSArtifact } from '../dist/macos.js';
-import { validateMyGoPackaging } from '../dist/mygo-build.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
-import { run } from '../dist/process.js';
+import { ConfigSchema, SpecSchema, validateJobConfig } from '../dist/contracts/schemas.js';
+import { validateMacOSArtifact } from '../dist/platforms/macos.js';
+import { validateMyGoPackaging } from '../dist/contracts/mygo-build.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { run } from '../dist/execution/process.js';
 
 const cli = resolve('dist/cli.js');
 const product = { id: 'desktop-local', name: 'MyGo App', framework: 'mygo', platform: 'macos', channel: 'local', version: '0.1.0', purpose: 'Preserve a desktop workflow', audience: 'Mac owners', differentiators: ['Native local desktop behavior'], acceptance: ['Exercise the actual desktop workflow before packaging'] };
 const argv = ['go', 'tool', 'mygo', 'build', '-platform', 'darwin/arm64', '-sign', '-', '-skip-notarize', '-skip-dmg', '-o', 'build'];
 function fixture(t, patch = {}) {
   const root = mkdtempSync(join(tmpdir(), 'apphx-mygo-'));
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'app', allowLocalExecution: true, verification: { checks: [[process.execPath, '--version']], runtime: [[process.execPath, '--version']] }, packaging: { provider: 'local', commands: [argv], artifactPath: 'build/darwin-arm64/MyGo App.app' }, ...patch });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'app', allowLocalExecution: true, verification: { checks: [[process.execPath, '--version']], runtime: [[process.execPath, '--version']] }, packaging: { provider: 'local', commands: [argv], artifactPath: 'build/darwin-arm64/MyGo App.app' }, ...patch });
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return { root, config };
 }
@@ -67,7 +67,7 @@ test('MyGo direct build rejects unrequested publishing, credentials, ambiguous f
 for (const target of ['app', 'dmg']) test(`actual CLI initializes a MyGo ${target} without granting execution or publication`, async t => {
   const { root } = fixture(t);
   const configPath = join(root, 'factory.json');
-  const result = await run([process.execPath, cli, 'init', '--framework', 'mygo', '--package-target', target, '--config', configPath]);
+  const result = await run([process.execPath, cli, 'init', '--project', root, '--framework', 'mygo', '--package-target', target, '--config', configPath]);
   assert.equal(result.code, 0, result.stderr);
   const created = JSON.parse(readFileSync(configPath, 'utf8'));
   const summary = JSON.parse(result.stdout);
@@ -75,14 +75,14 @@ for (const target of ['app', 'dmg']) test(`actual CLI initializes a MyGo ${targe
   assert.equal(created.packageTarget, target);
   for (const permission of ['allowLocalExecution', 'allowCloudBuild']) assert.equal(created[permission], false);
   validateMyGoPackaging(ConfigSchema.parse({ ...created, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces') }));
-  assert.equal((await run([process.execPath, cli, 'init', '--framework', 'mygo', '--config', configPath])).code, 1);
+  assert.equal((await run([process.execPath, cli, 'init', '--project', root, '--framework', 'mygo', '--config', configPath])).code, 1);
   assert.equal(readFileSync(configPath, 'utf8'), JSON.stringify(created, null, 2) + '\n');
 });
 
 for (const [framework, platform, target] of [['mygo', 'ios', 'ipa'], ['mygo', 'android', 'apk'], ['swift', 'macos', 'app'], ['flutter', 'macos', 'app'], ['mygo', 'macos', 'ipa']]) test(`init rejects unsupported ${framework}/${platform}/${target} before writing`, async t => {
   const { root } = fixture(t);
   const path = join(root, 'absent-control', 'factory.json');
-  const result = await run([process.execPath, cli, 'init', '--framework', framework, '--platform', platform, '--package-target', target, '--config', path]);
+  const result = await run([process.execPath, cli, 'init', '--project', root, '--framework', framework, '--platform', platform, '--package-target', target, '--config', path]);
   assert.notEqual(result.code, 0);
   assert.throws(() => readFileSync(path));
 });

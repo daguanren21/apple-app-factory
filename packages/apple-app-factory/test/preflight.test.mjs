@@ -4,21 +4,19 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { checkPrerequisites } from '../dist/preflight.js';
-import { run, processGroupAlive } from '../dist/process.js';
-import { Store } from '../dist/store.js';
-import { executeStep } from '../dist/runner.js';
+import { checkPrerequisites } from '../dist/execution/preflight.js';
+import { run, processGroupAlive } from '../dist/execution/process.js';
+import { Store } from '../dist/state/store.js';
+import { executeStep } from '../dist/workflow/runner.js';
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-preflight-'));
-  const config = {
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator',
-    allowLocalExecution: true,
-    pollMs: 25, retryDelayMs: 25, timeoutMs: 5000,
-    maxAttempts: 3, maxHostTurns: 3, maxJobHours: 1, executionEnv: [],
-    verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
-    ...overrides,
-  };
+  const config = { projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspace'), packageTarget: 'simulator',
+  allowLocalExecution: true,
+  pollMs: 25, retryDelayMs: 25, timeoutMs: 5000,
+  maxAttempts: 3, maxHostTurns: 3, maxJobHours: 1, executionEnv: [],
+  verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
+  ...overrides, }
   const store = new Store(config.stateDir);
   t.after(() => { store.release(); store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue({ id: 'preflight-test', name: 'Prerequisite fixture', framework: 'flutter', platform: 'ios', channel: 'local', version: '1.0.0', differentiators: ['Configured environment checks'], acceptance: ['Resume only after readiness'], purpose: 'Test configured prerequisites', audience: 'Factory maintainers' }, config);

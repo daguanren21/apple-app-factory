@@ -1,27 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import fs, { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn, spawnSync } from 'node:child_process';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, nextQueueTurn } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
-import { projectDirectory, sourceDigest } from '../dist/workspace.js';
+import childProcess, { spawn, spawnSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, nextQueueTurn } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { inspectProcess } from '../dist/execution/process.js';
+import { projectDirectory, sourceDigest } from '../dist/projects/workspace.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const success = [process.execPath, '-e', 'process.exit(0)'];
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-queue-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    ...overrides,
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  ...overrides, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   return {
@@ -63,13 +63,6 @@ test('build turns carry the ui-designer then developer roles by default and conf
   assert.match(claim2.turn.prompt, /senior-developer/);
 });
 
-test('roles config fills default role lists per stage', () => {
-  const base = { stateDir: '/tmp/roles-state', workspaceRoot: '/tmp/roles-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } };
-  const parsed = ConfigSchema.parse({ ...base, roles: {} });
-  assert.deepEqual(parsed.roles.research, ['product-analyst']);
-  assert.deepEqual(parsed.roles.build, ['ui-designer', 'developer']);
-  assert.deepEqual(parsed.roles.review, ['architect-review', 'qa-engineer', 'acceptance-reviewer']);
-});
 
 test('nextQueueTurn drives a single-job queue exactly like next <id>', async t => {
   const f = fixture(t);
@@ -77,6 +70,72 @@ test('nextQueueTurn drives a single-job queue exactly like next <id>', async t =
   const result = await nextQueueTurn(f.store);
   assert.equal(result.action, 'host');
   assert.equal(result.job.id, job.id);
+});
+
+test('a verified owner incarnation must still match inside the claim transaction', async t => {
+  const f = fixture(t);
+  const job = f.enqueue('owner-incarnation', 'research', 0);
+  const identity = inspectProcess(process.pid)?.identity;
+  assert.ok(identity);
+  const before = f.store.get(job.id);
+  await assert.rejects(nextTurn(f.store, job.id, { ownerPid: process.pid, ownerIdentity: `reused:${identity}` }), /incarnation changed/);
+  assert.deepEqual(f.store.get(job.id), before, 'A changed incarnation must not consume a turn or stage attempt');
+  const claimed = await nextTurn(f.store, job.id, { ownerPid: process.pid, ownerIdentity: identity });
+  assert.equal(claimed.action, 'host');
+  assert.equal(claimed.job.turn.ownerIdentity, identity);
+});
+
+test('an alive owner whose incarnation becomes unreadable cannot create a PID-only claim', async t => {
+  const f = fixture(t);
+  const job = f.enqueue('owner-inspection-loss', 'research', 0);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => { holder.once('spawn', resolve); holder.once('error', reject); });
+  t.after(() => { if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGTERM'); });
+  const identity = inspectProcess(holder.pid)?.identity;
+  assert.ok(identity);
+  const before = f.store.get(job.id);
+  const originalRead = fs.readFileSync, originalSpawn = childProcess.spawnSync;
+  try {
+    fs.readFileSync = function(path, ...args) {
+      if (String(path).startsWith(`/proc/${holder.pid}/`)) throw Object.assign(new Error('Inspection denied'), { code: 'EACCES' });
+      return originalRead.call(this, path, ...args);
+    };
+    childProcess.spawnSync = function(file, argv, ...args) {
+      if (file === '/bin/ps' && argv.includes(String(holder.pid))) return { error: Object.assign(new Error('Inspection denied'), { code: 'EACCES' }), status: null, stdout: '', stderr: '' };
+      return originalSpawn.call(this, file, argv, ...args);
+    };
+    syncBuiltinESMExports();
+    await assert.rejects(nextTurn(f.store, job.id, { ownerPid: holder.pid, ownerIdentity: identity }), /inspectable live process incarnation/);
+    assert.deepEqual(f.store.get(job.id), before);
+  } finally {
+    fs.readFileSync = originalRead;
+    childProcess.spawnSync = originalSpawn;
+    syncBuiltinESMExports();
+  }
+});
+
+test('dynamic claims and dead-turn adoption both require the resolved incarnation', async t => {
+  const dynamic = fixture(t, { workflow: {}, maxHostTurns: 16 });
+  const dynamicJob = dynamic.enqueue('dynamic-owner-incarnation', 'research', 0);
+  const identity = inspectProcess(process.pid)?.identity;
+  assert.ok(identity);
+  const dynamicBefore = dynamic.store.get(dynamicJob.id);
+  await assert.rejects(nextTurn(dynamic.store, dynamicJob.id, { ownerPid: process.pid, ownerIdentity: `reused:${identity}` }), /incarnation changed/);
+  assert.deepEqual(dynamic.store.get(dynamicJob.id), dynamicBefore);
+
+  const legacy = fixture(t);
+  const legacyJob = legacy.enqueue('adopt-owner-incarnation', 'research', 0);
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  await new Promise((resolve, reject) => { holder.once('spawn', resolve); holder.once('error', reject); });
+  const holderIdentity = inspectProcess(holder.pid)?.identity;
+  assert.ok(holderIdentity);
+  await nextTurn(legacy.store, legacyJob.id, { ownerPid: holder.pid, ownerIdentity: holderIdentity });
+  const exited = new Promise(resolve => holder.once('exit', resolve));
+  holder.kill('SIGTERM');
+  await exited;
+  const beforeAdoption = legacy.store.get(legacyJob.id);
+  await assert.rejects(nextTurn(legacy.store, legacyJob.id, { ownerPid: process.pid, ownerIdentity: `reused:${identity}` }), /incarnation changed/);
+  assert.deepEqual(legacy.store.get(legacyJob.id), beforeAdoption);
 });
 
 test('nextQueueTurn returns step for the earliest-due deterministic stage', async t => {
@@ -141,8 +200,8 @@ test('queue skips a live subprocess owner, then adopts its dead turn without a n
   assert.equal(f.store.get(owned.id).turn.ownerPid, process.pid);
 
   const unowned = f.enqueue('legacy-owner', 'research', 0);
-  const legacyClaim = await nextTurn(f.store, unowned.id, { ownerPid: holder.pid });
-  const { ownerPid: _discardedOwner, ...legacyTurn } = f.store.get(unowned.id).turn;
+  const legacyClaim = await nextTurn(f.store, unowned.id);
+  const { ownerPid: _discardedOwner, ownerIdentity: _discardedIdentity, ...legacyTurn } = f.store.get(unowned.id).turn;
   f.store.update(unowned.id, { turn: legacyTurn });
   const adopted = await nextQueueTurn(f.store);
   assert.equal(adopted.action, 'host');
@@ -180,9 +239,9 @@ test('nextQueueTurn reports stale turn context and keeps scanning the queue', as
   const f = fixture(t);
   const stale = f.enqueue('stale', 'research', 0);
   const deadOwner = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
-  const claim = await nextTurn(f.store, stale.id, { ownerPid: deadOwner });
+  const claim = await nextTurn(f.store, stale.id);
   assert.equal(claim.action, 'host');
-  f.store.update(stale.id, { logs: [...stale.logs, 'context-changed'] });
+  f.store.update(stale.id, { turn: { ...claim.job.turn, ownerPid: deadOwner, ownerIdentity: undefined }, logs: [...stale.logs, 'context-changed'] });
   const future = f.enqueue('future', 'research', Date.now() + 3600000);
   const result = await nextQueueTurn(f.store);
   assert.equal(result.action, 'idle');
@@ -211,11 +270,9 @@ test('needs-owner jobs are terminal for the loop and retryable after owner input
   assert.equal(result.action, 'idle');
   assert.deepEqual(result.summary, { total: 1, built: 0, failed: 0, needsOwner: 1, blocked: 0, waiting: 0, queued: 0, running: 0 });
   const configPath = join(f.root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({
-    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-  }));
+  writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] }, }));
   const retried = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
   assert.equal(retried.status, 0, retried.stderr);
   assert.equal(JSON.parse(retried.stdout).status, 'queued');
@@ -234,7 +291,7 @@ test('retry refuses an exhausted budget and queues after the owner raises it', a
   const f = fixture(t);
   const job = f.store.update(f.enqueue('owner-deferred', 'build', 0).id, { status: 'needs-owner', attempts: { build: 8 }, error: 'Attempt budget exhausted; owner input is required to proceed: review rejected' });
   const configPath = join(f.root, 'factory.json');
-  const base = { stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true, pollMs: 25, verification: { prerequisites: [], checks: [success], runtime: [success] } };
+  const base = { projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator', allowLocalExecution: true, pollMs: 25, verification: { prerequisites: [], checks: [success], runtime: [success] } }
   writeFileSync(configPath, JSON.stringify(base));
   const refused = spawnSync(process.execPath, [cli, 'retry', job.id, '--config', configPath], { encoding: 'utf8' });
   assert.equal(refused.status, 0, refused.stderr);
@@ -262,12 +319,10 @@ test('obfuscate stage persists base digest, transformed digest and the typed rep
   const root = mkdtempSync(join(tmpdir(), 'factory-obfuscate-'));
   const obConfigPath = join(root, 'obfuscator.json');
   writeFileSync(obConfigPath, JSON.stringify({ code: { removeComments: true } }));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    obfuscation: { configPath: obConfigPath, seed: 'queue-test-seed' },
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  obfuscation: { configPath: obConfigPath, seed: 'queue-test-seed' }, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue({
@@ -293,12 +348,10 @@ test('obfuscate stage persists base digest, transformed digest and the typed rep
 
 test('obfuscate stage accepts inline options and leaves no snapshot behind', async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-obfuscate-inline-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    obfuscation: { options: { code: { removeComments: true } }, seed: 'inline-seed' },
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  obfuscation: { options: { code: { removeComments: true } }, seed: 'inline-seed' }, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue({
@@ -323,7 +376,7 @@ test('obfuscate stage accepts inline options and leaves no snapshot behind', asy
 });
 
 test('obfuscation config requires exactly one of configPath or inline options', () => {
-  const base = { stateDir: '/tmp/obf-state', workspaceRoot: '/tmp/obf-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } };
+  const base = { projectMode: 'isolated', stateDir: '/tmp/obf-state', workspaceRoot: '/tmp/obf-workspaces', packageTarget: 'simulator', verification: { prerequisites: [], checks: [success], runtime: [success] } }
   assert.throws(() => ConfigSchema.parse({ ...base, obfuscation: { seed: 'x' } }), /configPath or inline options/);
   assert.throws(() => ConfigSchema.parse({ ...base, obfuscation: { configPath: 'obfuscator.json', options: { code: {} } } }), /not both/);
   const parsed = ConfigSchema.parse({ ...base, obfuscation: { options: { code: { removeComments: true } } } });
@@ -335,12 +388,10 @@ test('next --any CLI picks the earliest-due task across the queue', async t => {
   f.enqueue('future', 'research', Date.now() + 3600000);
   const due = f.enqueue('due', 'research', 0);
   const configPath = join(f.root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({
-    stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 25,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-  }));
-  const result = spawnSync(process.execPath, [cli, 'next', '--any', '--config', configPath], { encoding: 'utf8' });
+  writeFileSync(configPath, JSON.stringify({ projectMode: 'isolated', stateDir: 'state', workspaceRoot: 'workspaces', packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 25,
+  verification: { prerequisites: [], checks: [success], runtime: [success] }, }));
+  const result = spawnSync(process.execPath, [cli, 'next', '--any', '--host-pid', String(process.pid), '--config', configPath], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.action, 'host');

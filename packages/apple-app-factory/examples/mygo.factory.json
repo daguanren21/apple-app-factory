@@ -1,6 +1,6 @@
 {
-  "stateDir": ".factory",
-  "workspaceRoot": "workspaces",
+  "projectMode": "project",
+  "projectRoot": ".",
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "app",
@@ -64,5 +64,8 @@
       ]
     ],
     "artifactPath": "build/darwin-arm64/MyGo App.app"
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

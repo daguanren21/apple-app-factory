@@ -1,0 +1,633 @@
+{
+  "format": 1,
+  "package": {
+    "name": "@earendil-works/pi-schema",
+    "version": "1.4.0-apphx.c9f4c7b9fcd0",
+    "artifact": "vendor/pi-schema.tgz",
+    "runtimeDependencies": {},
+    "lifecycleScriptsExecuted": []
+  },
+  "upstream": {
+    "repository": "https://github.com/earendil-works/pi.git",
+    "commit": "c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8",
+    "packagePath": "packages/schema",
+    "archiveUrl": "https://codeload.github.com/earendil-works/pi/tar.gz/c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8",
+    "archiveSha256": "a68fe5377a5a8c05aed9174f99d381c64e7b1220bdee49184e58fb7b51689c0f",
+    "archiveExpectedSha256": "a68fe5377a5a8c05aed9174f99d381c64e7b1220bdee49184e58fb7b51689c0f",
+    "sourceTreeSha256": "87aa5a5f77f0cd8bdc9a245cd41e1b1bae508ea24b5f5734fd28c81790ad36a5",
+    "sourceFiles": [
+      {
+        "path": "annotations.ts",
+        "bytes": 6562,
+        "sha256": "026b1ced7f5bf5b226403da294b03eb084c5609e607ecc7c5e49d7f7154fd545",
+        "gitBlobSha1": "5bc9cc4f51ef85a7b2c4567f364f00f195a24ce5",
+        "imports": [
+          "./checks.ts",
+          "./types.ts"
+        ]
+      },
+      {
+        "path": "builders.ts",
+        "bytes": 7095,
+        "sha256": "99935e247a7031d27164e0619d215cc6fd1f7ddbeb34ef1f7de5187a8ff972c3",
+        "gitBlobSha1": "2dc61a5201fdd0d2d702061a5c7055a60689cc25",
+        "imports": [
+          "./typebox-static.ts"
+        ]
+      },
+      {
+        "path": "checks.ts",
+        "bytes": 15480,
+        "sha256": "3190cb5d2d2228fc699c2c4442bc019676948c7acff17ef99359580a587bd849",
+        "gitBlobSha1": "222d3dbdec5b356895e77a14a6374cf0863c6838",
+        "imports": [
+          "./types.ts"
+        ]
+      },
+      {
+        "path": "coerce.ts",
+        "bytes": 24043,
+        "sha256": "e7949b8e3fa3268b0a0fc8f57f177c644ac0f36a32c78f94aee2789d349f5f26",
+        "gitBlobSha1": "5dee2487fad2cc862aaafb90497c40daec71a732",
+        "imports": [
+          "./compiler.ts",
+          "./resolver.ts",
+          "./shared.ts",
+          "./types.ts"
+        ]
+      },
+      {
+        "path": "compiler.ts",
+        "bytes": 23766,
+        "sha256": "cb05465b48f72f6d8c8c4eb7926c54ae970e8bf147ebdbb90a8920382dc9a74e",
+        "gitBlobSha1": "8140e38d5e7449ae2185db8a6e693cb882d5c84d",
+        "imports": [
+          "./annotations.ts",
+          "./checks.ts",
+          "./resolver.ts",
+          "./shared.ts",
+          "./types.ts"
+        ]
+      },
+      {
+        "path": "explain.ts",
+        "bytes": 16193,
+        "sha256": "48e3cc21b452384a6018ea001e4b7f5522b0cd5b395935d00f019389b987bb31",
+        "gitBlobSha1": "3ab363986e7251cede1ee126b36ec78ae98cb0c3",
+        "imports": [
+          "./annotations.ts",
+          "./checks.ts",
+          "./compiler.ts",
+          "./resolver.ts",
+          "./shared.ts",
+          "./types.ts"
+        ]
+      },
+      {
+        "path": "formats/index.ts",
+        "bytes": 2153,
+        "sha256": "3ef8c2ef13abed6435130021d9f86c2a2a57afa53919cca46132c9fe195a1abd",
+        "gitBlobSha1": "05d8824eda0f4585d36d60cff3c7dfca50b8f401",
+        "imports": [
+          "../types.ts",
+          "./typebox/date.ts",
+          "./typebox/date_time.ts",
+          "./typebox/duration.ts",
+          "./typebox/email.ts",
+          "./typebox/hostname.ts",
+          "./typebox/idn_email.ts",
+          "./typebox/idn_hostname.ts",
+          "./typebox/ipv4.ts",
+          "./typebox/ipv6.ts",
+          "./typebox/iri.ts",
+          "./typebox/iri_reference.ts",
+          "./typebox/json_pointer.ts",
+          "./typebox/json_pointer_uri_fragment.ts",
+          "./typebox/regex.ts",
+          "./typebox/relative_json_pointer.ts",
+          "./typebox/time.ts",
+          "./typebox/uri.ts",
+          "./typebox/uri_reference.ts",
+          "./typebox/uri_template.ts",
+          "./typebox/url.ts",
+          "./typebox/uuid.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/date_time.ts",
+        "bytes": 1675,
+        "sha256": "7e17fae3ba72d3d9b156e0979f95c14b54ad7ec5788d968ec3752589a7a7d245",
+        "gitBlobSha1": "df4174a402b926fc5c0e9b11d02bfef5430abf8d",
+        "imports": [
+          "./date.ts",
+          "./time.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/date.ts",
+        "bytes": 1982,
+        "sha256": "4e7236a32373ebb191c23429c247e5b8dd1e1b51db47db61a0458427b50f218b",
+        "gitBlobSha1": "e35cf0770fa83c9a3520b276b53f7fe02a548801",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/duration.ts",
+        "bytes": 1609,
+        "sha256": "2dc2a8e50308e99872d72f37c364a552dd79a0a2e83f197a962cf994192e44a1",
+        "gitBlobSha1": "20d812c4fed907aae7ebcfe034d472ce6183377e",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/email.ts",
+        "bytes": 1771,
+        "sha256": "a25fdcd9556f0cb16351e0e238091625ca015fc0bcfefb736545c1cd624c185b",
+        "gitBlobSha1": "a6840daeddc8c6195f7c19c6691c3977d0b98f1e",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/hostname.ts",
+        "bytes": 1602,
+        "sha256": "8da0f6293ab2c31e11ab58123b0c5d54df8565bfe528670bd662eda8602680cb",
+        "gitBlobSha1": "68c3710fb4be2c6fcdf791f3b32d87db7e59af32",
+        "imports": [
+          "./idna/index.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idn_email.ts",
+        "bytes": 1717,
+        "sha256": "6106132bdc225657c56a535d29df8bfe1a5a5550b1fb716ca6ffd7a0fa2fec6b",
+        "gitBlobSha1": "92e3abdafd2c6290ebe65c4533c2505f97b24ea9",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/idn_hostname.ts",
+        "bytes": 1686,
+        "sha256": "dc49ef8d5f5ef13969d5300d7aacc527ca4513f1653c4adea1db094fd021c682",
+        "gitBlobSha1": "0582f32db1989b0955d1232fc314afec75f781ea",
+        "imports": [
+          "./idna/index.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/format/bidi.ts",
+        "bytes": 5323,
+        "sha256": "2d230f8653145259c4c8f6636dd2f3bc2c0c4ac43b3738c9d06300b2bdfc112a",
+        "gitBlobSha1": "9602eafaf5849db7e8bf8254be2fe92bc5966a6a",
+        "imports": [
+          "../pattern/pattern.ts",
+          "./puny.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/format/puny.ts",
+        "bytes": 6473,
+        "sha256": "9684a1b30818e6907c9ae4fe5fb7c6bb57c0515749b0faf7b0f9477842f94af5",
+        "gitBlobSha1": "c1409ffac8856403599c2ad5a9256cd02c53706b",
+        "imports": [
+          "../pattern/pattern.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/hostname.ts",
+        "bytes": 1837,
+        "sha256": "130f7a2c457da01680c41e55c9f7dfba8ac8e980140ac9d951ce43da59502a88",
+        "gitBlobSha1": "ade2322b46954aeda4c1fbbc46cc30db346b3cf3",
+        "imports": [
+          "./label/ascii.ts",
+          "./label/puny.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/idn-hostname.ts",
+        "bytes": 3458,
+        "sha256": "8c1a28e5abe830f9145f1b93e345eac68be796dfb3d9f824f86863b8fdfced4b",
+        "gitBlobSha1": "d4517faacd4c885582cdf136cf333601e5023dc1",
+        "imports": [
+          "./format/bidi.ts",
+          "./label/puny.ts",
+          "./label/unicode.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/index.ts",
+        "bytes": 1319,
+        "sha256": "7a6931b89002a711a4376dd73c6151ed74d42ad72d0e4c7a557c6649552fe612",
+        "gitBlobSha1": "c5d10175e5dc2f9b0584546ae15f572cebaa2523",
+        "imports": [
+          "./hostname.ts",
+          "./idn-hostname.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/label/ascii.ts",
+        "bytes": 1707,
+        "sha256": "78921bb06c6e3cb12b9f12e572be5a3a829bb73e5e51b94537db85b0518f86d7",
+        "gitBlobSha1": "704e8f944815844b3ab09b97ea1bf52d64ecda12",
+        "imports": [
+          "../pattern/pattern.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/label/puny.ts",
+        "bytes": 2385,
+        "sha256": "4a9391d029e091db5783012e0d4c54009d6ed36ca36da87f07e493ebafc691d6",
+        "gitBlobSha1": "23b288ce223da949b6bb421463e81554fb4f2a4e",
+        "imports": [
+          "../format/puny.ts",
+          "../pattern/pattern.ts",
+          "./unicode.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/label/unicode.ts",
+        "bytes": 5750,
+        "sha256": "d6924a583f7d9b8f78425969a4e6dc1fb063340c7e144ebae542d2712199abe4",
+        "gitBlobSha1": "61594242713da09546f3ae8e50c63b3dcee851a0",
+        "imports": [
+          "../format/bidi.ts",
+          "../format/puny.ts",
+          "../pattern/pattern.ts"
+        ]
+      },
+      {
+        "path": "formats/typebox/idna/pattern/pattern.ts",
+        "bytes": 5328,
+        "sha256": "28250478aba9902dde7c688d40d03d45a20eb2bec6b50da85d3269d160552afa",
+        "gitBlobSha1": "dfb55c1d6cfedfa95e4902cc534e9c1e9de49aae",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/ipv4.ts",
+        "bytes": 1549,
+        "sha256": "5d3ac28bb7416a9baa5a83c8730e18dcda6b80b20ad0faa72f182b78c341d997",
+        "gitBlobSha1": "2c6bf3c7bf5c9f688e1bbfd228cc1be78758e3c0",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/ipv6.ts",
+        "bytes": 2008,
+        "sha256": "3032b0ce5a6b31efccd7724d73042e6cb264f8a0daf1dc9b00dd760bdac1591c",
+        "gitBlobSha1": "4cc46deace446f4dc380e31e35f8333deed1987f",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/iri_reference.ts",
+        "bytes": 1913,
+        "sha256": "19a7cdf721c7839a0f4689241d3c5e62d6aa0b17cd16e54a1edc29d74cf6729f",
+        "gitBlobSha1": "5e45c75ee3526c82b3f19545610550652b7e943a",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/iri.ts",
+        "bytes": 2812,
+        "sha256": "6cb40c02152c80b019c2e18c41afee952da30fdf66cd465c4a4b68be2a42a4f6",
+        "gitBlobSha1": "8ee1d0540ff783ae05c63d12364953657aa813fe",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/json_pointer_uri_fragment.ts",
+        "bytes": 1650,
+        "sha256": "e815f3595527684f07f92fcff0ca49f8ed67776bf1079f5a328429e7e7673a93",
+        "gitBlobSha1": "cac809cefe9aee8846b45cb2c3212be3748346ed",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/json_pointer.ts",
+        "bytes": 1569,
+        "sha256": "21850b35d7ba4abb03ea6476e40088f06cd1ecda8bd98580bbc5250fa441e770",
+        "gitBlobSha1": "c2d171aef94abd3743d01eb8e2c9e15844a61e44",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/regex.ts",
+        "bytes": 1517,
+        "sha256": "27c362e3b0d1fc3ab3cd0fb310061634ce814e618664a130f2d873fde4f8cfd0",
+        "gitBlobSha1": "52cff8d2a82af458294d8d02bb7cbf51b2c46045",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/relative_json_pointer.ts",
+        "bytes": 1625,
+        "sha256": "f1c9313b17afea1197da7e9e6c19c351c4a0f9d0966229b3368d5eb2300bacf4",
+        "gitBlobSha1": "f2dfd6fbd046ed3613101d370fb9ff1d4108e9a4",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/time.ts",
+        "bytes": 2323,
+        "sha256": "e960d95a550422e2c69d8b74af65305dc8cb425d2ef3d8a4140d2b89099ffb47",
+        "gitBlobSha1": "bbc9c6113e0a6e09469c0ee26ee2fe0b068fbc25",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/uri_reference.ts",
+        "bytes": 4919,
+        "sha256": "e4516dd7ad28fd96557609878d3f4db2a865918a7601a9720fa7be3ae945b0c1",
+        "gitBlobSha1": "215058dedbb324d4f7a3a90a827b15499f0d1c14",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/uri_template.ts",
+        "bytes": 1780,
+        "sha256": "588d34367c65d3f8d81f6c5d8f9bdc3ccabe7db77ed06898a27d2128d6c5691c",
+        "gitBlobSha1": "ca364fe15d2675af3922a89ac125652c749f847b",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/uri.ts",
+        "bytes": 3252,
+        "sha256": "be17dccf4ea743684e63c5fa0d18b313b20af4a8ed67a40477ed31a055300c89",
+        "gitBlobSha1": "5aadeab170ee45acbb8d12c9b08015018b80c4af",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/url.ts",
+        "bytes": 1533,
+        "sha256": "b628eb1f8dea2ff51d58472998be998933c4aa5802cf265a45b3da55e49c497d",
+        "gitBlobSha1": "dfe00c4b8b40e85566d503a2324acf1072fb3d56",
+        "imports": []
+      },
+      {
+        "path": "formats/typebox/uuid.ts",
+        "bytes": 1559,
+        "sha256": "f2da24b55cecc9b975a944c4eb98566a2c1a5761190d42febfef52b6da722f59",
+        "gitBlobSha1": "cf26ffa6eb5a26cea5d9a44301b3d0ea1cc6df59",
+        "imports": []
+      },
+      {
+        "path": "index.ts",
+        "bytes": 667,
+        "sha256": "6cea71fd7d23812d6928bfed24e1f11185b535d6d4dc6a99667dd59f94df565c",
+        "gitBlobSha1": "c57ede2e9fe949899bf51310ecaf68bdceab16d7",
+        "imports": [
+          "./builders.ts",
+          "./types.ts",
+          "./validator.ts"
+        ]
+      },
+      {
+        "path": "resolver.ts",
+        "bytes": 7843,
+        "sha256": "15f19933cba1c9f25e34f58ab0554015a9ae5a18c0d88d468eaa188d8b3dd668",
+        "gitBlobSha1": "5c8b97543a625dba0aa1786fb808b4c95defdb83",
+        "imports": [
+          "./types.ts"
+        ]
+      },
+      {
+        "path": "shared.ts",
+        "bytes": 1186,
+        "sha256": "9625cd5c7708d645724451bf9ad25112b7bbbef022df7b5c7028ba25c131e0df",
+        "gitBlobSha1": "42c30152fc3429ad9efe69410bc523fc958d5bf3",
+        "imports": []
+      },
+      {
+        "path": "typebox-static.ts",
+        "bytes": 2528,
+        "sha256": "640f80d4b65318e1b6f90e5ae74d9bf3db7b5cf4d952970c4c759d3e494d4ab0",
+        "gitBlobSha1": "ce9f29b512e62f67fb1cb11c1a35ca54807300fa",
+        "imports": [
+          "./builders.ts"
+        ]
+      },
+      {
+        "path": "types.ts",
+        "bytes": 2202,
+        "sha256": "80974ecbd34add9253bf96ee4876e463f69744d6bffd7043627342cbc8b71824",
+        "gitBlobSha1": "d3f635adbeedf9a1870065e5c64c9d8d27ea524b",
+        "imports": []
+      },
+      {
+        "path": "validator.ts",
+        "bytes": 4050,
+        "sha256": "b92f177753d9d872a79fc54727e946c81660ebdc8a91143e8df01febe45ba3a4",
+        "gitBlobSha1": "65781e5ddac77c8baac3c3595470bf21ffc4bcf6",
+        "imports": [
+          "./builders.ts",
+          "./coerce.ts",
+          "./compiler.ts",
+          "./explain.ts",
+          "./types.ts"
+        ]
+      }
+    ],
+    "upstreamPackageJsonSha256": "e56e7792660505dceefde5a8286261b63eaa50bd6b23d72e2bcf3a3dbf6bdda3",
+    "upstreamPackageJsonGitBlobSha1": "3fdb1b14ff04cc5f6b625d26a517044e9afaab0f",
+    "upstreamTsconfigBuildSha256": "5d1d8e87055b879ea8525af3d2061952705dac28f2a79450cc86b138828eff3f",
+    "upstreamTsconfigBuildGitBlobSha1": "695dd9ad25a4672e4f69bc856eedbd2bbe600c4a",
+    "upstreamLicenseSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+    "upstreamLicenseGitBlobSha1": "b0a8e9b81083294360c69b4ec45d3d39a2b28197",
+    "upstreamTypeboxLicenseSha256": "e8a7cc256941a26ba8234f04390165243a4d42f74fd6491934140605bf7eae2d",
+    "upstreamTypeboxLicenseGitBlobSha1": "0330da432252b0db75e17e725be37ecdebb43b76",
+    "upstreamLifecycleScripts": {
+      "clean": "node ../../scripts/package-files.mjs clean dist",
+      "build": "tsc -p tsconfig.build.json",
+      "test": "vitest --run",
+      "bench": "node --expose-gc test/bench/all.ts",
+      "prepublishOnly": "npm run clean && npm run build"
+    },
+    "sourceImportPolicy": "All package runtime imports are relative to packages/schema/src; no external runtime dependencies."
+  },
+  "compiler": {
+    "name": "typescript",
+    "version": "6.0.3",
+    "packageSha256": "9332e97c30d3e53ed54910b89207ed657fb444066484df6e5b6965bf130865e9",
+    "config": "vendor/pi-schema/tsconfig.build.json",
+    "configSha256": "d474189f0b2018ce2d58f479d9a11699ac14b4ccec33eb9159b6d3a1db5c35e6",
+    "command": "node node_modules/typescript/bin/tsc -p vendor/pi-schema/tsconfig.build.json"
+  },
+  "build": {
+    "sourceMaterializedFromArchive": true,
+    "upstreamInstallExecuted": false,
+    "upstreamLifecycleExecuted": false,
+    "packCommand": "npm pack vendor/pi-schema --ignore-scripts",
+    "artifactSha256": "bc2b5eaeb162f35780684dd37829cf7461f577fbe302e7b995d980706b4cc10d",
+    "artifactBytes": 133345,
+    "artifactEntries": [
+      "package/LICENSE",
+      "package/LICENSES/typebox-LICENSE",
+      "package/dist/annotations.js",
+      "package/dist/formats/typebox/idna/label/ascii.js",
+      "package/dist/formats/typebox/idna/format/bidi.js",
+      "package/dist/builders.js",
+      "package/dist/checks.js",
+      "package/dist/coerce.js",
+      "package/dist/compiler.js",
+      "package/dist/formats/typebox/date_time.js",
+      "package/dist/formats/typebox/date.js",
+      "package/dist/formats/typebox/duration.js",
+      "package/dist/formats/typebox/email.js",
+      "package/dist/explain.js",
+      "package/dist/formats/typebox/hostname.js",
+      "package/dist/formats/typebox/idna/hostname.js",
+      "package/dist/formats/typebox/idn_email.js",
+      "package/dist/formats/typebox/idn_hostname.js",
+      "package/dist/formats/typebox/idna/idn-hostname.js",
+      "package/dist/formats/index.js",
+      "package/dist/formats/typebox/idna/index.js",
+      "package/dist/index.js",
+      "package/dist/formats/typebox/ipv4.js",
+      "package/dist/formats/typebox/ipv6.js",
+      "package/dist/formats/typebox/iri_reference.js",
+      "package/dist/formats/typebox/iri.js",
+      "package/dist/formats/typebox/json_pointer_uri_fragment.js",
+      "package/dist/formats/typebox/json_pointer.js",
+      "package/dist/formats/typebox/idna/pattern/pattern.js",
+      "package/dist/formats/typebox/idna/format/puny.js",
+      "package/dist/formats/typebox/idna/label/puny.js",
+      "package/dist/formats/typebox/regex.js",
+      "package/dist/formats/typebox/relative_json_pointer.js",
+      "package/dist/resolver.js",
+      "package/dist/shared.js",
+      "package/dist/formats/typebox/time.js",
+      "package/dist/typebox-static.js",
+      "package/dist/types.js",
+      "package/dist/formats/typebox/idna/label/unicode.js",
+      "package/dist/formats/typebox/uri_reference.js",
+      "package/dist/formats/typebox/uri_template.js",
+      "package/dist/formats/typebox/uri.js",
+      "package/dist/formats/typebox/url.js",
+      "package/dist/formats/typebox/uuid.js",
+      "package/dist/validator.js",
+      "package/package.json",
+      "package/dist/annotations.d.ts.map",
+      "package/dist/annotations.js.map",
+      "package/dist/formats/typebox/idna/label/ascii.d.ts.map",
+      "package/dist/formats/typebox/idna/label/ascii.js.map",
+      "package/dist/formats/typebox/idna/format/bidi.d.ts.map",
+      "package/dist/formats/typebox/idna/format/bidi.js.map",
+      "package/dist/builders.d.ts.map",
+      "package/dist/builders.js.map",
+      "package/dist/checks.d.ts.map",
+      "package/dist/checks.js.map",
+      "package/dist/coerce.d.ts.map",
+      "package/dist/coerce.js.map",
+      "package/dist/compiler.d.ts.map",
+      "package/dist/compiler.js.map",
+      "package/dist/formats/typebox/date_time.d.ts.map",
+      "package/dist/formats/typebox/date_time.js.map",
+      "package/dist/formats/typebox/date.d.ts.map",
+      "package/dist/formats/typebox/date.js.map",
+      "package/dist/formats/typebox/duration.d.ts.map",
+      "package/dist/formats/typebox/duration.js.map",
+      "package/dist/formats/typebox/email.d.ts.map",
+      "package/dist/formats/typebox/email.js.map",
+      "package/dist/explain.d.ts.map",
+      "package/dist/explain.js.map",
+      "package/dist/formats/typebox/hostname.d.ts.map",
+      "package/dist/formats/typebox/idna/hostname.d.ts.map",
+      "package/dist/formats/typebox/hostname.js.map",
+      "package/dist/formats/typebox/idna/hostname.js.map",
+      "package/dist/formats/typebox/idn_email.d.ts.map",
+      "package/dist/formats/typebox/idn_email.js.map",
+      "package/dist/formats/typebox/idn_hostname.d.ts.map",
+      "package/dist/formats/typebox/idn_hostname.js.map",
+      "package/dist/formats/typebox/idna/idn-hostname.d.ts.map",
+      "package/dist/formats/typebox/idna/idn-hostname.js.map",
+      "package/dist/formats/index.d.ts.map",
+      "package/dist/formats/typebox/idna/index.d.ts.map",
+      "package/dist/index.d.ts.map",
+      "package/dist/formats/index.js.map",
+      "package/dist/formats/typebox/idna/index.js.map",
+      "package/dist/index.js.map",
+      "package/dist/formats/typebox/ipv4.d.ts.map",
+      "package/dist/formats/typebox/ipv4.js.map",
+      "package/dist/formats/typebox/ipv6.d.ts.map",
+      "package/dist/formats/typebox/ipv6.js.map",
+      "package/dist/formats/typebox/iri_reference.d.ts.map",
+      "package/dist/formats/typebox/iri_reference.js.map",
+      "package/dist/formats/typebox/iri.d.ts.map",
+      "package/dist/formats/typebox/iri.js.map",
+      "package/dist/formats/typebox/json_pointer_uri_fragment.d.ts.map",
+      "package/dist/formats/typebox/json_pointer_uri_fragment.js.map",
+      "package/dist/formats/typebox/json_pointer.d.ts.map",
+      "package/dist/formats/typebox/json_pointer.js.map",
+      "package/dist/formats/typebox/idna/pattern/pattern.d.ts.map",
+      "package/dist/formats/typebox/idna/pattern/pattern.js.map",
+      "package/dist/formats/typebox/idna/format/puny.d.ts.map",
+      "package/dist/formats/typebox/idna/label/puny.d.ts.map",
+      "package/dist/formats/typebox/idna/format/puny.js.map",
+      "package/dist/formats/typebox/idna/label/puny.js.map",
+      "package/dist/formats/typebox/regex.d.ts.map",
+      "package/dist/formats/typebox/regex.js.map",
+      "package/dist/formats/typebox/relative_json_pointer.d.ts.map",
+      "package/dist/formats/typebox/relative_json_pointer.js.map",
+      "package/dist/resolver.d.ts.map",
+      "package/dist/resolver.js.map",
+      "package/dist/shared.d.ts.map",
+      "package/dist/shared.js.map",
+      "package/dist/formats/typebox/time.d.ts.map",
+      "package/dist/formats/typebox/time.js.map",
+      "package/dist/typebox-static.d.ts.map",
+      "package/dist/typebox-static.js.map",
+      "package/dist/types.d.ts.map",
+      "package/dist/types.js.map",
+      "package/dist/formats/typebox/idna/label/unicode.d.ts.map",
+      "package/dist/formats/typebox/idna/label/unicode.js.map",
+      "package/dist/formats/typebox/uri_reference.d.ts.map",
+      "package/dist/formats/typebox/uri_reference.js.map",
+      "package/dist/formats/typebox/uri_template.d.ts.map",
+      "package/dist/formats/typebox/uri_template.js.map",
+      "package/dist/formats/typebox/uri.d.ts.map",
+      "package/dist/formats/typebox/uri.js.map",
+      "package/dist/formats/typebox/url.d.ts.map",
+      "package/dist/formats/typebox/url.js.map",
+      "package/dist/formats/typebox/uuid.d.ts.map",
+      "package/dist/formats/typebox/uuid.js.map",
+      "package/dist/validator.d.ts.map",
+      "package/dist/validator.js.map",
+      "package/CHANGELOG.md",
+      "package/README.md",
+      "package/dist/annotations.d.ts",
+      "package/dist/formats/typebox/idna/label/ascii.d.ts",
+      "package/dist/formats/typebox/idna/format/bidi.d.ts",
+      "package/dist/builders.d.ts",
+      "package/dist/checks.d.ts",
+      "package/dist/coerce.d.ts",
+      "package/dist/compiler.d.ts",
+      "package/dist/formats/typebox/date_time.d.ts",
+      "package/dist/formats/typebox/date.d.ts",
+      "package/dist/formats/typebox/duration.d.ts",
+      "package/dist/formats/typebox/email.d.ts",
+      "package/dist/explain.d.ts",
+      "package/dist/formats/typebox/hostname.d.ts",
+      "package/dist/formats/typebox/idna/hostname.d.ts",
+      "package/dist/formats/typebox/idn_email.d.ts",
+      "package/dist/formats/typebox/idn_hostname.d.ts",
+      "package/dist/formats/typebox/idna/idn-hostname.d.ts",
+      "package/dist/formats/index.d.ts",
+      "package/dist/formats/typebox/idna/index.d.ts",
+      "package/dist/index.d.ts",
+      "package/dist/formats/typebox/ipv4.d.ts",
+      "package/dist/formats/typebox/ipv6.d.ts",
+      "package/dist/formats/typebox/iri_reference.d.ts",
+      "package/dist/formats/typebox/iri.d.ts",
+      "package/dist/formats/typebox/json_pointer_uri_fragment.d.ts",
+      "package/dist/formats/typebox/json_pointer.d.ts",
+      "package/dist/formats/typebox/idna/pattern/pattern.d.ts",
+      "package/dist/formats/typebox/idna/format/puny.d.ts",
+      "package/dist/formats/typebox/idna/label/puny.d.ts",
+      "package/dist/formats/typebox/regex.d.ts",
+      "package/dist/formats/typebox/relative_json_pointer.d.ts",
+      "package/dist/resolver.d.ts",
+      "package/dist/shared.d.ts",
+      "package/dist/formats/typebox/time.d.ts",
+      "package/dist/typebox-static.d.ts",
+      "package/dist/types.d.ts",
+      "package/dist/formats/typebox/idna/label/unicode.d.ts",
+      "package/dist/formats/typebox/uri_reference.d.ts",
+      "package/dist/formats/typebox/uri_template.d.ts",
+      "package/dist/formats/typebox/uri.d.ts",
+      "package/dist/formats/typebox/url.d.ts",
+      "package/dist/formats/typebox/uuid.d.ts",
+      "package/dist/validator.d.ts"
+    ]
+  },
+  "reproduction": {
+    "command": "node scripts/build-pi-schema.mjs --rebuild",
+    "verificationCommand": "node scripts/build-pi-schema.mjs --verify",
+    "networkOnlyDuringExplicitRebuild": true,
+    "normalInstallOrBuildFetchesNetwork": false
+  }
+}

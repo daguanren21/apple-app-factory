@@ -187,19 +187,19 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
     devDependencies:
+      '@earendil-works/pi-schema':
+        specifier: file:../../vendor/pi-schema.tgz
+        version: file:vendor/pi-schema.tgz
       obfuscator:
         specifier: workspace:*
         version: link:../obfuscator
 
   packages/obfuscator:
-    dependencies:
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
+    devDependencies:
+      '@earendil-works/pi-schema':
+        specifier: file:../../vendor/pi-schema.tgz
+        version: file:vendor/pi-schema.tgz
 
 packages:
 
@@ -445,6 +445,11 @@ packages:
         optional: true
       oxlint:
         optional: true
+
+  '@earendil-works/pi-schema@file:vendor/pi-schema.tgz':
+    resolution: {integrity: sha512-cUHuntv64eOHB+mllTEZwORcfD4GKbwv400YMo3FrzumVdz26Iz+hkQ9qvw6ffxsjZuqr0wCe301n7jYOscfGg==, tarball: file:vendor/pi-schema.tgz}
+    version: 1.4.0-apphx.c9f4c7b9fcd0
+    engines: {node: '>=22.19.0'}
 
   '@es-joy/jsdoccomment@0.92.0':
     resolution: {integrity: sha512-WivZqV5jPTYDQJgIMp0hTsyQESKYNY6yCJr4b0l84tYtQntkAMkc6zARh2vlRQyeg4aYHPUkCUDpvr2IWAiGpQ==}
@@ -4349,6 +4354,8 @@ snapshots:
       verkit: 0.4.1
     optionalDependencies:
       eslint: 10.13.0(jiti@2.7.0)(supports-color@10.2.2)
+
+  '@earendil-works/pi-schema@file:vendor/pi-schema.tgz': {}
 
   '@es-joy/jsdoccomment@0.92.0':
     dependencies:

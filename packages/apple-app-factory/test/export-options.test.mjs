@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareExportOptions, prepareNativeExportCommands } from '../dist/export-options.js';
-import { run } from '../dist/process.js';
-import { loadConfig } from '../dist/config.js';
-import { Store } from '../dist/store.js';
-import { executeStep } from '../dist/runner.js';
-import { sourceDigest } from '../dist/workspace.js';
-import { dependencyDigest } from '../dist/dependencies.js';
+import { prepareExportOptions, prepareNativeExportCommands } from '../dist/platforms/export-options.js';
+import { run } from '../dist/execution/process.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { Store } from '../dist/state/store.js';
+import { executeStep } from '../dist/workflow/runner.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
 
 for (const destination of [undefined, 'export']) {
   test(`local IPA export snapshot remains safe when the original configuration changes: ${destination ?? 'default'}`, { skip: process.platform !== 'darwin' }, async t => {
@@ -38,7 +38,7 @@ test('IPA destination=upload is blocked before the compiler and leaves no export
   writeFileSync(exportFile, JSON.stringify({ method: 'app-store-connect', destination: 'upload' }));
   const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));
   const configPath = join(root, 'factory.json');
-  writeFileSync(configPath, JSON.stringify({ ...example, allowLocalExecution: true, packageTarget: 'ipa', apple: { exportOptionsPlist: exportFile }, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } }));
+  writeFileSync(configPath, JSON.stringify({ ...example, projectMode: 'isolated', allowLocalExecution: true, packageTarget: 'ipa', apple: { exportOptionsPlist: exportFile }, stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] } }));
   const config = loadConfig(configPath);
   const bin = join(root, 'bin');
   mkdirSync(bin);
@@ -99,12 +99,9 @@ if (!exporting) {
     commands.push([compiler, '-exportArchive', '-exportOptionsPlist', unsafe]);
   }
   const configFile = join(root, 'factory.json');
-  writeFileSync(configFile, JSON.stringify({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'),
-    allowLocalExecution: true, packageTarget: 'ipa',
-    verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
-    packaging: { commands, artifactPath: 'build/fixture.ipa' },
-  }));
+  writeFileSync(configFile, JSON.stringify({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), allowLocalExecution: true, packageTarget: 'ipa',
+  verification: { prerequisites: [], checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
+  packaging: { commands, artifactPath: 'build/fixture.ipa' }, }));
   const config = loadConfig(configFile);
   const store = new Store(config.stateDir);
   t.after(() => store.close());

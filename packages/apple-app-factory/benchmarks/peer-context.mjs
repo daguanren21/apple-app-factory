@@ -17,6 +17,11 @@ const worker = join(here, 'peer-context-worker.mjs');
 const sha = value => createHash('sha256').update(value).digest('hex');
 const json = path => JSON.parse(fs.readFileSync(path, 'utf8'));
 const save = (path, value) => fs.writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+const moduleFiles = { schemas: 'contracts/schemas.js', store: 'state/store.js', runner: 'workflow/runner.js' };
+export function benchmarkModuleURL(dist, name) {
+  const path = join(dist, moduleFiles[name]);
+  return pathToFileURL(fs.existsSync(path) ? path : join(dist, `${name}.js`));
+}
 function treeHash(root) {
   const hash = createHash('sha256');
   function walk(directory, prefix = '') {
@@ -34,10 +39,11 @@ function snapshot(root, name, dist) {
   fs.mkdirSync(target, { mode: 0o700 });
   fs.cpSync(dist, join(target, 'dist'), { recursive: true });
   save(join(target, 'package.json'), { type: 'module' });
-  for (const dependency of ['yaml', 'zod']) {
+  const dependencies = Object.keys(json(join(packageRoot, 'package.json')).dependencies ?? {});
+  for (const dependency of dependencies) {
     fs.cpSync(fs.realpathSync(join(packageRoot, 'node_modules', dependency)), join(target, 'node_modules', dependency), { recursive: true });
   }
-  return { dist: join(target, 'dist'), digest: treeHash(target), dependencies: Object.fromEntries(['yaml', 'zod'].map(name => [name, json(join(target, 'node_modules', name, 'package.json')).version])) };
+  return { dist: join(target, 'dist'), digest: treeHash(target), dependencies: Object.fromEntries(dependencies.map(name => [name, json(join(target, 'node_modules', name, 'package.json')).version])) };
 }
 function number(value, fallback, minimum) {
   const result = value === undefined ? fallback : Number(value);
@@ -89,9 +95,11 @@ async function prepare(root, args) {
   const apps = number(args[0], 10, 2), files = number(args[1], 128, 1), bytes = number(args[2], 4096, 128), samples = number(args[3], 5, 5);
   fs.mkdirSync(root, { mode: 0o700 }); // Refuse an existing directory, including somebody else's fixture.
   const baseline = snapshot(root, 'baseline', join(packageRoot, 'dist'));
-  const { ConfigSchema } = await import(pathToFileURL(join(baseline.dist, 'schemas.js')));
-  const { Store } = await import(pathToFileURL(join(baseline.dist, 'store.js')));
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', maxJobHours: 87600, verification: { checks: [[process.execPath, '--version']], runtime: [[process.execPath, '--version']] } });
+  const { ConfigSchema } = await import(benchmarkModuleURL(baseline.dist, 'schemas'));
+  const { Store } = await import(benchmarkModuleURL(baseline.dist, 'store'));
+  const input = { stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', maxJobHours: 87600, verification: { checks: [[process.execPath, '--version']], runtime: [[process.execPath, '--version']] } };
+  const isolated = ConfigSchema.safeParse({ ...input, projectMode: 'isolated' });
+  const config = isolated.success ? isolated.data : ConfigSchema.parse(input);
   save(join(root, 'factory.json'), config);
   const store = new Store(config.stateDir);
   const jobs = [];

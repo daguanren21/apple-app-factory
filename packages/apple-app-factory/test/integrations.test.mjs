@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from '../dist/integrations.js';
+import { installIntegration, updateIntegration, inspectIntegration, uninstallIntegration } from '../dist/hosts/integrations.js';
 
 const marker = '.apphx-install.json';
 const sha = value => createHash('sha256').update(value).digest('hex');

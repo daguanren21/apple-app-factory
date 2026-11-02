@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Store } from '../dist/store.js';
-import { loadConfig } from '../dist/config.js';
-import { scanInbox } from '../dist/inbox.js';
-import { run } from '../dist/process.js';
+import { Store } from '../dist/state/store.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { scanInbox } from '../dist/intake/inbox.js';
+import { run } from '../dist/execution/process.js';
 import { createHash } from 'node:crypto';
 
 const example = JSON.parse(readFileSync(new URL('../examples/factory.json', import.meta.url)));

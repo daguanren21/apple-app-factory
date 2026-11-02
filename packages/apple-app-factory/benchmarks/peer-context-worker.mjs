@@ -5,15 +5,15 @@ import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { Session } from 'node:inspector';
 import { join, relative } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { benchmarkModuleURL } from './peer-context.mjs';
 
 const [root, label, output, mode] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(join(root, 'manifest.json'), 'utf8'));
 const dist = manifest[label].dist;
 const sha = value => createHash('sha256').update(value).digest('hex');
 const report = { label, mode: mode ?? 'timing', wallMs: null, operations: 0, errors: [], claims: 0, resumes: 0, outputBytes: 0, expectedRejections: 0, work: {} };
-const { Store } = await import(pathToFileURL(join(dist, 'store.js')));
-const { nextTurn, completeTurn } = await import(pathToFileURL(join(dist, 'runner.js')));
+const { Store } = await import(benchmarkModuleURL(dist, 'store'));
+const { nextTurn, completeTurn } = await import(benchmarkModuleURL(dist, 'runner'));
 const store = new Store(join(root, 'state'));
 const jobs = store.list();
 assert.equal(jobs.length, manifest.apps);
@@ -155,7 +155,7 @@ if (mode === '--correctness' && !report.errors.length) {
   try {
     // Exercise the native CLI boundary, consume all output, and preserve the exact claim.
     for (const job of jobs) {
-      const child = spawnSync(process.execPath, [join(dist, 'cli.js'), 'next', job.id, '--config', join(root, 'factory.json')], { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+      const child = spawnSync(process.execPath, [join(dist, 'cli.js'), 'next', job.id, '--host-pid', String(process.pid), '--config', join(root, 'factory.json')], { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
       assert.equal(child.status, 0, child.stderr);
       consume(JSON.parse(child.stdout), job, true);
       report.cliResumes = (report.cliResumes ?? 0) + 1;

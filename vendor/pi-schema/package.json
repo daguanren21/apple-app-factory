@@ -1,0 +1,36 @@
+{
+  "name": "@earendil-works/pi-schema",
+  "version": "1.4.0-apphx.c9f4c7b9fcd0",
+  "description": "JSON Schema validation without eval (source-pinned apphx artifact)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./formats": {
+      "types": "./dist/formats/index.d.ts",
+      "import": "./dist/formats/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "LICENSES"
+  ],
+  "author": "Earendil Works",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/earendil-works/pi.git",
+    "directory": "packages/schema"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -9,8 +9,8 @@ import {
   findConstKeyword,
   judgeKeywordNone,
   mixKeywords,
-} from '../dist/dfa.js';
-import { filterList, wordFilterList, wordFilterStr } from '../dist/lexicon-data.js';
+} from '../dist/transforms/content/dfa.js';
+import { filterList, wordFilterList, wordFilterStr } from '../dist/transforms/content/lexicon-data.js';
 
 // ---- lexicon-data.ts ----
 

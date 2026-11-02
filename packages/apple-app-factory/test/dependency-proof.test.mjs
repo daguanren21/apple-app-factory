@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { dependencyDigest } from '../dist/dependencies.js';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { executeStep, nextTurn } from '../dist/runner.js';
-import { sourceDigest } from '../dist/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { executeStep, nextTurn } from '../dist/workflow/runner.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
 
 function file(path, content) {
   mkdirSync(dirname(path), { recursive: true });
@@ -18,7 +18,7 @@ function file(path, content) {
 function fixture(t, verification) {
   const root = mkdtempSync(join(tmpdir(), 'factory-dependency-proof-'));
   const noop = [process.execPath, '-e', 'process.exit(0)'];
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
     verification: verification ?? { checks: [noop], runtime: [noop] } });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });

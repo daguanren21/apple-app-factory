@@ -6,14 +6,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { runStep } from '../dist/scheduler.js';
-import { inspectProcessGroup, processGroupAlive, run, signalOwnedProcessGroup } from '../dist/process.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { runStep } from '../dist/workflow/scheduler.js';
+import { inspectProcessGroup, processGroupAlive, run, signalOwnedProcessGroup } from '../dist/execution/process.js';
 
 const posix = { skip: process.platform === 'win32', timeout: 15000 };
-const processModule = new URL('../dist/process.js', import.meta.url).href;
-const storeModule = new URL('../dist/store.js', import.meta.url).href;
+const processModule = new URL('../dist/execution/process.js', import.meta.url).href;
+const storeModule = new URL('../dist/state/store.js', import.meta.url).href;
 
 async function until(action, timeoutMs = 7000) {
   const deadline = Date.now() + timeoutMs;
@@ -41,12 +41,10 @@ function readJson(path) {
 
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-process-drain-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, pollMs: 600000,
-    verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
-    ...overrides,
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, pollMs: 600000,
+  verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', 'process.exit(0)']] },
+  ...overrides, });
   const stores = [], controllers = [], children = [], pending = [], escaped = [];
   const groups = new Map();
   const track = promise => { pending.push(promise); promise.catch(() => {}); return promise; };

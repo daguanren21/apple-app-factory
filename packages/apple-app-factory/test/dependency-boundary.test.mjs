@@ -4,12 +4,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { inside } from '../dist/config.js';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { executeStep } from '../dist/runner.js';
-import { prepareWorkspace, sourceDigest } from '../dist/workspace.js';
-import { dependencyDigest } from '../dist/dependencies.js';
+import { inside } from '../dist/configuration/config.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { executeStep } from '../dist/workflow/runner.js';
+import { prepareWorkspace, sourceDigest } from '../dist/projects/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-dependency-boundary-'));
@@ -40,7 +40,7 @@ for (const dangling of [false, true]) {
     assert.equal(existsSync(output), false);
     const compilerMarker = join(f.root, 'compiler-started');
     const command = [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(compilerMarker)}, 'started')`];
-    const config = ConfigSchema.parse({ stateDir: join(f.root, 'state'), workspaceRoot: join(f.root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
+    const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(f.root, 'state'), workspaceRoot: join(f.root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
       verification: { checks: [command], runtime: [command] } });
     const store = new Store(config.stateDir);
     t.after(() => store.close());
@@ -143,7 +143,7 @@ test('owned direct and transitive package mutations change the digest; transitiv
 
 test('successors retain owned package sources and validate before predecessor copying', async t => {
   const { root } = fixture(t);
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true,
     verification: { prerequisites: [[process.execPath, '-e', 'process.exit(1)']], checks: [['unused']], runtime: [['unused']] } });
   const store = new Store(config.stateDir);
   t.after(() => store.close());
@@ -172,7 +172,7 @@ test('successors retain owned package sources and validate before predecessor co
 
 test('Gradle successor snapshot retains quoted-declaration source and omits active module outputs', t => {
   const { root } = fixture(t);
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'apk', verification: { checks: [['unused']], runtime: [['unused']] }, packaging: { provider: 'local', commands: [['unused']], artifactPath: 'build/App.apk' } });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'apk', verification: { checks: [['unused']], runtime: [['unused']] }, packaging: { provider: 'local', commands: [['unused']], artifactPath: 'build/App.apk' } });
   const store = new Store(config.stateDir);
   t.after(() => store.close());
   const spec = { id: 'gradle-owned-source', name: 'Gradle owned source', purpose: 'Keep Gradle source boundaries', audience: 'Owners', framework: 'android-java', platform: 'android', channel: 'local', version: '1.0.0', differentiators: ['Owned source'], acceptance: ['Copy only owned bytes'] };

@@ -1,6 +1,6 @@
 {
-  "stateDir": ".factory",
-  "workspaceRoot": "workspaces",
+  "projectMode": "project",
+  "projectRoot": ".",
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "aab",
@@ -67,5 +67,8 @@
       ]
     ],
     "artifactPath": "android/app/build/outputs/bundle/release/app-release.aab"
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

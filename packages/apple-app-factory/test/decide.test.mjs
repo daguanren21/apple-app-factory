@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { loadConfig } from '../dist/config.js';
-import { Store } from '../dist/store.js';
-import { run } from '../dist/process.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { Store } from '../dist/state/store.js';
+import { run } from '../dist/execution/process.js';
 
 const cli = resolve('dist/cli.js');
 
@@ -20,6 +20,7 @@ function fixture(t, overrides = {}) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const configPath = join(root, 'factory.json');
   writeFileSync(configPath, JSON.stringify({
+    projectMode: 'isolated',
     stateDir: join(root, 'state'),
     workspaceRoot: join(root, 'workspaces'),
     packageTarget: 'simulator',
@@ -144,6 +145,7 @@ test('decide --build-only rejects removed publication permissions in configurati
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const configPath = join(root, 'factory.json');
   writeFileSync(configPath, JSON.stringify({
+    projectMode: 'isolated',
     stateDir: join(root, 'state'),
     workspaceRoot: join(root, 'workspaces'),
     packageTarget: 'simulator',

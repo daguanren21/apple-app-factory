@@ -66,7 +66,7 @@ JSON matching the obfuscator schema. At least one section must be present; every
 ## Determinism and safety
 
 - Identical project + rules + seed produce byte-identical output. No wall-clock, locale or `Math.random` state is consulted.
-- The obfuscator only writes inside the walked project and skips generated/vendor directories. Run it on a **copy** of the project, never on the only checkout, unless the user explicitly says otherwise.
+- This is an in-place transformer, not an OS sandbox. Use only owner-reviewed rules on a **copy** of the project, never the only checkout unless the user explicitly requests it. Generated/vendor directories are skipped, but copying a directory does not confine arbitrary rule values or custom commands; use an actual execution sandbox for untrusted inputs. In a project-context apphx job, let the harness prepare its execution copy instead of pointing standalone obfuscation at the live source root.
 - Obfuscation changes the code that verification, review and packaging see. In the apphx pipeline, changing the obfuscation config invalidates prior verification proof and requires renewed verification and review.
 - Keep the app buildable: after obfuscating, run the normal build/verify steps; any breakage is a rules-file problem to fix and retry.
 - Do not weaken acceptance, verification or signing to accommodate obfuscation output.

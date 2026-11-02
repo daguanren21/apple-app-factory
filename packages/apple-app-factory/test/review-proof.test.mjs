@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
 
 const success = [process.execPath, '-e', 'process.exit(0)'];
 const research = { viable: true, distinctness: 'Review-proof fixture', risks: [], plan: ['Implement the requested workflow'] };
@@ -18,11 +18,9 @@ const spec = {
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-review-proof-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, retryDelayMs: 1,
-    verification: { checks: [success], runtime: [success] },
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, retryDelayMs: 1,
+  verification: { checks: [success], runtime: [success] }, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue(spec, config);
@@ -66,7 +64,7 @@ test('a post-verification source change is diagnosed with guard and digest while
   assert.throws(() => completeTurn(f.store, f.job.id, review.turn.id, reviewFor(review.job)), /Stale/);
 
   // while verification is invalidated, the preserved review's evidence must not read as passed
-  const { buildReport } = await import('../dist/report.js');
+  const { buildReport } = await import('../dist/delivery/report.js');
   const entry = buildReport(rejected).checklist.find(item => item.requirement === spec.acceptance[0]);
   assert.equal(entry.status, 'unreviewed');
   assert.match(entry.reason, /re-verification/);

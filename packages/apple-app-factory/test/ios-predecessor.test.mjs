@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ConfigSchema, SpecSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { prepareWorkspace, projectDirectory, sourceDigest } from '../dist/workspace.js';
-import { dependencyDigest } from '../dist/dependencies.js';
-import { scanInbox } from '../dist/inbox.js';
+import { ConfigSchema, SpecSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { prepareWorkspace, projectDirectory, sourceDigest } from '../dist/projects/workspace.js';
+import { dependencyDigest } from '../dist/projects/dependencies.js';
+import { scanInbox } from '../dist/intake/inbox.js';
 
 function file(root, path, content) {
   const target = join(root, path);
@@ -17,7 +17,7 @@ function file(root, path, content) {
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-ios-predecessor-'));
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
     verification: { checks: [['unused']], runtime: [['unused']] } });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });

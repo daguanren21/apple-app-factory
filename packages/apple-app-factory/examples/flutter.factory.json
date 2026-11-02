@@ -1,6 +1,6 @@
 {
-  "stateDir": ".factory",
-  "workspaceRoot": "workspaces",
+  "projectMode": "project",
+  "projectRoot": ".",
   "allowLocalExecution": false,
   "allowCloudBuild": false,
   "packageTarget": "simulator",
@@ -45,5 +45,8 @@
         "--no-pub"
       ]
     ]
-  }
+  },
+  "workflow": {},
+  "maxHostTurns": 64,
+  "uiQuality": true
 }

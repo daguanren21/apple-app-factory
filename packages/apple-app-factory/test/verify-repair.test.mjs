@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { executeStep, nextTurn } from '../dist/runner.js';
-import { sourceDigest } from '../dist/workspace.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { executeStep, nextTurn } from '../dist/workflow/runner.js';
+import { sourceDigest } from '../dist/projects/workspace.js';
 
 const success = [process.execPath, '-e', 'process.exit(0)'];
 
@@ -20,10 +20,8 @@ function spec(overrides = {}) {
 
 function fixture(t, { product = spec(), verification = { checks: [success], runtime: [success] } } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-verify-repair-'));
-  const config = ConfigSchema.parse({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true, retryDelayMs: 1, verification,
-  });
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true, retryDelayMs: 1, verification, });
   const store = new Store(config.stateDir);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   const job = store.enqueue(product, config);

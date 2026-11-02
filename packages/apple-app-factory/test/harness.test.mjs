@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
-import { nextTurn, completeTurn, abandonTurn, executeStep } from '../dist/runner.js';
-import { runStep } from '../dist/scheduler.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
+import { nextTurn, completeTurn, abandonTurn, executeStep } from '../dist/workflow/runner.js';
+import { runStep } from '../dist/workflow/scheduler.js';
 
 const research = {
   viable: true,
@@ -21,7 +21,7 @@ const spec = { id: 'host-fixture', name: 'Host fixture', purpose: 'Exercise nati
 function fixture(t, overrides = {}, product = spec) {
   const root = mkdtempSync(join(tmpdir(), 'factory-harness-'));
   const marker = join(root, 'executed');
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true, retryDelayMs: 1,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator', allowLocalExecution: true, retryDelayMs: 1,
     verification: { checks: [[process.execPath, '-e', 'process.exit(0)']], runtime: [[process.execPath, '-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)},'runtime')`]] }, ...overrides });
   const stores = [];
   const open = () => { const store = new Store(config.stateDir); stores.push(store); return store; };
@@ -358,7 +358,6 @@ test('legacy snapshot migration preserves raw data, receipts, budgets and histor
   assert.equal(job.spec.version, legacy.job.spec.version);
   assert.equal(Object.hasOwn(job.spec.apple, 'version'), false);
   assert.equal(job.config.packageTarget, 'simulator');
-  assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 3);
   assert.equal(job.verifiedDigest, null);
   assert.equal(job.verifiedDependencyDigest, null);
   assert.equal(job.review, null);

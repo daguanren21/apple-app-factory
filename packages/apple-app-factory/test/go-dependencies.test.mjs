@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { dependencyDigest, isGeneratedPath, validateLocalDependencies } from '../dist/dependencies.js';
-import { closestOwnedGoWorkspace, parseGoManifest } from '../dist/go-dependencies.js';
-import { prepareWorkspace, sourceDigest } from '../dist/workspace.js';
-import { ConfigSchema } from '../dist/schemas.js';
-import { Store } from '../dist/store.js';
+import { dependencyDigest, isGeneratedPath, validateLocalDependencies } from '../dist/projects/dependencies.js';
+import { closestOwnedGoWorkspace, parseGoManifest } from '../dist/projects/go-dependencies.js';
+import { prepareWorkspace, sourceDigest } from '../dist/projects/workspace.js';
+import { ConfigSchema } from '../dist/contracts/schemas.js';
+import { Store } from '../dist/state/store.js';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'factory-go-dependencies-'));
@@ -287,7 +287,7 @@ test('quoted UTF-8 Go byte escapes resolve the same owned local module', t => {
 
 test('successor snapshot retains a selected nested app and owned sibling replacement source', t => {
   const root = fixture(t);
-  const config = ConfigSchema.parse({ stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'app', allowLocalExecution: true,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'app', allowLocalExecution: true,
     verification: { checks: [['go', 'vet', './...']], runtime: [['go', 'run', './cmd/acceptance']] }, packaging: { provider: 'local', commands: [['go', 'tool', 'mygo', 'build', '-platform', 'darwin/arm64', '-sign', '-', '-skip-notarize', '-skip-dmg', '-o', 'build']], artifactPath: 'build/darwin-arm64/MyGo App.app' } });
   const store = new Store(config.stateDir);
   t.after(() => store.close());
@@ -372,7 +372,7 @@ test('owned sibling JSON inputs and bindings bytes carry dependency authority th
     assert.notEqual(after[1], before[1], path);
   }
   const control = fixture(t);
-  const config = ConfigSchema.parse({ stateDir: join(control, 'state'), workspaceRoot: join(control, 'workspaces'), packageTarget: 'app', allowLocalExecution: true,
+  const config = ConfigSchema.parse({ projectMode: 'isolated', stateDir: join(control, 'state'), workspaceRoot: join(control, 'workspaces'), packageTarget: 'app', allowLocalExecution: true,
     verification: { checks: [['go', 'vet', './...']], runtime: [['go', 'run', './cmd/acceptance']] }, packaging: { provider: 'local', commands: [['go', 'tool', 'mygo', 'build', '-platform', 'darwin/arm64', '-sign', '-', '-skip-notarize', '-skip-dmg', '-o', 'build']], artifactPath: 'build/darwin-arm64/MyGo App.app' } });
   const store = new Store(config.stateDir);
   t.after(() => store.close());

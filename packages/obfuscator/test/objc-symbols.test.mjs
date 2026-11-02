@@ -19,8 +19,8 @@ import {
   replaceMethodNameInLine,
   replacePropertyNameInLine,
   swiftCppPropertyNameTup,
-} from '../dist/objc-symbols.js';
-import { walkProject } from '../dist/common.js';
+} from '../dist/transforms/code/objc-symbols.js';
+import { walkProject } from '../dist/core/common.js';
 
 function tempProject(t, files) {
   const root = mkdtempSync(join(tmpdir(), 'objc-symbols-'));

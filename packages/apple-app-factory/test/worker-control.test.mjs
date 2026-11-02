@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Store } from '../dist/store.js';
-import { loadConfig } from '../dist/config.js';
-import { run, processGroupAlive } from '../dist/process.js';
+import { Store } from '../dist/state/store.js';
+import { loadConfig } from '../dist/configuration/config.js';
+import { run, processGroupAlive } from '../dist/execution/process.js';
 
 const cli = resolve('dist/cli.js');
 const success = [process.execPath, '-e', 'process.exit(0)'];
@@ -28,12 +28,10 @@ async function until(check, message) {
 function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-step-control-'));
   const path = join(root, 'factory.json');
-  writeFileSync(path, JSON.stringify({
-    stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
-    allowLocalExecution: true,
-    verification: { prerequisites: [], checks: [success], runtime: [success] },
-    ...overrides,
-  }));
+  writeFileSync(path, JSON.stringify({ projectMode: 'isolated', stateDir: join(root, 'state'), workspaceRoot: join(root, 'workspaces'), packageTarget: 'simulator',
+  allowLocalExecution: true,
+  verification: { prerequisites: [], checks: [success], runtime: [success] },
+  ...overrides, }));
   const config = loadConfig(path);
   const store = new Store(config.stateDir);
   const children = [];
@@ -44,7 +42,7 @@ function fixture(t, overrides = {}) {
     rmSync(root, { recursive: true, force: true });
   });
   return { root, path, config, store,
-    invoke(...args) { return run([process.execPath, cli, ...args, '--config', path]); },
+    invoke(...args) { return run([process.execPath, cli, ...args, ...(args[0] === 'next' ? ['--host-pid', String(process.pid)] : []), '--config', path]); },
     start(id) {
       const child = spawn(process.execPath, [cli, 'step', id, '--build-only', '--config', path], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '', stderr = '';
