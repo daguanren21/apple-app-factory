@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { z } from 'zod';
+import { lit, obj, union } from '@earendil-works/pi-schema';
 import { deliveryManifest, type DeliveryManifest } from './manifest.js';
 import {
   MAX_NOTIFICATION_ERROR,
@@ -13,6 +13,7 @@ import {
   type NotificationTarget,
 } from '../contracts/notification-types.js';
 import type { Artifact, Job } from '../contracts/schemas.js';
+import { defineContract, nonblankText, uuidSchema, type Contract } from '../contracts/validation.js';
 import type { Store } from '../state/store.js';
 
 
@@ -38,20 +39,20 @@ export type NotificationPacket = {
   error?: string;
 };
 
-const hostReceiptSchema = z.strictObject({
-  provider: z.string().min(1).max(MAX_NOTIFICATION_PROVIDER).refine(value => value.trim().length > 0 && !value.includes('\0')),
-  messageId: z.string().min(1).max(MAX_NOTIFICATION_MESSAGE_ID).refine(value => value.trim().length > 0 && !value.includes('\0')),
+const hostReceiptSchema = obj({
+  provider: nonblankText(MAX_NOTIFICATION_PROVIDER),
+  messageId: nonblankText(MAX_NOTIFICATION_MESSAGE_ID),
 });
-const completeInputSchema = z.union([
-  z.strictObject({ status: z.literal('accepted'), receipt: hostReceiptSchema }),
-  z.strictObject({ status: z.literal('failed'), reason: z.string().min(1).max(MAX_NOTIFICATION_ERROR).refine(value => value.trim().length > 0 && !value.includes('\0')) }),
-  z.strictObject({ status: z.literal('unknown'), reason: z.string().min(1).max(MAX_NOTIFICATION_ERROR).refine(value => value.trim().length > 0 && !value.includes('\0')) }),
-]);
-const reconcileInputSchema = z.union([
-  z.strictObject({ status: z.literal('accepted'), receipt: hostReceiptSchema }),
-  z.strictObject({ status: z.literal('not-sent'), reason: z.string().min(1).max(MAX_NOTIFICATION_ERROR).refine(value => value.trim().length > 0 && !value.includes('\0')) }),
-]);
-const claimIdSchema = z.uuid();
+const completeInputSchema = defineContract(union([
+  obj({ status: lit('accepted'), receipt: hostReceiptSchema }),
+  obj({ status: lit('failed'), reason: nonblankText(MAX_NOTIFICATION_ERROR) }),
+  obj({ status: lit('unknown'), reason: nonblankText(MAX_NOTIFICATION_ERROR) }),
+]));
+const reconcileInputSchema = defineContract(union([
+  obj({ status: lit('accepted'), receipt: hostReceiptSchema }),
+  obj({ status: lit('not-sent'), reason: nonblankText(MAX_NOTIFICATION_ERROR) }),
+]));
+const claimIdSchema = defineContract(uuidSchema());
 
 function now(): string {
   return new Date().toISOString();
@@ -195,7 +196,7 @@ function parseClaimId(value: string): string {
   return result.data;
 }
 
-function parseInput<T>(schema: z.ZodType<T>, input: unknown, name: string): T {
+function parseInput<T>(schema: Contract<T>, input: unknown, name: string): T {
   const result = schema.safeParse(input);
   if (!result.success) throw new Error(`Invalid notification ${name} input`);
   return result.data;
@@ -251,10 +252,7 @@ export function claimNotification(store: Store, jobId: string, targetId: string)
 /** Record a host result; uncertain results stay durable and are never reclaimed automatically. */
 export function completeNotification(store: Store, jobId: string, claimId: string, input: unknown): NotificationPacket {
   const token = parseClaimId(claimId);
-  const result = parseInput(completeInputSchema, input, 'completion') as
-    | { status: 'accepted'; receipt: { provider: string; messageId: string } }
-    | { status: 'failed'; reason: string }
-    | { status: 'unknown'; reason: string };
+  const result = parseInput(completeInputSchema, input, 'completion');
   let completedId: string | undefined;
   const updated = store.transition(jobId, current => {
     readyJob(current);
@@ -283,9 +281,7 @@ export function completeNotification(store: Store, jobId: string, claimId: strin
 /** Resolve an uncertain/orphaned host outcome without initiating another send. */
 export function reconcileNotification(store: Store, jobId: string, targetId: string, input: unknown): NotificationPacket {
   const id = parseTargetId(targetId);
-  const result = parseInput(reconcileInputSchema, input, 'reconciliation') as
-    | { status: 'accepted'; receipt: { provider: string; messageId: string } }
-    | { status: 'not-sent'; reason: string };
+  const result = parseInput(reconcileInputSchema, input, 'reconciliation');
   let reconciledId: string | undefined;
   const updated = store.transition(jobId, current => {
     readyJob(current);

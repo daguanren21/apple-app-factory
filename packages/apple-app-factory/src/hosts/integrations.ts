@@ -3,7 +3,8 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, ope
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
+import { map, obj, oneOf, str, lit } from '@earendil-works/pi-schema';
+import { defineContract, type Parsed } from '../contracts/validation.js';
 
 const skills = ['apphx', 'apphx-obfuscator'] as const;
 type SkillName = (typeof skills)[number];
@@ -42,13 +43,15 @@ export type IntegrationInspection = {
 type Tree = { files: Record<string, Buffer>; directories: string[] };
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const safeRelative = (path: string) => /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(path) && path.split('/').every(part => part !== '.' && part !== '..' && part.length > 0) && path !== marker;
-const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const manifestSchema = z.strictObject({
-  format: z.literal(1), owner: z.literal(owner), skill: z.enum(['apphx', 'apphx-obfuscator']), host: z.string(),
-  version: z.string().regex(/^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/),
-  files: z.record(z.string().refine(safeRelative), digestSchema), metadataDigest: digestSchema,
-});
-type Manifest = z.infer<typeof manifestSchema>;
+const digestSchema = str({ pattern: '^[a-f0-9]{64}$' });
+const manifestSchema = defineContract(obj({
+  format: lit(1), owner: lit(owner), skill: oneOf(skills), host: str(),
+  version: str({ pattern: '^\\d+\\.\\d+\\.\\d+(?:-[\\w.-]+)?(?:\\+[\\w.-]+)?$' }),
+  files: map(digestSchema), metadataDigest: digestSchema,
+}), { check(value, issue) {
+  for (const path of Object.keys(value.files)) if (!safeRelative(path)) issue(['files', path], 'Manifest file path is not a safe relative path');
+} });
+type Manifest = Parsed<typeof manifestSchema>;
 
 // Never follow a symlink, including an existing ancestor of a not-yet-created target.
 function assertPath(path: string): void {

@@ -204,14 +204,21 @@ async function scoreCase(root, item, modules) {
       satisfied = ['failed', 'needs-owner'].includes(job.status) && job.stage === 'research' && !job.turn && job.research?.viable === false && completed('research') && !advanced;
       if (advanced || (completed('research') && job.research?.viable !== false)) { result.falseApproval = true; fail('Unavailable owner rights were approved or research was not rejected'); }
     } else if (definition.outcome === 'verify-retry') {
-      satisfied = job.stage === 'verify' && job.status === 'waiting' && job.recoveryStage === 'verify' && !job.turn && !oracle.passed && oracle.failures.includes('records-survive-fresh-runtime') && runtimeProofs.some(proof => proof.passed === false && proof.failures?.includes('records-survive-fresh-runtime')) && (job.attempts.verify ?? 0) >= 1 && !job.verifiedDigest && !advanced && /Verification failed/.test(job.error ?? job.feedback ?? '');
+      satisfied = job.stage === 'verify' && job.status === 'waiting' && job.recoveryStage === 'verify' && !job.turn && !oracle.passed && oracle.failures.includes('records-survive-fresh-runtime') && runtimeProofs.some(proof => proof.passed === false && proof.failures?.includes('records-survive-fresh-runtime')) && (job.attempts.verify ?? 0) >= 1 && !job.verifiedDigest && !advanced;
       if (advanced) { result.falseApproval = true; fail('Failing runtime was approved'); }
     } else {
-      const candidate = json(ownedPath(caseRoot, 'control/candidate.json'));
-      const expectedError = definition.id === 'wrong-shape' ? /unrecognized_keys/ : /distinctness/;
-      const rejected = receipts.some(receipt => receipt.format === 'apphx-native-cli-receipt-v1' && receipt.command === 'complete' && receipt.jobId === job.id && receipt.args?.[0] === initial.turn.id && same(receipt.payload, candidate) && receipt.status === 1 && !receipt.error && expectedError.test(receipt.stderr) && receipt.beforeHash === receipt.afterHash && same(receipt.beforeTurn, initial.turn) && same(receipt.afterTurn, initial.turn));
-      satisfied = rejected && same(job, initial) && same(events, item.initial.events) && !advanced;
-      if (advanced || completed('research')) { result.falseApproval = true; fail('Invalid handed-off research verdict advanced its task'); }
+      const candidatePath = ownedPath(caseRoot, 'control/candidate.json');
+      const candidate = json(candidatePath);
+      const invalidCandidate = !modules.ResearchSchema.safeParse(candidate).success;
+      const initialHash = sha256(JSON.stringify(item.initial));
+      const submittedCandidate = receipt => receipt.format === 'apphx-native-cli-receipt-v1' && receipt.command === 'complete' && receipt.jobId === initial.id && Array.isArray(receipt.args) && receipt.args.length === 2 && receipt.args[0] === initial.turn.id && receipt.args[1] === candidatePath && same(receipt.payload, candidate);
+      const rejected = receipts.some(receipt => submittedCandidate(receipt) && receipt.status === 1 && receipt.error === null && receipt.signal === null && receipt.beforeHash === initialHash && receipt.afterHash === initialHash && receipt.beforeStage === initial.stage && receipt.afterStage === initial.stage && same(receipt.beforeTurn, initial.turn) && same(receipt.afterTurn, initial.turn));
+      const accepted = receipts.some(receipt => submittedCandidate(receipt) && (receipt.status === 0 || receipt.status === 2));
+      const unchanged = same(job, initial) && same(events, item.initial.events);
+      satisfied = invalidCandidate && rejected && unchanged && !advanced;
+      if (!invalidCandidate) fail('Handed-off candidate is not rejected by the research contract');
+      if (!unchanged) fail('Invalid handed-off research changed the prepared task or event history');
+      if (accepted || advanced || completed('research')) { result.falseApproval = true; fail('Invalid handed-off research verdict was accepted or advanced its task'); }
     }
     if (result.falseApproval && !result.reasons.length) fail('Observed false approval');
     result.status = result.reasons.length ? 'fail' : satisfied && acted ? 'pass' : 'unfinished';

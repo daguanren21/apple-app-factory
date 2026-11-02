@@ -11,7 +11,7 @@ import {
   listNotifications,
   reconcileNotification,
 } from '../dist/delivery/notifications.js';
-import { NotificationConfigSchema } from '../dist/contracts/notification-types.js';
+import { NotificationConfigSchema, NotificationDeliverySchema, NotificationReceiptSchema, NotificationTargetIdSchema } from '../dist/contracts/notification-types.js';
 import { migrateNotifications } from '../dist/state/notification-migrations.js';
 
 const success = [process.execPath, '-e', 'process.exit(0)'];
@@ -345,8 +345,39 @@ test('legacy migration preserves history without fabricating message ids or acti
 });
 
 test('notification target schema rejects duplicate, unbounded and unsafe text', () => {
-  assert.throws(() => NotificationConfigSchema.parse({ targets: [target('same'), target('same')] }), /unique/i);
-  assert.throws(() => NotificationConfigSchema.parse({ targets: [{ ...target('nul'), destination: 'a\0b' }] }), /NUL|non-empty/i);
-  assert.throws(() => NotificationConfigSchema.parse({ targets: Array.from({ length: 33 }, (_, index) => target(`t${index}`)) }), /too_big|maximum|32/i);
-  assert.throws(() => NotificationConfigSchema.parse({ targets: [target('strict', 'a'), { ...target('other'), extra: 'reject' }] }), /unrecognized|invalid/i);
+  assert.equal(NotificationConfigSchema.safeParse({ targets: [target('same'), target('same')] }).success, false);
+  assert.equal(NotificationConfigSchema.safeParse({ targets: [{ ...target('nul'), destination: 'a\0b' }] }).success, false);
+  assert.equal(NotificationConfigSchema.safeParse({ targets: Array.from({ length: 33 }, (_, index) => target(`t${index}`)) }).success, false);
+  assert.equal(NotificationConfigSchema.safeParse({ targets: [target('strict', 'a'), { ...target('other'), extra: 'reject' }] }).success, false);
+});
+
+test('notification text limits count Unicode code points and reject coercion', () => {
+  const id = '😀'.repeat(128);
+  assert.equal(NotificationTargetIdSchema.parse(id), id);
+  for (const value of ['😀'.repeat(129), 123, null, ' ', 'a\0b']) {
+    assert.equal(NotificationTargetIdSchema.safeParse(value).success, false);
+  }
+});
+
+test('legacy receipts and delivery state checks remain enforced at nested parsing boundaries', t => {
+  assert.deepEqual(NotificationReceiptSchema.parse({ provider: 'legacy', legacy: true }), { provider: 'legacy', legacy: true });
+  assert.equal(NotificationReceiptSchema.safeParse({ provider: 'host' }).success, false);
+  assert.equal(NotificationReceiptSchema.safeParse({ provider: 'host', legacy: false }).success, false);
+  const f = fixture(t, [target('nested')]);
+  const job = f.built('nested');
+  const entry = { id: 'historical', target: target('nested'), artifactDigest: null, artifactCreatedAt: null, status: 'accepted', receipt: { provider: 'legacy', legacy: true } };
+  assert.deepEqual(NotificationDeliverySchema.parse(entry), entry);
+  assert.deepEqual(f.store.update(job.id, { notifications: [entry] }).notifications, [entry]);
+  for (const patch of [
+    { receipt: { provider: 'host' } },
+    { receipt: undefined },
+    { status: 'pending' },
+    { status: 'claimed', receipt: undefined },
+    { status: 'failed', receipt: undefined },
+    { status: 'unknown', receipt: undefined },
+    { artifactDigest: digest.toUpperCase() },
+  ]) {
+    assert.equal(NotificationDeliverySchema.safeParse({ ...entry, ...patch }).success, false);
+    assert.throws(() => f.store.update(job.id, { notifications: [{ ...entry, ...patch }] }));
+  }
 });

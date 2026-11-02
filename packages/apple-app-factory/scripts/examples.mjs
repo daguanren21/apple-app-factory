@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ConfigSchema, FrameworkSchema, RequirementSchema, validateJobConfig } from '../dist/contracts/schemas.js';
+import { enumValues } from '../dist/contracts/validation.js';
 import { createPlatformProfile } from '../dist/configuration/profiles.js';
 import { RemoteSchema } from '../dist/hosts/remote.js';
 
@@ -16,7 +17,7 @@ const scenarios = [
   ['existing-project.factory.json', 'existing-project.json'],
   ['mygo-web.factory.json', 'mygo-web.json'],
 ];
-for (const framework of FrameworkSchema.options) {
+for (const framework of enumValues(FrameworkSchema)) {
   // Example targets illustrate local iOS/desktop and Android release bundles;
   // these choices are documentation, not init's default platform/target policy.
   const platform = framework === 'mygo' ? 'macos' : ['flutter', 'swift'].includes(framework) ? 'ios' : 'android';

@@ -4,7 +4,7 @@ import { extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalPath, inside } from '../configuration/config.js';
 import type { Job } from '../contracts/schemas.js';
-import { UI_QUALITY_CHECKS, UiQualitySchema, type UiCapture, type UiQuality, type UiQualityCheck, type UiQualityCheckId } from '../contracts/ui-quality.js';
+import { CapturePathSchema, UI_QUALITY_CHECKS, UiQualitySchema, type UiCapture, type UiQuality, type UiQualityCheck, type UiQualityCheckId } from '../contracts/ui-quality.js';
 import { generatedModulePaths, isGeneratedPath } from './dependencies.js';
 import { artifactOutputPath, projectDirectory } from './workspace.js';
 
@@ -49,7 +49,7 @@ export function uiQualityInstructions(job: Pick<Job, 'spec' | 'config'>): string
 }
 
 function screenshotRoot(job: Job): { project: string; screenshots: string } {
-  const directory = UiQualitySchema.shape.captures.element.shape.path.parse(job.spec.screenshotsDir);
+  const directory = CapturePathSchema.parse(job.spec.screenshotsDir);
   if (canonicalPath(job.workspace) !== resolve(job.workspace) || !lstatSync(job.workspace).isDirectory()) throw new Error('UI evidence workspace and its ancestors must be real directories without symlinks');
   const project = projectDirectory(job);
   if (canonicalPath(project) !== project || !lstatSync(project).isDirectory()) throw new Error('UI evidence project and its ancestors must be real directories without symlinks');

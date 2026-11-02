@@ -121,7 +121,8 @@ pnpm run package:pack
 
 ### Schema、平台 profile 与示例
 
-- `src/contracts/schemas.ts` 是配置、需求及结果契约的唯一来源，保留 Zod 的默认值、转换和跨字段校验；本次没有迁移到 pi-schema。
+- apphx 的 `src/contracts/schemas.ts` 定义配置、需求及结果契约；obfuscator 的配置契约独立位于 `src/core/config.ts`。两者均直接使用 `@earendil-works/pi-schema` 原生 builder 和闭包编译校验，移除 Zod。JSON Schema 原样提供给模型，不再转换；应用解析边界负责默认值、转换及跨字段业务校验，保持既有 JSON、权限、严格/开放/剥离字段语义，不启用类型强制转换或运行时代码生成。
+- 校验库来自 [官方 pi 仓库的固定源码](https://github.com/earendil-works/pi/tree/c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8/packages/schema)，独立构建为 `vendor/pi-schema.tgz`（`1.4.0-apphx.c9f4c7b9fcd0`），不是声称已发布的 npm 版本。两包仅以开发依赖引用并在构建时内联；安装 apphx 不依赖仓库相对路径或上游 monorepo。源码、编译器、许可证及产物哈希见 [provenance](vendor/pi-schema.provenance.json)，MIT 与 TypeBox 声明随产物分发；普通安装/构建不会下载上游或运行其 lifecycle hooks。
 - `src/configuration/profiles.ts` 按 framework/platform/target 创建全新的默认命令配置，不读文件、不运行 SDK。`apphx init` 使用 profile，固定项目/控制目录、应用所有者明确授权的选项，再经 schema 校验并独占写入配置；不会读取 `examples`。
 - 七个 `<framework>.factory.json` 是从 profile 生成的下游示例，部分 Android 示例选择 AAB 展示发布包，不代表 `init` 的默认目标。`factory.json` 的 isolated 场景、existing-project、MyGo Web 等定制示例继续独立维护，但必须通过既有配置/需求契约校验。角色约定和 Expo EAS 示例属于宿主/Expo 格式，不是 apphx 默认配置。
 
@@ -134,6 +135,13 @@ pnpm --filter apphx run examples:check
 ```
 
 `pnpm test` 在已有构建/typecheck 流程后执行同一个只读检查器，拒绝示例漂移和非法的 apphx 配置/需求组合。生成和检查都不会执行示例命令；具体 scheme、原生工程路径、签名及实际运行验收仍需按用户项目校准。
+
+重现当前锁定源码的产物使用 `--rebuild`（会下载并校验同一固定归档）；只校验现有产物及源码/许可证/构建元数据使用 `--verify`：
+
+```sh
+node scripts/build-pi-schema.mjs --rebuild
+node scripts/build-pi-schema.mjs --verify
+```
 
 
 

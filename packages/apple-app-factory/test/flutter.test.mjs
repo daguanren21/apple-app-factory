@@ -98,6 +98,26 @@ test('a pinned task cannot reuse proof after its verifier SDK is replaced', { sk
   assert.equal(existsSync(join(cache, 'flutter')), false);
 });
 
+for (const identity of [{ frameworkRevision: ' ', engineRevision: 'engine' }, { frameworkRevision: 'framework', engineRevision: 'engine\0revision' }]) {
+  test(`malformed SDK metadata blocks artifact preparation: ${JSON.stringify(identity)}`, { skip: !['darwin', 'linux'].includes(process.platform) }, async t => {
+    const f = fixture(t);
+    const source = f.config.toolchain.flutterSdk;
+    mkdirSync(join(source, 'bin'), { recursive: true });
+    writeFileSync(join(source, 'bin', 'flutter'), 'must not execute directly');
+    const workspace = join(f.config.workspaceRoot, 'fixture');
+    let artifactsStarted = false;
+    const run = async argv => {
+      if (argv.includes('--version')) return { code: 0, stdout: JSON.stringify(identity), stderr: '' };
+      artifactsStarted = true;
+      return { code: 1, stdout: '', stderr: 'Artifact preparation must not start for malformed metadata' };
+    };
+    await assert.rejects(prepareFlutter({ config: f.config, workspace, spec: product, stage: 'build' }, { run, env: {} }), error => error.code === 'PREREQUISITE_FAILED' && error.prerequisite.reason === 'sdk-version');
+    assert.equal(artifactsStarted, false);
+    assert.equal(existsSync(join(workspace, '.factory-cache', 'flutter.json')), false);
+    assert.equal(existsSync(join(workspace, '.factory-cache', 'flutter')), false);
+  });
+}
+
 for (const removed of ['none', 'clone', 'cache']) {
   test(`a durable task pin survives ${removed} deletion without SDK initialization or repinning`, { skip: process.platform !== 'darwin' }, async t => {
     const f = fixture(t);

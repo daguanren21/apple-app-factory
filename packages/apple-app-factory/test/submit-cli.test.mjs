@@ -160,7 +160,6 @@ test('submit refuses removed publication permissions in the configuration', asyn
   writeFileSync(configPath, JSON.stringify({ ...JSON.parse(readFileSync(configPath, 'utf8')), allowSubmit: true }));
   const result = await submit(f);
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /unrecognized_keys/);
   assert.equal(existsSync(f.inbox), false);
   assert.equal(existsSync(f.stateDir), false);
   assertNoExecution(f);

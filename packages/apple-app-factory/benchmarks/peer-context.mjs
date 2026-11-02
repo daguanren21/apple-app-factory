@@ -39,10 +39,11 @@ function snapshot(root, name, dist) {
   fs.mkdirSync(target, { mode: 0o700 });
   fs.cpSync(dist, join(target, 'dist'), { recursive: true });
   save(join(target, 'package.json'), { type: 'module' });
-  for (const dependency of ['yaml', 'zod']) {
+  const dependencies = Object.keys(json(join(packageRoot, 'package.json')).dependencies ?? {});
+  for (const dependency of dependencies) {
     fs.cpSync(fs.realpathSync(join(packageRoot, 'node_modules', dependency)), join(target, 'node_modules', dependency), { recursive: true });
   }
-  return { dist: join(target, 'dist'), digest: treeHash(target), dependencies: Object.fromEntries(['yaml', 'zod'].map(name => [name, json(join(target, 'node_modules', name, 'package.json')).version])) };
+  return { dist: join(target, 'dist'), digest: treeHash(target), dependencies: Object.fromEntries(dependencies.map(name => [name, json(join(target, 'node_modules', name, 'package.json')).version])) };
 }
 function number(value, fallback, minimum) {
   const result = value === undefined ? fallback : Number(value);

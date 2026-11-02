@@ -2,7 +2,8 @@ import { constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { z } from 'zod';
+import { arr, obj, opt, str } from '@earendil-works/pi-schema';
+import { defineContract } from '../contracts/validation.js';
 import { canonicalPath, inside, validateProjectContext } from '../configuration/config.js';
 import { GENERATED_PATHS, dependencyDigest, generatedModulePaths, isControlMetadataPath, isGeneratedPath, validateLocalDependencies } from './dependencies.js';
 import { detectProjectFramework } from './profiles.js';
@@ -223,9 +224,9 @@ function relocateOwnedSymlinks(sourceRoot: string, destinationRoot: string): voi
   visit(destinationRoot);
 }
 
-const SnapshotPackageConfigSchema = z.object({
-  packages: z.array(z.object({ name: z.string(), rootUri: z.string(), packageUri: z.string().optional() }).passthrough()),
-}).passthrough();
+const SnapshotPackageConfigSchema = defineContract(obj({
+  packages: arr(obj({ name: str(), rootUri: str(), packageUri: opt(str()) }, { open: true })),
+}, { open: true }));
 
 function relativeDirectoryUri(base: string, target: string, original: URL): string {
   const path = relative(base, target).split(sep).map(part => encodeURIComponent(part)).join('/') || '.';

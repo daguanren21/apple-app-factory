@@ -1,9 +1,28 @@
-import type { z } from 'zod';
 import { FrameworkSchema, PackageTargetSchema, PlatformSchema } from '../contracts/schemas.js';
-import type { ConfigSchema, Framework, PackageTarget, Platform } from '../contracts/schemas.js';
+import type { Config, Framework, PackageTarget, Platform } from '../contracts/schemas.js';
+
+type OptionalFields<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 /** Portable starter input; project/control identity is selected by the CLI owner. */
-export type PlatformProfile = Omit<z.input<typeof ConfigSchema>, 'configPath' | 'stateDir' | 'workspaceRoot'>;
+export type PlatformProfile = Omit<Config, 'configPath' | 'stateDir' | 'workspaceRoot' | 'projectMode' | 'allowLocalExecution' | 'allowCloudBuild' | 'executionEnv' | 'timeoutMs' | 'maxAttempts' | 'maxHostTurns' | 'maxJobHours' | 'retryDelayMs' | 'pollMs' | 'verification' | 'isolation' | 'inbox' | 'obfuscation' | 'roles' | 'workflow' | 'packaging'> & {
+  projectMode?: Config['projectMode'];
+  allowLocalExecution?: Config['allowLocalExecution'];
+  allowCloudBuild?: Config['allowCloudBuild'];
+  executionEnv?: Config['executionEnv'];
+  timeoutMs?: Config['timeoutMs'];
+  maxAttempts?: Config['maxAttempts'];
+  maxHostTurns?: Config['maxHostTurns'];
+  maxJobHours?: Config['maxJobHours'];
+  retryDelayMs?: Config['retryDelayMs'];
+  pollMs?: Config['pollMs'];
+  verification: OptionalFields<Config['verification'], 'prerequisites'>;
+  isolation?: OptionalFields<NonNullable<Config['isolation']>, 'readOnlyPaths' | 'network'>;
+  inbox?: OptionalFields<NonNullable<Config['inbox']>, 'pollMs'>;
+  obfuscation?: OptionalFields<NonNullable<Config['obfuscation']>, 'command'>;
+  roles?: OptionalFields<NonNullable<Config['roles']>, 'receipt'>;
+  workflow?: OptionalFields<NonNullable<Config['workflow']>, 'maxNodes' | 'maxParallel' | 'maxReplans'>;
+  packaging?: OptionalFields<NonNullable<Config['packaging']>, 'provider'>;
+};
 
 /** Fresh configuration data only. No files, SDKs, examples or commands are read or executed. */
 export function createPlatformProfile(framework: Framework, platform: Platform, target: PackageTarget): PlatformProfile {

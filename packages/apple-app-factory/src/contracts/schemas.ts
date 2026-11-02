@@ -1,157 +1,125 @@
-import { z } from 'zod';
-import { dirname, isAbsolute, resolve, win32 } from 'node:path';
-import { lstatSync } from 'node:fs';
+import { arr, bool, int, lit, map, nullable, num, obj, oneOf, opt, str, union, unknown, type Static } from '@earendil-works/pi-schema';
+import { isAbsolute, win32 } from 'node:path';
 import { AppleReceiptSchema } from './apple-types.js';
 import { validateMyGoPackaging } from './mygo-build.js';
 import { MAX_INPUT_BYTES, minimumNodeResultBytes, minimumReviewBytes } from './input-limits.js';
 import { NotificationConfigSchema, NotificationDeliverySchema } from './notification-types.js';
 import { UiQualitySchema, minimumUiQualityBytes } from './ui-quality.js';
+import { defineContract, emailSchema, isoDateTimeSchema, nonblankText, urlSchema, uuidSchema, type Parsed } from './validation.js';
 
-const text = z.string().min(1).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
-const count = z.number().int().nonnegative().safe();
-const positive = z.number().positive().finite();
-const command = z.array(text).min(1);
-/** Decision-log stage/role labels may be empty because apphx decide defaults omitted fields to ''. */
-const decisionLabel = z.string().refine(value => !value.includes('\0') && (value === '' || value.trim().length > 0), 'Expected text without NUL characters');
-/** Decision rationale is a non-empty, longer text so every recorded verdict stays attributable. */
-const decisionRationale = z.string().min(1).max(100000).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
-
+const text = nonblankText();
+const finiteNumber = num({ minimum: -Number.MAX_VALUE, maximum: Number.MAX_VALUE });
+const count = int({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+const positiveCount = int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
+const integer = int({ minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER });
+const command = arr(text, { minItems: 1 });
+const digest = str({ pattern: '^[a-f0-9]{64}$' });
+const decisionLabel = str({ pattern: '^(?:$|(?=[\\s\\S]*\\S)(?![\\s\\S]*\\u0000)[\\s\\S]+)$' });
+const decisionRationale = nonblankText(100000);
 function relativeProjectPath(value: string, allowRoot = false): boolean {
   if (allowRoot && value === '.') return true;
   return !isAbsolute(value) && !win32.isAbsolute(value) && !/[\\:*?\[\]]/.test(value)
     && value.split('/').every(part => part !== '' && part !== '.' && part !== '..');
 }
-
-export const FrameworkSchema = z.enum(['flutter', 'android-java', 'swift', 'react-native', 'expo', 'uni-app', 'mygo']);
-export type Framework = z.infer<typeof FrameworkSchema>;
-export const PlatformSchema = z.enum(['ios', 'android', 'macos']);
-export type Platform = z.infer<typeof PlatformSchema>;
-export const ChannelSchema = z.enum(['local', 'app-store', 'google-play']);
-export type Channel = z.infer<typeof ChannelSchema>;
-export const PrioritySchema = z.enum(['P0', 'P1', 'P2']);
-export type Priority = z.infer<typeof PrioritySchema>;
-export const PackageTargetSchema = z.enum(['simulator', 'ipa', 'apk', 'aab', 'app', 'dmg']);
-export type PackageTarget = z.infer<typeof PackageTargetSchema>;
-export const AppleSpecSchema = z.strictObject({
-  appId: text.optional(), bundleId: text.optional(), buildNumber: text.optional(), locale: text.optional(),
-  description: text.optional(), keywords: text.optional(), supportUrl: text.optional(), privacyPolicyUrl: text.optional(), reviewNotes: text.optional(),
-  copyright: text.optional(), whatsNew: text.optional(), storefrontCountry: text.optional(), manualSetupConfirmed: z.boolean().optional(),
-  contact: z.strictObject({ firstName: text.optional(), lastName: text.optional(), email: text.optional(), phone: text.optional() }).optional(),
-});
-export type AppleSpec = z.infer<typeof AppleSpecSchema>;
-const SpecObject = z.strictObject({
-  id: text.regex(/^[a-z][a-z0-9-]{1,62}$/), name: text, purpose: text, audience: text,
-  framework: FrameworkSchema, platform: PlatformSchema, channel: ChannelSchema.default('local'), version: text.default('1.0.0'),
-  priority: PrioritySchema.default('P1'),
-  project: z.strictObject({ sourceDir: text.optional(), directory: text.refine(value => relativeProjectPath(value, true), 'project.directory must be a relative in-root directory without traversal').default('.') }).optional(),
-  screenshotsDir: text.optional(), differentiators: z.array(text).min(1), acceptance: z.array(text).min(1),
-  constraints: z.array(text).optional(),
-  designRef: text.url().describe('Design reference URL (e.g. Figma link); the build\'s ui-designer role must reproduce the referenced design faithfully').optional(),
-  apple: AppleSpecSchema.optional(),
-  authorEmail: z.string().email().optional(),
-  hiddenFeatures: z.literal(false).optional(), reviewBypass: z.literal(false).optional(),
-});
-function refineSpec(value: z.infer<typeof SpecObject>, context: z.RefinementCtx): void {
-  if (value.framework === 'android-java' && value.platform !== 'android') context.addIssue({ code: 'custom', path: ['platform'], message: 'android-java requires platform=android' });
-  if (value.framework === 'swift' && value.platform !== 'ios') context.addIssue({ code: 'custom', path: ['platform'], message: 'swift requires platform=ios' });
-  if (value.framework === 'mygo' && value.platform !== 'macos') context.addIssue({ code: 'custom', path: ['platform'], message: 'mygo requires platform=macos' });
-  if (value.platform === 'macos' && value.framework !== 'mygo') context.addIssue({ code: 'custom', path: ['framework'], message: 'macos currently requires framework=mygo' });
-  if (value.platform === 'macos' && value.channel !== 'local') context.addIssue({ code: 'custom', path: ['channel'], message: 'macos currently supports local delivery only' });
-  if (value.channel === 'app-store' && value.platform !== 'ios') context.addIssue({ code: 'custom', path: ['channel'], message: 'app-store requires platform=ios' });
-  if (value.channel === 'google-play' && value.platform !== 'android') context.addIssue({ code: 'custom', path: ['channel'], message: 'google-play requires platform=android' });
+const projectPath = defineContract({ ...nonblankText(), default: '.' }, { check: (value, issue) => {
+  if (!relativeProjectPath(value, true)) issue([], 'project.directory must be a relative in-root directory without traversal');
+} });
+const artifactPath = defineContract(nonblankText(), { check: (value, issue) => {
+  if (!relativeProjectPath(value)) issue([], 'artifactPath must be an exact project-relative file or directory without traversal or wildcards');
+} });
+export const FrameworkSchema = defineContract(oneOf(['flutter', 'android-java', 'swift', 'react-native', 'expo', 'uni-app', 'mygo']));
+export type Framework = Parsed<typeof FrameworkSchema>;
+export const PlatformSchema = defineContract(oneOf(['ios', 'android', 'macos']));
+export type Platform = Parsed<typeof PlatformSchema>;
+export const ChannelSchema = defineContract(oneOf(['local', 'app-store', 'google-play']));
+export type Channel = Parsed<typeof ChannelSchema>;
+export const PrioritySchema = defineContract(oneOf(['P0', 'P1', 'P2']));
+export type Priority = Parsed<typeof PrioritySchema>;
+export const PackageTargetSchema = defineContract(oneOf(['simulator', 'ipa', 'apk', 'aab', 'app', 'dmg']));
+export type PackageTarget = Parsed<typeof PackageTargetSchema>;
+export const AppleSpecSchema = defineContract(obj({
+  appId: opt(text), bundleId: opt(text), buildNumber: opt(text), locale: opt(text),
+  description: opt(text), keywords: opt(text), supportUrl: opt(text), privacyPolicyUrl: opt(text), reviewNotes: opt(text),
+  copyright: opt(text), whatsNew: opt(text), storefrontCountry: opt(text), manualSetupConfirmed: opt(bool()),
+  contact: opt(obj({ firstName: opt(text), lastName: opt(text), email: opt(text), phone: opt(text) })),
+}));
+export type AppleSpec = Parsed<typeof AppleSpecSchema>;
+const specProperties = {
+  id: str({ pattern: '^[a-z][a-z0-9-]{1,62}$' }), name: text, purpose: text, audience: text,
+  framework: FrameworkSchema.schema, platform: PlatformSchema.schema,
+  channel: { ...ChannelSchema.schema, default: 'local' }, version: nonblankTextWithDefault('1.0.0'),
+  priority: { ...PrioritySchema.schema, default: 'P1' },
+  project: opt(obj({ sourceDir: opt(text), directory: projectPath.schema })),
+  screenshotsDir: opt(text), differentiators: arr(text, { minItems: 1 }), acceptance: arr(text, { minItems: 1 }),
+  constraints: opt(arr(text)), designRef: opt(urlSchema({ nonblank: true, description: 'Actual design reference URL; preserve its authority and report unavailable source honestly' })),
+  apple: opt(AppleSpecSchema.schema), authorEmail: opt(emailSchema()), hiddenFeatures: opt(lit(false)), reviewBypass: opt(lit(false)),
+};
+function nonblankTextWithDefault(value: string) { return { ...nonblankText(), default: value }; }
+const specObject = obj(specProperties);
+function refineSpec(value: Static<typeof specObject>, issue: (path: (string | number)[], message: string) => void): void {
+  if (value.framework === 'android-java' && value.platform !== 'android') issue(['platform'], 'android-java requires platform=android');
+  if (value.framework === 'swift' && value.platform !== 'ios') issue(['platform'], 'swift requires platform=ios');
+  if (value.framework === 'mygo' && value.platform !== 'macos') issue(['platform'], 'mygo requires platform=macos');
+  if (value.platform === 'macos' && value.framework !== 'mygo') issue(['framework'], 'macos currently requires framework=mygo');
+  if (value.platform === 'macos' && value.channel !== 'local') issue(['channel'], 'macos currently supports local delivery only');
+  if (value.channel === 'app-store' && value.platform !== 'ios') issue(['channel'], 'app-store requires platform=ios');
+  if (value.channel === 'google-play' && value.platform !== 'android') issue(['channel'], 'google-play requires platform=android');
 }
-export const SpecSchema = SpecObject.superRefine(refineSpec);
-export type Spec = z.infer<typeof SpecSchema>;
-export const RequirementSchema = SpecObject.extend({ baseJobId: z.uuid().optional() }).superRefine((value, context) => {
-  refineSpec(value, context);
-  if (value.baseJobId && value.project?.sourceDir) context.addIssue({ code: 'custom', path: ['project', 'sourceDir'], message: 'project.sourceDir and baseJobId are mutually exclusive' });
-});
-
-export const ObfuscationConfigSchema = z.strictObject({
-  command: z.array(command.element).min(1).default(['obfuscator']),
-  /** Obfuscator rules file resolved against the factory config directory; must be a regular file. */
-  configPath: text.optional(),
-  /** Inline obfuscator rules (same shape as the rules file); validated by the bundled obfuscator at run time. */
-  options: z.record(z.string(), z.unknown()).optional(),
-  seed: text.optional(),
-}).superRefine((value, context) => {
-  if (!value.configPath && !value.options) context.addIssue({ code: 'custom', path: [], message: 'obfuscation needs configPath or inline options; set one of them' });
-  if (value.configPath && value.options) context.addIssue({ code: 'custom', path: [], message: 'obfuscation accepts configPath or inline options, not both' });
-});
-export type ObfuscationConfig = z.infer<typeof ObfuscationConfigSchema>;
-
-/**
- * One advisory role seat. Accepts the legacy plain-name form or a pinned seat
- * object ({ name, provider?, fresh? }); provider pins the seat to a model
- * family and fresh=true requires a brand-new context.
- */
-export const RoleSeatSchema = z.union([
-  text,
-  z.strictObject({ name: text, provider: text.optional(), fresh: z.boolean().default(false) }),
-]);
-export type RoleSeat = z.infer<typeof RoleSeatSchema>;
-
-/**
- * Role assignments per host stage. Names are free-form so teams can add agents
- * (e.g. security-review, performance-analyst); the host adopts every returned
- * role via native delegation. Assignments do not change eligibility or budgets;
- * receipt separately opts into a review evidence gate. Missing assignments stay
- * absent for model planning; legacy host packets supply their own default team.
- */
-export const RolesConfigSchema = z.strictObject({
-  research: z.array(RoleSeatSchema).optional(),
-  build: z.array(RoleSeatSchema).optional(),
-  review: z.array(RoleSeatSchema).optional(),
-  /** Owner opt-in: review completion requires a fresh decision-log receipt for every review seat. */
-  receipt: z.boolean().default(false),
-});
-export type RolesConfig = z.infer<typeof RolesConfigSchema>;
-
-
-/** Presence opts a factory into model-planned, durable host work graphs. */
-export const WorkflowConfigSchema = z.strictObject({
-  maxNodes: count.min(1).max(256).default(64),
-  maxParallel: count.min(1).max(32).default(4),
-  maxReplans: count.max(32).default(4),
-});
-export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
-
-export const ConfigSchema = z.strictObject({
-  configPath: text.optional(), stateDir: text, workspaceRoot: text,
-  projectMode: z.enum(['project', 'isolated']).default('project'), projectRoot: text.optional(),
-  allowLocalExecution: z.boolean().default(false), allowCloudBuild: z.boolean().default(false),
-  autopilot: z.boolean().optional(),
-  executionEnv: z.array(text.regex(/^[A-Z][A-Z0-9_]*$/).refine(value => !/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value), 'Publisher credentials must not be passed to host or verification tools')).default([]),
-  isolation: z.strictObject({ mode: z.literal('macos-sandbox'), readOnlyPaths: z.array(text).default([]), network: z.enum(['deny', 'allow']).default('deny') }).optional(),
-  timeoutMs: positive.default(900000), maxAttempts: positive.int().default(8), maxHostTurns: positive.int().default(16), maxJobHours: positive.default(24),
-  retryDelayMs: positive.default(30000), pollMs: positive.default(300000),
-  inbox: z.strictObject({ directory: text, pollMs: positive.default(2000) }).optional(),
-  verification: z.strictObject({ prerequisites: z.array(command).default([]), checks: z.array(command).min(1), runtime: z.array(command).min(1) }),
-  toolchain: z.strictObject({ flutterSdk: text }).optional(),
-  apple: z.strictObject({ exportOptionsPlist: text.optional() }).optional(),
-  packageTarget: PackageTargetSchema, executionWarning: text.optional(),
-  obfuscation: ObfuscationConfigSchema.optional(),
-  notifications: NotificationConfigSchema.optional(),
-  roles: RolesConfigSchema.optional(),
-  workflow: WorkflowConfigSchema.optional(),
-  uiQuality: z.boolean().optional(),
-  packaging: z.strictObject({ commands: z.array(command).min(1), artifactPath: text.refine(value => relativeProjectPath(value), 'artifactPath must be an exact project-relative file or directory without traversal or wildcards'), provider: z.enum(['local', 'cloud']).default('local') }).optional(),
-}).superRefine((value, context) => {
-  if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) context.addIssue({ code: 'custom', path: ['allowCloudBuild'], message: 'Cloud packaging requires explicit allowCloudBuild=true' });
+export const SpecSchema = defineContract(specObject, { check: refineSpec });
+export type Spec = Parsed<typeof SpecSchema>;
+export const RequirementSchema = defineContract(obj({ ...specProperties, baseJobId: opt(uuidSchema()) }), { check(value, issue) {
+  refineSpec(value, issue);
+  if (value.baseJobId && value.project?.sourceDir) issue(['project', 'sourceDir'], 'project.sourceDir and baseJobId are mutually exclusive');
+} });
+export const ObfuscationConfigSchema = defineContract(obj({
+  command: { ...command, default: ['obfuscator'] }, configPath: opt(text), options: opt(map(unknown())), seed: opt(text),
+}), { check(value, issue) {
+  if (!value.configPath && !value.options) issue([], 'obfuscation needs configPath or inline options; set one of them');
+  if (value.configPath && value.options) issue([], 'obfuscation accepts configPath or inline options, not both');
+} });
+export type ObfuscationConfig = Parsed<typeof ObfuscationConfigSchema>;
+export const RoleSeatSchema = defineContract(union([text, obj({ name: text, provider: opt(text), fresh: bool({ default: false }) })]));
+export type RoleSeat = Parsed<typeof RoleSeatSchema>;
+export const RolesConfigSchema = defineContract(obj({
+  research: opt(arr(RoleSeatSchema.schema)), build: opt(arr(RoleSeatSchema.schema)), review: opt(arr(RoleSeatSchema.schema)), receipt: bool({ default: false }),
+}));
+export type RolesConfig = Parsed<typeof RolesConfigSchema>;
+export const WorkflowConfigSchema = defineContract(obj({
+  maxNodes: int({ minimum: 1, maximum: 256, default: 64 }), maxParallel: int({ minimum: 1, maximum: 32, default: 4 }), maxReplans: int({ minimum: 0, maximum: 32, default: 4 }),
+}));
+export type WorkflowConfig = Parsed<typeof WorkflowConfigSchema>;
+const executionVariable = defineContract(str({ pattern: '^[A-Z][A-Z0-9_]*$' }), { check(value, issue) {
+  if (/^(ASC_|APPLE_|FASTLANE_|MATCH_)/.test(value)) issue([], 'Publisher credentials must not be passed to host or verification tools');
+} });
+export const ConfigSchema = defineContract(obj({
+  configPath: opt(text), stateDir: text, workspaceRoot: text,
+  projectMode: oneOf(['project', 'isolated'], { default: 'project' }), projectRoot: opt(text),
+  allowLocalExecution: bool({ default: false }), allowCloudBuild: bool({ default: false }), autopilot: opt(bool()),
+  executionEnv: arr(executionVariable.schema, { default: [] }),
+  isolation: opt(obj({ mode: lit('macos-sandbox'), readOnlyPaths: arr(text, { default: [] }), network: oneOf(['deny', 'allow'], { default: 'deny' }) })),
+  timeoutMs: num({ exclusiveMinimum: 0, default: 900000 }), maxAttempts: int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: 8 }),
+  maxHostTurns: int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: 16 }), maxJobHours: num({ exclusiveMinimum: 0, default: 24 }),
+  retryDelayMs: num({ exclusiveMinimum: 0, default: 30000 }), pollMs: num({ exclusiveMinimum: 0, default: 300000 }),
+  inbox: opt(obj({ directory: text, pollMs: num({ exclusiveMinimum: 0, default: 2000 }) })),
+  verification: obj({ prerequisites: arr(command, { default: [] }), checks: arr(command, { minItems: 1 }), runtime: arr(command, { minItems: 1 }) }),
+  toolchain: opt(obj({ flutterSdk: text })), apple: opt(obj({ exportOptionsPlist: opt(text) })),
+  packageTarget: PackageTargetSchema.schema, executionWarning: opt(text), obfuscation: opt(ObfuscationConfigSchema.schema),
+  notifications: opt(NotificationConfigSchema.schema), roles: opt(RolesConfigSchema.schema), workflow: opt(WorkflowConfigSchema.schema), uiQuality: opt(bool()),
+  packaging: opt(obj({ commands: arr(command, { minItems: 1 }), artifactPath: artifactPath.schema, provider: oneOf(['local', 'cloud'], { default: 'local' }) })),
+}), { check(value, issue) {
+  if (value.packaging?.provider === 'cloud' && !value.allowCloudBuild) issue(['allowCloudBuild'], 'Cloud packaging requires explicit allowCloudBuild=true');
   if (value.workflow) for (const stage of ['research', 'build', 'review'] as const) {
     const seats = value.roles?.[stage] ?? [];
-    if (seats.length > value.workflow.maxNodes) context.addIssue({ code: 'custom', path: ['roles', stage], message: `Required seats exceed workflow.maxNodes (${value.workflow.maxNodes})` });
+    if (seats.length > value.workflow.maxNodes) issue(['roles', stage], `Required seats exceed workflow.maxNodes (${value.workflow.maxNodes})`);
     for (const [index, seat] of seats.entries()) {
-      if ((typeof seat === 'string' ? seat : seat.name).length > 200 || typeof seat !== 'string' && (seat.provider?.length ?? 0) > 200) context.addIssue({ code: 'custom', path: ['roles', stage, index], message: 'Dynamic role and provider names must fit the 200-character workflow node bound' });
+      if ((typeof seat === 'string' ? seat : seat.name).length > 200 || typeof seat !== 'string' && (seat.provider?.length ?? 0) > 200) issue(['roles', stage, index], 'Dynamic role and provider names must fit the 200-character workflow node bound');
     }
   }
-});
-export type Config = z.infer<typeof ConfigSchema>;
+} });
+export type Config = Parsed<typeof ConfigSchema>;
 export function validateJobConfig(spec: Spec, config: Config): void {
   if (config.autopilot === true && !config.allowLocalExecution) throw new Error('autopilot requires allowLocalExecution=true: the owner must pre-authorize deterministic local execution before unattended mode');
   if (config.uiQuality && (!spec.screenshotsDir || !relativeProjectPath(spec.screenshotsDir) || !/^(build|dist|unpackage)\//.test(spec.screenshotsDir) || /(?:^|\/)(?:node_modules|\.git|\.factory-cache)(?:\/|$)/.test(spec.screenshotsDir))) throw new Error('UI quality requires screenshotsDir under generated app output, for example build/screenshots, and actual narrow/wide platform captures from the runtime checks');
-  // Admission must not freeze requirements whose smallest valid verdict cannot
-  // cross the same bounded JSON transport used to submit the requirement.
   const reviewBytes = minimumReviewBytes(spec.acceptance) + (config.uiQuality ? minimumUiQualityBytes(spec.screenshotsDir!) : 0);
   const minimumResultBytes = config.workflow ? minimumNodeResultBytes(['x'], reviewBytes) : reviewBytes;
   if (minimumResultBytes > MAX_INPUT_BYTES) throw new Error(`Acceptance requires at least ${minimumResultBytes} completion bytes, exceeding the ${MAX_INPUT_BYTES}-byte input limit; split the requirement into independently deliverable products before enqueueing`);
@@ -164,117 +132,85 @@ export function validateJobConfig(spec: Spec, config: Config): void {
   if (spec.platform === 'macos' && (config.allowCloudBuild || config.packaging?.provider === 'cloud')) throw new Error('macos currently supports local build-only delivery; notarization and uploads are not part of this tool');
   if (spec.framework === 'mygo') validateMyGoPackaging(config, spec.screenshotsDir);
 }
-export const StageSchema = z.enum(['research', 'build', 'obfuscate', 'verify', 'review', 'package']);
-export type Stage = z.infer<typeof StageSchema>;
-export const StatusSchema = z.enum(['queued', 'running', 'waiting', 'blocked', 'failed', 'needs-owner', 'ready', 'built']);
-export type Status = z.infer<typeof StatusSchema>;
-export const ToolchainSchema = z.strictObject({ source: text, frameworkRevision: text, engineRevision: text, ready: z.boolean() });
-export type Toolchain = z.infer<typeof ToolchainSchema>;
-export const ProcessIdentitySchema = z.strictObject({ token: text });
-export type ProcessIdentity = z.infer<typeof ProcessIdentitySchema>;
-export const CommandMetadataSchema = z.strictObject({ deadline: z.number().finite(), identity: ProcessIdentitySchema, termAt: z.number().finite().optional(), killAt: z.number().finite().optional() });
-export type CommandMetadata = z.infer<typeof CommandMetadataSchema>;
-export const PrerequisiteSchema = z.strictObject({ argv: z.array(text).optional(), reason: text, path: text.optional() });
-export type Prerequisite = z.infer<typeof PrerequisiteSchema>;
-export const ResearchSchema = z.strictObject({
-  viable: z.boolean(), distinctness: text, risks: z.array(text).optional(), plan: z.array(text).min(1),
-});
-export type Research = z.infer<typeof ResearchSchema>;
-export const ReviewSchema = z.strictObject({ approved: z.boolean(), findings: z.array(text), acceptanceEvidence: z.array(z.strictObject({ requirement: text, evidence: text })), uiQuality: UiQualitySchema.optional() });
-export type Review = z.infer<typeof ReviewSchema>;
-export const ArtifactSchema = z.strictObject({ kind: z.enum(['ios-simulator', 'ipa', 'apk', 'aab', 'macos-app', 'dmg']), path: text, digest: text.regex(/^[a-f0-9]{64}$/), createdAt: z.iso.datetime() });
-export type Artifact = z.infer<typeof ArtifactSchema>;
-export const InboxEntrySchema = z.strictObject({
-  source: text, digest: text.nullable(), status: z.enum(['accepted', 'error']), jobId: text.nullable(),
-  error: z.string().nullable(), observedAt: z.number().finite(),
-});
-export type InboxEntry = z.infer<typeof InboxEntrySchema>;
-export const HostStageSchema = z.enum(['research', 'build', 'review']);
-export type HostStage = z.infer<typeof HostStageSchema>;
-export const HostTurnSchema = z.strictObject({
-  id: z.uuid(), stage: HostStageSchema, createdAt: z.number().finite(), contextDigest: text.regex(/^[a-f0-9]{64}$/),
-  /** Number of decision entries present when this host turn was claimed. */
-  decisionsLengthAtClaim: count.optional(),
-  /** Stable owner process for the host session; absent on legacy turns. */
-  ownerPid: count.positive().optional(),
-  ownerIdentity: text.optional(),
-  kind: z.enum(['plan', 'node']).optional(), nodeId: text.optional(), planRevision: count.optional(),
-});
-export type HostTurn = z.infer<typeof HostTurnSchema>;
-
-const workflowNodeId = text.regex(/^[a-z][a-z0-9_-]{0,63}$/, 'Expected a lowercase workflow node identifier');
-const workflowPath = text.refine(value => relativeProjectPath(value, true), 'Expected a project-relative file or directory, or .');
-export const WorkflowNodeSchema = z.strictObject({
-  id: workflowNodeId, role: text.max(200), instructions: text.max(20000),
-  dependsOn: z.array(workflowNodeId).max(256).default([]),
-  readPaths: z.array(workflowPath).max(256).default(['.']),
-  writePaths: z.array(workflowPath).max(256).default([]),
-  acceptance: z.array(text.max(2000)).min(1).max(64),
-  provider: text.max(200).optional(), fresh: z.boolean().default(false),
-});
-export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;
-export const WorkflowPlanSchema = z.strictObject({
-  rationale: text.max(20000), nodes: z.array(WorkflowNodeSchema).min(1).max(256),
-  final: workflowNodeId, invalidate: z.array(workflowNodeId).max(256).default([]),
-});
-export type WorkflowPlan = z.infer<typeof WorkflowPlanSchema>;
-export const WorkflowNodeResultSchema = z.strictObject({
-  outcome: z.enum(['passed', 'failed']), summary: text.max(20000),
-  evidence: z.array(z.strictObject({ requirement: text.max(2000), evidence: text.max(20000) })).max(64),
-  result: z.unknown().optional(),
-});
-export type WorkflowNodeResult = z.infer<typeof WorkflowNodeResultSchema>;
-export const WorkflowNodeStateSchema = z.strictObject({
-  definition: WorkflowNodeSchema, status: z.enum(['pending', 'running', 'passed', 'failed']),
-  attempts: count.default(0), turn: HostTurnSchema.nullable().default(null),
-  result: WorkflowNodeResultSchema.optional(), completedAt: z.number().finite().optional(),
-  decisionsLengthAtClaim: count.optional(),
-});
-export type WorkflowNodeState = z.infer<typeof WorkflowNodeStateSchema>;
-export const WorkflowPhaseSchema = z.strictObject({
-  status: z.enum(['planning', 'running', 'complete']), revision: count.default(0), reason: text,
-  final: workflowNodeId.optional(), nodes: z.array(WorkflowNodeStateSchema).max(256).default([]),
-  history: z.array(z.strictObject({ revision: count.positive(), at: z.number().finite(), reason: text, plan: WorkflowPlanSchema })).default([]),
-  decisionsLengthAtClaim: count.optional(),
-  proofDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(),
-});
-export type WorkflowPhase = z.infer<typeof WorkflowPhaseSchema>;
-export const WorkflowStateSchema = z.strictObject({
-  cancelled: z.boolean().default(false),
-  phases: z.strictObject({ research: WorkflowPhaseSchema.optional(), build: WorkflowPhaseSchema.optional(), review: WorkflowPhaseSchema.optional() }),
-});
-export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
-export const JobSchema = z.object({
-  id: text, spec: SpecSchema, requestSpec: SpecSchema.nullable(), requestSpecError: text.nullable().default(null), config: ConfigSchema, stage: StageSchema, status: StatusSchema,
-  createdAt: z.number().finite(), updatedAt: z.number().finite(), nextAt: z.number().finite(),
-  attempts: z.partialRecord(StageSchema, count), hostTurns: count, turn: HostTurnSchema.nullable().optional(), groups: z.array(z.number().int()),
-  workflow: WorkflowStateSchema.optional(),
-  decisions: z.array(z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale })).default([]),
-  commands: z.record(z.string(), CommandMetadataSchema).default({}), receipt: AppleReceiptSchema, logs: z.array(text), workspace: text, projectRoot: text,
-  projectDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(), projectDependencyDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(),
-  baseJobId: z.uuid().optional(), baseDigest: text.regex(/^[a-f0-9]{64}$/).optional(), basePrepared: z.boolean().optional(),
-  automaticBase: z.literal(true).optional(),
-  sourceDirectory: text.refine(isAbsolute, 'sourceDirectory must be absolute').optional(), importDigest: text.regex(/^[a-f0-9]{64}$/).optional(), importPrepared: z.boolean().optional(), cloudBuildPending: z.boolean().optional(),
-  recoveryStage: StageSchema.optional(),
-  blockedReason: z.strictObject({ kind: z.literal('prerequisite'), stage: StageSchema, prerequisite: PrerequisiteSchema }).nullable().optional(),
-  manualRecovery: z.string().nullable().optional(), error: z.string().nullable().optional(), feedback: z.string().optional(),
-  research: ResearchSchema.optional(), policyEvidence: z.strictObject({ url: z.url(), fetchedAt: text, sha256: text }).optional(),
-  toolchain: ToolchainSchema.optional(), verifiedDigest: text.nullable().optional(), verifiedDependencyDigest: text.regex(/^[a-f0-9]{64}$/).nullable().optional(), screenshotDigest: text.nullable().optional(), verifiedAt: text.optional(),
-  obfuscationBase: z.strictObject({ digest: text.regex(/^[a-f0-9]{64}$/), path: text }).optional(),
-  obfuscationDigest: text.regex(/^[a-f0-9]{64}$/).optional(),
-  obfuscationReport: z.strictObject({ changedFiles: count, transforms: z.record(text, count), skipped: z.strictObject({ generated: count, unsupported: count }) }).optional(),
-  review: ReviewSchema.nullable().optional(), ipaPath: text.nullable().optional(), archiveDigest: text.nullable().optional(), artifact: ArtifactSchema.nullable().optional(),
-  notifications: z.array(NotificationDeliverySchema).default([]),
-  externalChecks: z.unknown().optional(),
-}).passthrough();
-export type Job = z.infer<typeof JobSchema>;
-
-export const DecisionEntrySchema = z.strictObject({ at: z.number().finite(), stage: decisionLabel, role: decisionLabel, rationale: decisionRationale });
-export type DecisionEntry = z.infer<typeof DecisionEntrySchema>;
-export const DecisionInputSchema = z.strictObject({ stage: decisionLabel.default(''), role: decisionLabel.default(''), rationale: decisionRationale });
-export type DecisionInput = z.infer<typeof DecisionInputSchema>;
-
+export const StageSchema = defineContract(oneOf(['research', 'build', 'obfuscate', 'verify', 'review', 'package']));
+export type Stage = Parsed<typeof StageSchema>;
+export const StatusSchema = defineContract(oneOf(['queued', 'running', 'waiting', 'blocked', 'failed', 'needs-owner', 'ready', 'built']));
+export type Status = Parsed<typeof StatusSchema>;
+export const ToolchainSchema = defineContract(obj({ source: text, frameworkRevision: text, engineRevision: text, ready: bool() }));
+export type Toolchain = Parsed<typeof ToolchainSchema>;
+export const ProcessIdentitySchema = defineContract(obj({ token: text }));
+export type ProcessIdentity = Parsed<typeof ProcessIdentitySchema>;
+export const CommandMetadataSchema = defineContract(obj({ deadline: finiteNumber, identity: ProcessIdentitySchema.schema, termAt: opt(finiteNumber), killAt: opt(finiteNumber) }));
+export type CommandMetadata = Parsed<typeof CommandMetadataSchema>;
+export const PrerequisiteSchema = defineContract(obj({ argv: opt(arr(text)), reason: text, path: opt(text) }));
+export type Prerequisite = Parsed<typeof PrerequisiteSchema>;
+export const ResearchSchema = defineContract(obj({ viable: bool(), distinctness: text, risks: opt(arr(text)), plan: arr(text, { minItems: 1 }) }));
+export type Research = Parsed<typeof ResearchSchema>;
+export const ReviewSchema = defineContract(obj({ approved: bool(), findings: arr(text), acceptanceEvidence: arr(obj({ requirement: text, evidence: text })), uiQuality: opt(UiQualitySchema.schema) }));
+export type Review = Parsed<typeof ReviewSchema>;
+export const ArtifactSchema = defineContract(obj({ kind: oneOf(['ios-simulator', 'ipa', 'apk', 'aab', 'macos-app', 'dmg']), path: text, digest, createdAt: isoDateTimeSchema() }));
+export type Artifact = Parsed<typeof ArtifactSchema>;
+export const InboxEntrySchema = defineContract(obj({ source: text, digest: nullable(text), status: oneOf(['accepted', 'error']), jobId: nullable(text), error: nullable(str()), observedAt: finiteNumber }));
+export type InboxEntry = Parsed<typeof InboxEntrySchema>;
+export const HostStageSchema = defineContract(oneOf(['research', 'build', 'review']));
+export type HostStage = Parsed<typeof HostStageSchema>;
+export const HostTurnSchema = defineContract(obj({
+  id: uuidSchema(), stage: HostStageSchema.schema, createdAt: finiteNumber, contextDigest: digest,
+  decisionsLengthAtClaim: opt(count), ownerPid: opt(positiveCount), ownerIdentity: opt(text),
+  kind: opt(oneOf(['plan', 'node'])), nodeId: opt(text), planRevision: opt(count),
+}));
+export type HostTurn = Parsed<typeof HostTurnSchema>;
+const workflowNodeId = str({ pattern: '^[a-z][a-z0-9_-]{0,63}$' });
+const workflowPath = defineContract(nonblankText(), { check(value, issue) {
+  if (!relativeProjectPath(value, true)) issue([], 'Expected a project-relative file or directory, or .');
+} });
+export const WorkflowNodeSchema = defineContract(obj({
+  id: workflowNodeId, role: nonblankText(200), instructions: nonblankText(20000),
+  dependsOn: arr(workflowNodeId, { maxItems: 256, default: [] }), readPaths: arr(workflowPath.schema, { maxItems: 256, default: ['.'] }),
+  writePaths: arr(workflowPath.schema, { maxItems: 256, default: [] }), acceptance: arr(nonblankText(2000), { minItems: 1, maxItems: 64 }),
+  provider: opt(nonblankText(200)), fresh: bool({ default: false }),
+}));
+export type WorkflowNode = Parsed<typeof WorkflowNodeSchema>;
+export const WorkflowPlanSchema = defineContract(obj({ rationale: nonblankText(20000), nodes: arr(WorkflowNodeSchema.schema, { minItems: 1, maxItems: 256 }), final: workflowNodeId, invalidate: arr(workflowNodeId, { maxItems: 256, default: [] }) }));
+export type WorkflowPlan = Parsed<typeof WorkflowPlanSchema>;
+export const WorkflowNodeResultSchema = defineContract(obj({ outcome: oneOf(['passed', 'failed']), summary: nonblankText(20000), evidence: arr(obj({ requirement: nonblankText(2000), evidence: nonblankText(20000) }), { maxItems: 64 }), result: opt(unknown()) }));
+export type WorkflowNodeResult = Parsed<typeof WorkflowNodeResultSchema>;
+export const WorkflowNodeStateSchema = defineContract(obj({
+  definition: WorkflowNodeSchema.schema, status: oneOf(['pending', 'running', 'passed', 'failed']), attempts: { ...count, default: 0 }, turn: { ...nullable(HostTurnSchema.schema), default: null },
+  result: opt(WorkflowNodeResultSchema.schema), completedAt: opt(finiteNumber), decisionsLengthAtClaim: opt(count),
+}));
+export type WorkflowNodeState = Parsed<typeof WorkflowNodeStateSchema>;
+export const WorkflowPhaseSchema = defineContract(obj({
+  status: oneOf(['planning', 'running', 'complete']), revision: { ...count, default: 0 }, reason: text, final: opt(workflowNodeId),
+  nodes: arr(WorkflowNodeStateSchema.schema, { maxItems: 256, default: [] }),
+  history: arr(obj({ revision: positiveCount, at: finiteNumber, reason: text, plan: WorkflowPlanSchema.schema }), { default: [] }),
+  decisionsLengthAtClaim: opt(count), proofDigest: opt(nullable(digest)),
+}));
+export type WorkflowPhase = Parsed<typeof WorkflowPhaseSchema>;
+export const WorkflowStateSchema = defineContract(obj({ cancelled: bool({ default: false }), phases: obj({ research: opt(WorkflowPhaseSchema.schema), build: opt(WorkflowPhaseSchema.schema), review: opt(WorkflowPhaseSchema.schema) }) }));
+export type WorkflowState = Parsed<typeof WorkflowStateSchema>;
+const absoluteSource = defineContract(nonblankText(), { check(value, issue) { if (!isAbsolute(value)) issue([], 'sourceDirectory must be absolute'); } });
+export const JobSchema = defineContract(obj({
+  id: text, spec: SpecSchema.schema, requestSpec: nullable(SpecSchema.schema), requestSpecError: nullable(text, { default: null }), config: ConfigSchema.schema,
+  stage: StageSchema.schema, status: StatusSchema.schema, createdAt: finiteNumber, updatedAt: finiteNumber, nextAt: finiteNumber,
+  attempts: { ...map(count), propertyNames: StageSchema.schema }, hostTurns: count, turn: opt(nullable(HostTurnSchema.schema)), groups: arr(integer), workflow: opt(WorkflowStateSchema.schema),
+  decisions: arr(obj({ at: finiteNumber, stage: decisionLabel, role: decisionLabel, rationale: decisionRationale }), { default: [] }),
+  commands: map(CommandMetadataSchema.schema, { default: {} }), receipt: AppleReceiptSchema.schema, logs: arr(text), workspace: text, projectRoot: text,
+  projectDigest: opt(nullable(digest)), projectDependencyDigest: opt(nullable(digest)), baseJobId: opt(uuidSchema()), baseDigest: opt(digest), basePrepared: opt(bool()), automaticBase: opt(lit(true)),
+  sourceDirectory: opt(absoluteSource.schema), importDigest: opt(digest), importPrepared: opt(bool()), cloudBuildPending: opt(bool()), recoveryStage: opt(StageSchema.schema),
+  blockedReason: opt(nullable(obj({ kind: lit('prerequisite'), stage: StageSchema.schema, prerequisite: PrerequisiteSchema.schema }))),
+  manualRecovery: opt(nullable(str())), error: opt(nullable(str())), feedback: opt(str()), research: opt(ResearchSchema.schema),
+  policyEvidence: opt(obj({ url: urlSchema(), fetchedAt: text, sha256: text })), toolchain: opt(ToolchainSchema.schema),
+  verifiedDigest: opt(nullable(text)), verifiedDependencyDigest: opt(nullable(digest)), screenshotDigest: opt(nullable(text)), verifiedAt: opt(text),
+  obfuscationBase: opt(obj({ digest, path: text })), obfuscationDigest: opt(digest),
+  obfuscationReport: opt(obj({ changedFiles: count, transforms: { ...map(count), propertyNames: text }, skipped: obj({ generated: count, unsupported: count }) })),
+  review: opt(nullable(ReviewSchema.schema)), ipaPath: opt(nullable(text)), archiveDigest: opt(nullable(text)), artifact: opt(nullable(ArtifactSchema.schema)),
+  notifications: arr(NotificationDeliverySchema.schema, { default: [] }), externalChecks: opt(unknown()),
+}, { open: true }));
+export type Job = Parsed<typeof JobSchema> & Record<string, unknown>;
+export const DecisionEntrySchema = defineContract(obj({ at: finiteNumber, stage: decisionLabel, role: decisionLabel, rationale: decisionRationale }));
+export type DecisionEntry = Parsed<typeof DecisionEntrySchema>;
+export const DecisionInputSchema = defineContract(obj({ stage: { ...decisionLabel, default: '' }, role: { ...decisionLabel, default: '' }, rationale: decisionRationale }));
+export type DecisionInput = Parsed<typeof DecisionInputSchema>;
 export type FactoryError = Error & { code?: string; syscall?: string; prerequisite?: Prerequisite; httpStatus?: number | null; outcome?: string; transient?: boolean };
-export function toError(value: unknown): FactoryError {
-  return value instanceof Error ? value : new Error(String(value));
-}
+export function toError(value: unknown): FactoryError { return value instanceof Error ? value : new Error(String(value)); }

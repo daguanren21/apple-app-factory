@@ -19,6 +19,7 @@ import { parseRequirement, readInputFile } from './intake/requirements.js';
 import { MAX_INPUT_BYTES } from './contracts/input-limits.js';
 import { dispatchRemote } from './hosts/remote.js';
 import { ConfigSchema, FrameworkSchema, PlatformSchema, PackageTargetSchema, DecisionInputSchema, toError, validateJobConfig } from './contracts/schemas.js';
+import { enumValues } from './contracts/validation.js';
 import type { Config, Framework, Job } from './contracts/schemas.js';
 import { assertProject, detectProjectFramework, hasProjectIndicators, doctorCommands } from './projects/profiles.js';
 import { closestOwnedGoWorkspace } from './projects/go-dependencies.js';
@@ -88,8 +89,8 @@ async function probe(argv: string[], config: Config, context?: { cwd: string; en
   }
 }
 
-const frameworks = FrameworkSchema.options;
-const packageTargets = PackageTargetSchema.options;
+const frameworks = enumValues(FrameworkSchema);
+const packageTargets = enumValues(PackageTargetSchema);
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const xmlText = (value: string): string => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;').replaceAll('\r', '&#13;');

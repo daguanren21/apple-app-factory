@@ -1,9 +1,10 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { z } from 'zod';
+import { lit, obj } from '@earendil-works/pi-schema';
+import { defineContract } from '../contracts/validation.js';
 import type { Run } from '../execution/process.js';
 
-const ExportOptionsSchema = z.object({ destination: z.literal('export').default('export') }).passthrough();
+const ExportOptionsSchema = defineContract(obj({ destination: lit('export', { default: 'export' }) }, { open: true }));
 
 export async function prepareExportOptions(source: string, stateDir: string, run: Run): Promise<{ directory: string; path: string }> {
   const decoded = await run(['/usr/bin/plutil', '-convert', 'json', '-o', '-', source]);

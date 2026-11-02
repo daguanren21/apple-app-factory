@@ -2,9 +2,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, realpathSync, lstatSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve, isAbsolute, relative, sep } from 'node:path';
-import { z } from 'zod';
+import { map, str, unknown as unknownSchema } from '@earendil-works/pi-schema';
+import { defineContract } from '../contracts/validation.js';
 import { ConfigSchema, SpecSchema, toError } from '../contracts/schemas.js';
 import type { Config, Spec } from '../contracts/schemas.js';
+
+const configRecordContract = defineContract(map(unknownSchema()));
+const pathContract = defineContract(str({ minLength: 1 }));
+const defaultPathContract = defineContract(str({ minLength: 1, default: '.' }));
 
 export interface ProjectStorage {
   stateDir: string;
@@ -99,12 +104,12 @@ export function normalizeIsolationPaths(config: Config): void {
 /** Load and canonicalize configuration without admitting a new project job; historical queues may still need inspection. */
 export function loadConfig(path = 'factory.json', options: { access?: 'source' | 'metadata' } = {}): Config & { configPath: string } {
   const configPath = resolve(path);
-  const source = z.record(z.string(), z.unknown()).parse(loadJSON(configPath));
+  const source = configRecordContract.parse(loadJSON(configPath));
   if ('notify' in source) throw new Error('Legacy notify configuration is not supported; move recipients to notifications.targets and choose a host delivery capability there.');
   const legacyKeys = ['builder', 'reviewer', 'researcher', 'agentEnv', 'maxAgentCalls', 'maxConcurrentJobs'].filter(key => key in source);
   if (legacyKeys.length) throw new Error(`Legacy provider/daemon configuration is not supported (${legacyKeys.join(', ')}). Remove builder/reviewer/researcher/maxConcurrentJobs, rename agentEnv to executionEnv and maxAgentCalls to maxHostTurns. Models and authentication now belong to your host. Existing queue snapshots are migrated without deleting task history.`);
   const root = dirname(configPath);
-  const selectedRoot = resolve(root, z.string().min(1).default('.').parse(source.projectRoot));
+  const selectedRoot = resolve(root, defaultPathContract.parse(source.projectRoot));
   const metadataOnly = options.access === 'metadata';
   const projectRoot = metadataOnly ? selectedRoot : canonicalPath(selectedRoot);
   // With explicit queue storage, metadata operations need no live filesystem
@@ -114,8 +119,8 @@ export function loadConfig(path = 'factory.json', options: { access?: 'source' |
     : undefined;
   const config = ConfigSchema.parse({
     ...source, configPath, projectRoot,
-    stateDir: resolve(root, z.string().min(1).parse(source.stateDir ?? defaults?.stateDir)),
-    workspaceRoot: resolve(root, z.string().min(1).parse(source.workspaceRoot ?? defaults?.workspaceRoot)),
+    stateDir: resolve(root, pathContract.parse(source.stateDir ?? defaults?.stateDir)),
+    workspaceRoot: resolve(root, pathContract.parse(source.workspaceRoot ?? defaults?.workspaceRoot)),
   });
   if (metadataOnly) {
     config.stateDir = canonicalPath(config.stateDir);

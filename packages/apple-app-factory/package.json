@@ -34,10 +34,10 @@
     "prepack": "pnpm --workspace-root exec turbo run build typecheck --filter=apphx"
   },
   "dependencies": {
-    "yaml": "^2.9.1",
-    "zod": "^4.6.7"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@earendil-works/pi-schema": "file:../../vendor/pi-schema.tgz",
     "obfuscator": "workspace:*"
   }
 }

@@ -1,20 +1,21 @@
-import { z } from 'zod';
+import { bool, int, map, nullable, obj, oneOf, opt, str } from '@earendil-works/pi-schema';
+import { defineContract, isoDateTimeSchema, type Parsed } from './validation.js';
 
-const text = z.string().min(1);
-const effect = z.strictObject({ id: text.optional() });
+const text = str({ minLength: 1 });
+const effect = obj({ id: opt(text) });
 
-export const AppleReceiptSchema = z.strictObject({
-  identity: z.strictObject({ appId: text, bundleId: text, version: text, buildNumber: text }).optional(),
-  pending: z.strictObject({ key: text, path: text.optional(), method: z.enum(['POST', 'PATCH', 'PUT']).optional(), startedAt: z.iso.datetime().optional() }).nullable().optional(),
-  effects: z.record(z.string(), effect).optional(),
-  lastEffect: z.strictObject({ key: text, id: text.optional(), reconciled: z.boolean().optional(), completedAt: z.iso.datetime().optional() }).optional(),
-  upload: z.strictObject({ status: z.enum(['intent', 'delivered', 'reconciled']), startedAt: z.iso.datetime().optional() }).optional(),
-  phase: z.enum(['processing', 'submitted']).optional(),
-  versionId: text.optional(),
-  buildId: text.optional(),
-  submissionId: text.optional(),
-  assetParts: z.record(z.string(), z.number().int().nonnegative().safe()).optional(),
-});
+export const AppleReceiptSchema = defineContract(obj({
+  identity: opt(obj({ appId: text, bundleId: text, version: text, buildNumber: text })),
+  pending: opt(nullable(obj({ key: text, path: opt(text), method: opt(oneOf(['POST', 'PATCH', 'PUT'])), startedAt: opt(isoDateTimeSchema()) }))),
+  effects: opt(map(effect)),
+  lastEffect: opt(obj({ key: text, id: opt(text), reconciled: opt(bool()), completedAt: opt(isoDateTimeSchema()) })),
+  upload: opt(obj({ status: oneOf(['intent', 'delivered', 'reconciled']), startedAt: opt(isoDateTimeSchema()) })),
+  phase: opt(oneOf(['processing', 'submitted'])),
+  versionId: opt(text),
+  buildId: opt(text),
+  submissionId: opt(text),
+  assetParts: opt(map(int({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }))),
+}));
 
-export interface AppleReceipt extends z.infer<typeof AppleReceiptSchema> {}
+export type AppleReceipt = Parsed<typeof AppleReceiptSchema>;
 

@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { lstatSync, opendirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { HostStageSchema, WorkflowPlanSchema } from '../contracts/schemas.js';
+import { enumValues } from '../contracts/validation.js';
 import type { Config, HostStage, Job, RoleSeat, WorkflowNode, WorkflowNodeState, WorkflowPhase } from '../contracts/schemas.js';
 import { verificationProofDigest } from './proof.js';
 import { MAX_INPUT_BYTES, minimumNodeResultBytes, minimumReviewBytes } from '../contracts/input-limits.js';
 import { minimumUiQualityBytes } from '../contracts/ui-quality.js';
 
-const stages = HostStageSchema.options;
+const stages = enumValues(HostStageSchema);
 const RESOURCE_SCAN_BUDGET = 4096;
 
 export function newWorkflowPhase(reason: string): WorkflowPhase {

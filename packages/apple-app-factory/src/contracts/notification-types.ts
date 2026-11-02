@@ -1,4 +1,5 @@
-import { z } from 'zod';
+import { arr, lit, nullable, obj, oneOf, opt, str } from '@earendil-works/pi-schema';
+import { defineContract, isoDateTimeSchema, nonblankText, uuidSchema, type Parsed } from './validation.js';
 
 /**
  * Notification configuration is deliberately small: the host owns transport
@@ -12,75 +13,72 @@ export const MAX_NOTIFICATION_ERROR = 4096;
 export const MAX_NOTIFICATION_PROVIDER = 128;
 export const MAX_NOTIFICATION_MESSAGE_ID = 512;
 
-function text(max: number) {
-  return z.string().min(1).max(max).refine(value => value.trim().length > 0 && !value.includes('\0'), 'Expected non-empty text without NUL characters');
-}
 
-export const NotificationTargetIdSchema = text(MAX_NOTIFICATION_ID);
-export const NotificationChannelSchema = text(MAX_NOTIFICATION_TEXT);
-export const NotificationDestinationSchema = text(MAX_NOTIFICATION_TEXT);
+export const NotificationTargetIdSchema = defineContract(nonblankText(MAX_NOTIFICATION_ID));
+export const NotificationChannelSchema = defineContract(nonblankText(MAX_NOTIFICATION_TEXT));
+export const NotificationDestinationSchema = defineContract(nonblankText(MAX_NOTIFICATION_TEXT));
 
-export const NotificationTargetSchema = z.strictObject({
-  id: NotificationTargetIdSchema,
-  channel: NotificationChannelSchema,
-  destination: NotificationDestinationSchema,
-});
-export type NotificationTarget = z.infer<typeof NotificationTargetSchema>;
+export const NotificationTargetSchema = defineContract(obj({
+  id: NotificationTargetIdSchema.schema,
+  channel: NotificationChannelSchema.schema,
+  destination: NotificationDestinationSchema.schema,
+}));
+export type NotificationTarget = Parsed<typeof NotificationTargetSchema>;
 
-export const NotificationConfigSchema = z.strictObject({
-  targets: z.array(NotificationTargetSchema).max(MAX_NOTIFICATION_TARGETS),
-}).superRefine((value, context) => {
+export const NotificationConfigSchema = defineContract(obj({
+  targets: arr(NotificationTargetSchema.schema, { maxItems: MAX_NOTIFICATION_TARGETS }),
+}), { check(value, issue) {
   const ids = new Set<string>();
   for (const [index, target] of value.targets.entries()) {
-    if (ids.has(target.id)) context.addIssue({ code: 'custom', path: ['targets', index, 'id'], message: 'Notification target ids must be unique' });
+    if (ids.has(target.id)) issue(['targets', index, 'id'], 'Notification target ids must be unique');
     ids.add(target.id);
   }
-});
-export type NotificationConfig = z.infer<typeof NotificationConfigSchema>;
+} });
+export type NotificationConfig = Parsed<typeof NotificationConfigSchema>;
 
-export const NotificationStatusSchema = z.enum(['pending', 'claimed', 'accepted', 'failed', 'unknown']);
-export type NotificationStatus = z.infer<typeof NotificationStatusSchema>;
+export const NotificationStatusSchema = defineContract(oneOf(['pending', 'claimed', 'accepted', 'failed', 'unknown']));
+export type NotificationStatus = Parsed<typeof NotificationStatusSchema>;
 
 /**
  * A legacy receipt is allowed only as an explicitly marked historical record.
  * New host receipts are checked again at the notify boundary and must include
  * a provider message id.
  */
-export const NotificationReceiptSchema = z.strictObject({
-  provider: text(MAX_NOTIFICATION_PROVIDER),
-  messageId: text(MAX_NOTIFICATION_MESSAGE_ID).optional(),
-  legacy: z.literal(true).optional(),
-}).superRefine((value, context) => {
-  if (!value.messageId && value.legacy !== true) context.addIssue({ code: 'custom', path: ['messageId'], message: 'A non-legacy receipt requires a provider message id' });
-});
-export type NotificationReceipt = z.infer<typeof NotificationReceiptSchema>;
+export const NotificationReceiptSchema = defineContract(obj({
+  provider: nonblankText(MAX_NOTIFICATION_PROVIDER),
+  messageId: opt(nonblankText(MAX_NOTIFICATION_MESSAGE_ID)),
+  legacy: opt(lit(true)),
+}), { check(value, issue) {
+  if (!value.messageId && value.legacy !== true) issue(['messageId'], 'A non-legacy receipt requires a provider message id');
+} });
+export type NotificationReceipt = Parsed<typeof NotificationReceiptSchema>;
 
-const digest = z.string().regex(/^[a-f0-9]{64}$/);
-const timestamp = z.iso.datetime().max(128);
+const digest = str({ pattern: '^[a-f0-9]{64}$' });
+const timestamp = isoDateTimeSchema(128);
 
 /**
  * One durable destination/artifact state. The digest and artifactCreatedAt
  * identify bytes and the packaging event separately. Missing legacy binding
  * components remain unknown; notification timestamps cannot establish them.
  */
-export const NotificationDeliverySchema = z.strictObject({
-  id: text(MAX_NOTIFICATION_ID),
-  target: NotificationTargetSchema,
-  artifactDigest: digest.nullable().optional(),
-  artifactCreatedAt: timestamp.nullable().optional(),
-  status: NotificationStatusSchema,
-  claimId: z.uuid().optional(),
-  createdAt: timestamp.optional(),
-  updatedAt: timestamp.optional(),
-  claimedAt: timestamp.optional(),
-  completedAt: timestamp.optional(),
-  receipt: NotificationReceiptSchema.optional(),
-  error: text(MAX_NOTIFICATION_ERROR).optional(),
-}).superRefine((value, context) => {
-  if (value.status === 'claimed' && !value.claimId) context.addIssue({ code: 'custom', path: ['claimId'], message: 'A claimed notification requires a claim id' });
-  if (value.status === 'accepted' && !value.receipt) context.addIssue({ code: 'custom', path: ['receipt'], message: 'An accepted notification requires a receipt' });
-  if ((value.status === 'failed' || value.status === 'unknown') && !value.error) context.addIssue({ code: 'custom', path: ['error'], message: 'A failed or uncertain notification requires a reason' });
-  if (value.status !== 'accepted' && value.receipt) context.addIssue({ code: 'custom', path: ['receipt'], message: 'Only accepted notifications may carry a receipt' });
-  if (value.status === 'pending' && value.claimId) context.addIssue({ code: 'custom', path: ['claimId'], message: 'A pending notification cannot carry a claim id' });
-});
-export type NotificationDelivery = z.infer<typeof NotificationDeliverySchema>;
+export const NotificationDeliverySchema = defineContract(obj({
+  id: nonblankText(MAX_NOTIFICATION_ID),
+  target: NotificationTargetSchema.schema,
+  artifactDigest: opt(nullable(digest)),
+  artifactCreatedAt: opt(nullable(timestamp)),
+  status: NotificationStatusSchema.schema,
+  claimId: opt(uuidSchema()),
+  createdAt: opt(timestamp),
+  updatedAt: opt(timestamp),
+  claimedAt: opt(timestamp),
+  completedAt: opt(timestamp),
+  receipt: opt(NotificationReceiptSchema.schema),
+  error: opt(nonblankText(MAX_NOTIFICATION_ERROR)),
+}), { check(value, issue) {
+  if (value.status === 'claimed' && !value.claimId) issue(['claimId'], 'A claimed notification requires a claim id');
+  if (value.status === 'accepted' && !value.receipt) issue(['receipt'], 'An accepted notification requires a receipt');
+  if ((value.status === 'failed' || value.status === 'unknown') && !value.error) issue(['error'], 'A failed or uncertain notification requires a reason');
+  if (value.status !== 'accepted' && value.receipt) issue(['receipt'], 'Only accepted notifications may carry a receipt');
+  if (value.status === 'pending' && value.claimId) issue(['claimId'], 'A pending notification cannot carry a claim id');
+} });
+export type NotificationDelivery = Parsed<typeof NotificationDeliverySchema>;

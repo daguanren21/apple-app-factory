@@ -4,6 +4,7 @@ export default defineConfig({
   entry: ['src/**/*.ts'],
   root: 'src',
   unbundle: true,
+  deps: { alwaysBundle: ['@earendil-works/pi-schema'] },
   platform: 'node',
   format: 'esm',
   fixedExtension: false,
@@ -11,4 +12,8 @@ export default defineConfig({
   dts: false,
   sourcemap: true,
   clean: true,
+  copy: [
+    { from: '../../vendor/pi-schema/LICENSE', to: 'dist/LICENSES/pi-schema' },
+    { from: '../../vendor/pi-schema/LICENSES/typebox-LICENSE', to: 'dist/LICENSES' },
+  ],
 });

@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { z } from 'zod';
+import { arr, map, num, obj, opt, str, unknown as unknownSchema } from '@earendil-works/pi-schema';
+import { defineContract } from '../contracts/validation.js';
 import { inspectProcess, processIsAlive, inspectProcessGroup, signalOwnedProcessGroup, TERMINATION_GRACE_MS } from '../execution/process.js';
 import { canonicalPath, normalizeIsolationPaths, validateProjectSource, validateProjectContext } from '../configuration/config.js';
 import { assertPinnedProjectRoots, projectDirectory, sourceDigest } from '../projects/workspace.js';
@@ -55,16 +56,22 @@ function migrateSpec(value: unknown): Spec {
   return SpecSchema.parse(saved);
 }
 
-const MigrationOwnershipSchema = z.object({
-  turn: z.unknown().optional(), groups: z.array(z.number()).optional(), manualRecovery: z.unknown().optional(),
-  workflow: z.object({ phases: z.record(z.string(), z.object({ nodes: z.array(z.object({ turn: z.unknown().optional() })).optional() })) }).optional(),
-});
+// Keep dynamic map keys open while registering strip policies for each legacy object boundary.
+const migrationNodeContract = defineContract(obj({ turn: opt(unknownSchema()) }, { open: true }), { stripUnknown: true });
+const migrationPhaseContract = defineContract(obj({ nodes: opt(arr(migrationNodeContract.schema)) }, { open: true }), { stripUnknown: true });
+const migrationWorkflowContract = defineContract(obj({ phases: map(migrationPhaseContract.schema) }, { open: true }), { stripUnknown: true });
+const MigrationOwnershipSchema = defineContract(obj({
+  turn: opt(unknownSchema()), groups: opt(arr(num({ minimum: -Number.MAX_VALUE, maximum: Number.MAX_VALUE }))), manualRecovery: opt(unknownSchema()),
+  workflow: opt(migrationWorkflowContract.schema),
+}, { open: true }), { stripUnknown: true });
+const recordContract = defineContract(map(unknownSchema()));
+const nonEmptyStringContract = defineContract(str({ minLength: 1 }));
 
 function migrateProjectContext(saved: Record<string, unknown>): void {
-  const config = z.record(z.string(), z.unknown()).parse(saved.config);
+  const config = recordContract.parse(saved.config);
   saved.projectRoot ??= saved.workspace;
   config.projectMode ??= 'isolated';
-  config.projectRoot ??= canonicalPath(z.string().min(1).parse(saved.projectRoot));
+  config.projectRoot ??= canonicalPath(nonEmptyStringContract.parse(saved.projectRoot));
   saved.config = config;
   migrateNotifications(saved);
 }
@@ -166,7 +173,7 @@ export class Store {
           this.db.exec('CREATE TABLE IF NOT EXISTS snapshot_migrations (job TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(job,version));');
           for (const row of this.db.prepare('SELECT id,data FROM jobs ORDER BY rowid').all()) {
             if (typeof row.data !== 'string') throw new Error('Stored task data must be JSON text');
-            const saved = z.record(z.string(), z.unknown()).parse(JSON.parse(row.data));
+            const saved = recordContract.parse(JSON.parse(row.data));
             const ownership = MigrationOwnershipSchema.parse(saved);
             const activeNodes = Object.values(ownership.workflow?.phases ?? {}).some(phase => phase.nodes?.some(node => node.turn));
             if (ownership.turn || activeNodes || ownership.groups?.length || ownership.manualRecovery) throw new Error(`Finish or abandon active work for task ${row.id} with the previous factory version before migrating; no claim or process was changed`);

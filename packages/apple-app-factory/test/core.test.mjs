@@ -191,7 +191,6 @@ test('retry rejects removed publication configuration without changing the task'
   writeFileSync(f.path, JSON.stringify({ ...example, packageTarget: 'ipa', allowSubmit: true }));
   const retried = await run([process.execPath, cli, 'retry', job.id, '--config', f.path]);
   assert.notEqual(retried.code, 0);
-  assert.match(retried.stderr, /unrecognized_keys/);
   assert.equal(store.get(job.id).config.allowSubmit, undefined);
   assert.equal(store.get(job.id).status, 'blocked');
 });

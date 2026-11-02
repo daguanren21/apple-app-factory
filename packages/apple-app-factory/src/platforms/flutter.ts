@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, delimiter, relative, sep } from 'node:path';
+import { obj } from '@earendil-works/pi-schema';
+import { defineContract, nonblankText, type Parsed } from '../contracts/validation.js';
 import { inside } from '../configuration/config.js';
 import { removeConfinedPath } from '../execution/isolation.js';
 import { ToolchainSchema, toError, type Config, type Job, type Toolchain } from '../contracts/schemas.js';
 import type { Run } from '../execution/process.js';
 
-const FlutterIdentitySchema = ToolchainSchema.pick({ frameworkRevision: true, engineRevision: true }).strip();
-type FlutterIdentity = Pick<Toolchain, 'frameworkRevision' | 'engineRevision'>;
+const FlutterIdentitySchema = defineContract(obj({ frameworkRevision: nonblankText(), engineRevision: nonblankText() }), { stripUnknown: true });
+type FlutterIdentity = Parsed<typeof FlutterIdentitySchema>;
 
 export interface PrepareFlutterOptions {
   run: Run;

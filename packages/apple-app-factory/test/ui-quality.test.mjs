@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { JobSchema } from '../dist/contracts/schemas.js';
-import { UI_QUALITY_CHECKS, UiQualitySchema, minimumUiQualityBytes } from '../dist/contracts/ui-quality.js';
+import { CapturePathSchema, UI_QUALITY_CHECKS, UiQualitySchema, minimumUiQualityBytes } from '../dist/contracts/ui-quality.js';
 import { combineUiQuality, validateUiQuality } from '../dist/projects/ui-quality.js';
 
 // Real PNG containers with compressed scanlines and CRCs exercise the public byte
@@ -275,6 +275,34 @@ test('strict schema rejects duplicate IDs, duplicate captures, unbounded fields 
   mutate(value => { value.captures = Array.from({ length: 33 }, (_, index) => ({ ...value.captures[0], path: `build/screenshots/${index}.png` })); });
   f.quality.captures[0].sha256 = f.quality.captures[0].sha256.toUpperCase();
   assert.equal(validateUiQuality(f.job, f.quality).captures[0].sha256, createHash('sha256').update(smallPng).digest('hex'));
+});
+
+test('capture paths have a direct native-schema parsing boundary', () => {
+  const path = 'build/screenshots/截屏.png';
+  assert.equal(CapturePathSchema.parse(path), path);
+  for (const value of [undefined, 1, '', ' ', '../source', 'build/COM1.txt', 'build/a.png ']) {
+    assert.equal(CapturePathSchema.safeParse(value).success, false);
+  }
+});
+
+test('UI normalization and business checks survive a nested persisted review without mutating input', t => {
+  const f = fixture(t);
+  const quality = structuredClone(f.quality);
+  const digest = quality.captures[0].sha256;
+  quality.captures[0].sha256 = digest.toUpperCase();
+  const review = { approved: true, findings: [], acceptanceEvidence: [], uiQuality: quality };
+  const direct = UiQualitySchema.parse(quality);
+  const nested = JobSchema.parse({ ...f.job, review });
+  assert.equal(direct.captures[0].sha256, digest);
+  assert.equal(nested.review.uiQuality.captures[0].sha256, digest);
+  assert.equal(quality.captures[0].sha256, digest.toUpperCase());
+  assert.notEqual(direct.captures[0], quality.captures[0]);
+  assert.notEqual(nested.review.uiQuality.captures[0], quality.captures[0]);
+  quality.checks[1].id = quality.checks[0].id;
+  assert.equal(JobSchema.safeParse({ ...f.job, review }).success, false);
+  quality.checks[1].id = f.quality.checks[1].id;
+  quality.captures[0].path = '../source.png';
+  assert.equal(JobSchema.safeParse({ ...f.job, review }).success, false);
 });
 
 test('captures cannot leave the configured screenshot directory even for existing project files', t => {

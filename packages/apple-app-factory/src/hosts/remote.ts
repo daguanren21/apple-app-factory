@@ -1,18 +1,21 @@
 import { spawn } from 'node:child_process';
 import { posix } from 'node:path';
-import { z } from 'zod';
+import { obj, str } from '@earendil-works/pi-schema';
+import { defineContract, type Parsed } from '../contracts/validation.js';
 import { loadJSON } from '../configuration/config.js';
 import { parseRequirement } from '../intake/requirements.js';
 import { toError } from '../contracts/schemas.js';
 
-const remotePath = z.string().min(1).refine(value => posix.isAbsolute(value) && !value.includes('\0') && !/[\r\n]/.test(value), 'Use an absolute path on the Mac worker');
-export const RemoteSchema = z.strictObject({
-  host: z.string().regex(/^(?:[A-Za-z0-9_.-]+@)?[A-Za-z0-9][A-Za-z0-9_.-]*$/),
-  directory: remotePath,
-  executable: remotePath,
-  config: remotePath,
-});
-export type Remote = z.infer<typeof RemoteSchema>;
+export const RemoteSchema = defineContract(obj({
+  host: str({ pattern: '^(?:[A-Za-z0-9_.-]+@)?[A-Za-z0-9][A-Za-z0-9_.-]*$' }),
+  directory: str({ minLength: 1 }), executable: str({ minLength: 1 }), config: str({ minLength: 1 }),
+}), { check(value, issue) {
+  for (const key of ['directory', 'executable', 'config'] as const) {
+    const path = value[key];
+    if (!posix.isAbsolute(path) || path.includes('\0') || /[\r\n]/.test(path)) issue([key], 'Use an absolute path on the Mac worker');
+  }
+} });
+export type Remote = Parsed<typeof RemoteSchema>;
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 export function remoteCommand(endpoint: unknown, args: string[]): { argv: string[]; input?: string } {
